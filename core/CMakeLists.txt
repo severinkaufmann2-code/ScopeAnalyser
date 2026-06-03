@@ -22,6 +22,6 @@ scope_add_library(scope_core
         spdlog::spdlog
         nlohmann_json::nlohmann_json
         HighFive
-        unofficial::concurrentqueue::concurrentqueue
+        concurrentqueue
     FOLDER scope/core
 )

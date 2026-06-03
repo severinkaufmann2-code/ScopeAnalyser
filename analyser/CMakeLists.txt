@@ -23,7 +23,7 @@ scope_add_library(scope_analyser
         scope::scope_core
         Qt6::Widgets
         Qt6::Gui
-        exprtk::exprtk
+        exprtk
     PRIVATE_LIBS
         spdlog::spdlog
     FOLDER scope/analyser

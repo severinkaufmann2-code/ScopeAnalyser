@@ -3,39 +3,37 @@
     "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
     "configurePresets": [
         {
-            "name": "base",
-            "hidden": true,
-            "binaryDir": "${sourceDir}/build/${presetName}",
-            "cacheVariables": {
-                "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-            }
-        },
-        {
             "name": "linux-debug",
-            "inherits": "base",
             "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" },
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
         },
         {
             "name": "linux-release",
-            "inherits": "base",
             "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" },
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
         },
         {
             "name": "windows-debug",
-            "inherits": "base",
             "generator": "Ninja",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" },
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+            },
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
         },
         {
             "name": "windows-release",
-            "inherits": "base",
             "generator": "Ninja",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" },
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+            },
             "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
         }
     ],
