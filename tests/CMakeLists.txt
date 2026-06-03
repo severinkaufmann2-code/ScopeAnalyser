@@ -14,6 +14,7 @@ target_link_libraries(scope_tests PRIVATE
     scope::scope_analyser
     scope::scope_converter
     Qt6::Test
+    Qt6::Core
     GTest::gtest
     GTest::gtest_main
 )

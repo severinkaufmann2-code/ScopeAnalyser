@@ -2,15 +2,18 @@
 
 Signal recording, analysis, and data conversion for TwinCAT ADS.
 
-Three tools in one shell, also usable standalone:
+Three tools in one desktop application, also usable standalone:
 
-1. **Recorder** — captures channels from a TwinCAT PLC over ADS, with per-channel
-   auto-rate (parent-task cycle) or oversampled-array mode. Lossless capture into
-   HDF5 sessions.
-2. **Analyser** — typed formula language with autocomplete (`Filter`, `Integral`,
-   `Derivative`, `Mean`, …) over recorded channels, vectorized via `exprtk`.
-3. **Converter** — file-to-signal translator with drag-mapping UI and saveable
-   `.scaconv` profiles. Excel and CSV in v1.
+1. **Recorder** — captures channels from a source (TwinCAT ADS, or a built-in
+   Demo source for development) into lossless HDF5 sessions.
+2. **Analyser** — formula language with autocomplete (`Filter`, `Integral`,
+   `Derivative`, `Mean`, …) over recorded channels, plus a multi-channel plot
+   with toggleable visibility.
+3. **Converter** — file-to-signal translator with column-role mapping and
+   saveable `.scaconv` profiles. CSV in v1; Excel planned.
+
+The three tools share one in-memory `SignalStore`, so recordings and imports
+become available everywhere instantly.
 
 ## Build
 
@@ -22,7 +25,7 @@ System packages:
 sudo apt install -y \
     build-essential cmake ninja-build git pkg-config \
     qt6-base-dev qt6-tools-dev qt6-base-dev-tools \
-    libqt6test6t64 libqt6printsupport6t64 \
+    libqt6test6 libqt6printsupport6 \
     libhdf5-dev hdf5-helpers \
     libspdlog-dev nlohmann-json3-dev \
     libgtest-dev libgmock-dev
@@ -33,32 +36,104 @@ Configure + build:
 ```bash
 cmake --preset linux-release
 cmake --build --preset linux-release
-ctest --preset linux-release   # optional
+./build/linux-release/bin/scope_tests       # 18 tests
 ```
 
 The small headers-only / source-bundle deps (HighFive, exprtk, QCustomPlot,
-QXlsx, moodycamel ConcurrentQueue, Beckhoff/ADS) are fetched at configure time
-via `FetchContent`, so no vcpkg is required on Linux.
+moodycamel ConcurrentQueue, Beckhoff/ADS) are fetched at configure time via
+`FetchContent`. No vcpkg required on Linux.
 
 ### Windows
 
-Use vcpkg to provide the system-package equivalents (Qt6, HDF5, spdlog,
-nlohmann_json, gtest), and `cmake --preset windows-release`. The
-`FetchContent` deps remain the same. `VCPKG_ROOT` must be set.
+Use vcpkg for the system packages and `cmake --preset windows-release`.
+`VCPKG_ROOT` must be set.
+
+## Running
+
+Integrated shell (all three tools as tabs):
+
+```bash
+./build/linux-release/bin/ScopeAnalyser
+```
+
+Standalone tools:
+
+```bash
+./build/linux-release/bin/ScopeRecorder
+./build/linux-release/bin/ScopeAnalyserStandalone
+./build/linux-release/bin/ScopeConverter
+```
+
+## Quick tour
+
+### Recorder
+
+1. Pick a **Source**: `Demo (Mock)` to develop without a PLC, or
+   `ADS over TCP` to talk to a real TwinCAT runtime.
+2. Click **Connect**. With Demo, six synthetic channels appear in the symbol
+   browser (`Mock.sine_1hz`, `Mock.cosine_10hz`, `Mock.sawtooth`,
+   `Mock.counter`, `Mock.toggle`, `Mock.noisy_sine`).
+3. Select channels, click **Add selected** → channel table fills in with
+   auto-detected sample rates.
+4. **Record** → choose `.h5` save path → samples stream into the live preview
+   (lower pane, scope-style "seconds before now" axis) and into HDF5 on disk.
+5. **Stop** when done.
+
+### Analyser
+
+1. The channel list (left) shows every signal currently in the store —
+   recorded channels and derived ones.
+2. Type a formula in the editor. Press **Ctrl+Space** for autocomplete on
+   channel names and function names.
+3. Click **Evaluate**.
+
+Examples:
+
+```
+Smoothed = Filter(Mock.sine_1hz, 0.05)
+Diff     = Derivative(Mock.sawtooth)
+Sum      = Mock.sine_1hz + 2 * Mock.cosine_10hz - 1
+Energy   = RMS(Mock.sine_1hz, 0.5)
+```
+
+Functions: `Filter`, `Integral`, `Derivative`, `Mean`, `RMS`, `Min`, `Max`,
+`Shift`, `Abs`, `Sqrt`, `Log`, `Sin`, `Cos`. See the side panel for the full
+reference.
+
+The plot at the bottom toggles channels via checkboxes.
+
+### Converter
+
+1. **Open CSV** → preview appears with letter column headers.
+2. In the mapping panel, set each column's role: `Ignore`, `X-axis (time)`,
+   or `Signal`. Fill in the signal name and unit.
+3. Set the header row index and decimal separator if needed.
+4. **Apply (import signals)** → channels flow into the SignalStore and appear
+   in the Analyser.
+5. **Save profile…** → next time the same kind of file comes in, **Load
+   profile…** → **Apply** is two clicks.
 
 ## Repository layout
 
 ```
 core/        shared data model, SignalStore, HDF5 sessions, IAdsClient
-ads/         Beckhoff/ADS open-source client implementation
+ads/         BeckhoffOpenAdsClient (ADS over TCP) + MockAdsClient (synthetic)
 recorder/    Recorder library + UI + standalone exe
-analyser/    Analyser library + UI + standalone exe
-converter/   Converter library + UI + standalone exe
-app/         integrated shell (3 tabs)
-tests/       GoogleTest suite
+analyser/    FormulaEngine + FunctionRegistry + UI + standalone exe
+converter/   CsvSource + ConverterProfile + UI + standalone exe
+app/         integrated shell with three tabs
+tests/       18 GoogleTest cases
 ```
 
 ## Status
 
-Phase 1 in progress. See `_PlansAndExecution/` for the active plan and
-execution log.
+- **Phase 1** (Recorder core, HDF5, MockAdsClient) — **done**, 8 tests
+- **Phase 2** (OversampledChannel, plot adaptive sampling) — partially done
+  (live plot present; oversampled mode needs a real PLC to validate)
+- **Phase 3** (Analyser engine + UI) — **done**, formula language with 13
+  functions, autocomplete, multi-pane plot
+- **Phase 4** (CSV converter + profiles) — **done**, Excel deferred until
+  QXlsx / GuiPrivate situation is resolved on Ubuntu 25.10
+
+See `_PlansAndExecution/` for active plans and execution logs, and
+`_ClaudeMemory/` for project rules / decisions.

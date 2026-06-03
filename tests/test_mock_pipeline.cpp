@@ -1,4 +1,5 @@
 #include "scope/ads/MockAdsClient.h"
+#include "scope/analyser/FormulaEngine.h"
 #include "scope/core/Hdf5Session.h"
 #include "scope/core/SignalStore.h"
 #include "scope/recorder/NotifyChannel.h"
@@ -117,5 +118,54 @@ TEST(MockPipeline, RecordsBothChannelsToHdf5) {
         }
     }
     EXPECT_EQ(found, 2u);
+    std::filesystem::remove(path);
+}
+
+// Recorder → Analyser flow: record from Mock, then run a formula over the
+// captured channel, verify the derived signal appears in the store.
+TEST(MockPipeline, RecordThenAnalyseFlow) {
+    QtAppFixture fixture;
+
+    auto client = scope::ads::makeMockAdsClient();
+    ASSERT_TRUE(client->connect({}, nullptr));
+
+    AdsSymbol sine;
+    for (const auto& s : client->listSymbols(nullptr))
+        if (s.name == "Mock.sine_1hz") sine = s;
+    ASSERT_FALSE(sine.name.isEmpty());
+
+    SignalStore store;
+    RecordingSession session(store, *client);
+
+    NotifyChannel::Config cfg;
+    cfg.meta.name = sine.name;
+    cfg.meta.dataType = sine.dataType;
+    cfg.meta.parentTaskCycleUs = client->taskCycleForSymbol(sine);
+    cfg.meta.sampleRateHz = 1e6 / cfg.meta.parentTaskCycleUs;
+    cfg.indexGroup  = sine.indexGroup;
+    cfg.indexOffset = sine.indexOffset;
+    cfg.cycleTimeUs = cfg.meta.parentTaskCycleUs;
+
+    ASSERT_TRUE(session.addNotifyChannels({cfg}));
+
+    const auto path = std::filesystem::temp_directory_path() / "scope_record_then_analyse.h5";
+    std::filesystem::remove(path);
+    ASSERT_TRUE(session.start(path));
+    pump(1500);
+    session.stop();
+
+    auto sig = store.get(sine.name);
+    ASSERT_TRUE(sig);
+    ASSERT_GT(sig->sampleCount(), 20u);
+
+    scope::analyser::FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("Filtered = Filter(Mock.sine_1hz, 0.05)", &err))
+        << err.toStdString();
+
+    auto filtered = store.get("Filtered");
+    ASSERT_TRUE(filtered);
+    EXPECT_EQ(filtered->sampleCount(), sig->sampleCount());
+
     std::filesystem::remove(path);
 }

@@ -51,13 +51,17 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
 
 void AnalyserPlot::rebuildList() {
     const auto active = activeChannels();
+    const bool firstTime = list_->count() == 0;
     list_->clear();
     for (const auto& name : store_.channelNames()) {
         auto* item = new QListWidgetItem(name);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(active.contains(name) ? Qt::Checked : Qt::Unchecked);
+        // First time we see a channel, show it; otherwise preserve user toggle.
+        const bool show = firstTime || active.contains(name);
+        item->setCheckState(show ? Qt::Checked : Qt::Unchecked);
         list_->addItem(item);
     }
+    if (firstTime) redrawForActiveChannels();
 }
 
 QSet<QString> AnalyserPlot::activeChannels() const {
