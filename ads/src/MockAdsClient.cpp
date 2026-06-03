@@ -108,10 +108,13 @@ struct MockAdsClient::Impl {
 
             sub->def->generate(buf.data(), i, t);
 
+            // Wall-clock nanoseconds so timestamps match nowNs() used by the
+            // rest of the app (HDF5, LivePreviewPlot window). steady_clock
+            // remains only for the sleep_until pacing.
+            const auto wallNs = nowNs();
             AdsSample s;
-            s.plcTimestampNs  = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                    now.time_since_epoch()).count();
-            s.hostTimestampNs = s.plcTimestampNs;
+            s.plcTimestampNs  = wallNs;
+            s.hostTimestampNs = wallNs;
             s.data = std::span<const std::byte>(buf.data(), bytesPerSample);
             sub->handler(s);
 

@@ -20,7 +20,8 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
     : QWidget(parent), store_(store) {
     plot_ = new QCustomPlot(this);
     plot_->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
-    plot_->xAxis->setLabel("t [s]");
+    plot_->xAxis->setLabel("seconds before now");
+    plot_->legend->setVisible(true);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0,0,0,0);
@@ -57,13 +58,13 @@ void LivePreviewPlot::onChannelRemoved(QString name) {
 void LivePreviewPlot::onTick() {
     if (graphs_.empty()) return;
 
-    const auto nowNs = scope::core::nowNs();
+    const auto nowNs    = scope::core::nowNs();
     const auto windowNs = static_cast<scope::core::TimestampNs>(windowSeconds_ * 1e9);
     const auto cutoffNs = nowNs - windowNs;
 
-    double xMin = 0.0, xMax = 1.0;
     double yMin =  std::numeric_limits<double>::infinity();
     double yMax = -std::numeric_limits<double>::infinity();
+    bool   any  = false;
 
     for (auto& [name, graph] : graphs_) {
         auto sig = store_.get(name);
@@ -76,22 +77,22 @@ void LivePreviewPlot::onTick() {
         ys.reserve(static_cast<int>(view.count));
         for (std::size_t i = 0; i < view.count; ++i) {
             if (view.timestamps[i] < cutoffNs) continue;
-            xs.push_back(view.timestamps[i] / 1e9);
+            // X = seconds before now, i.e., always within [-windowSeconds_, 0].
+            xs.push_back((view.timestamps[i] - nowNs) / 1e9);
             const double v = (i < values.size()) ? values[i] : 0.0;
             ys.push_back(v);
             yMin = std::min(yMin, v);
             yMax = std::max(yMax, v);
-        }
-        if (!xs.isEmpty()) {
-            xMin = std::min(xMin, xs.first());
-            xMax = std::max(xMax, xs.last());
+            any = true;
         }
         graph->setData(xs, ys, /*alreadySorted=*/true);
     }
 
-    if (yMin == std::numeric_limits<double>::infinity()) { yMin = -1; yMax = 1; }
-    plot_->xAxis->setRange(xMin, xMax);
-    plot_->yAxis->setRange(yMin - 0.05*(yMax-yMin) - 1e-9, yMax + 0.05*(yMax-yMin) + 1e-9);
+    plot_->xAxis->setRange(-windowSeconds_, 0.0);
+    if (!any) { yMin = -1; yMax = 1; }
+    if (yMin == yMax) { yMin -= 0.5; yMax += 0.5; }  // BOOLs and constants
+    const double margin = 0.05 * (yMax - yMin);
+    plot_->yAxis->setRange(yMin - margin, yMax + margin);
     plot_->replot(QCustomPlot::rpQueuedReplot);
 }
 
