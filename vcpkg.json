@@ -1,0 +1,22 @@
+{
+    "name": "scope-analyser",
+    "version-string": "0.1.0",
+    "description": "Signal recording, analysis, and data conversion for TwinCAT ADS",
+    "dependencies": [
+        {
+            "name": "qtbase",
+            "default-features": false,
+            "features": ["widgets", "gui", "concurrent"]
+        },
+        "qcustomplot",
+        "hdf5",
+        "highfive",
+        "spdlog",
+        "nlohmann-json",
+        "concurrentqueue",
+        "exprtk",
+        "qxlsx",
+        "gtest"
+    ],
+    "builtin-baseline": "0000000000000000000000000000000000000000"
+}

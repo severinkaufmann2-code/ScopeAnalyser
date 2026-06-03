@@ -1,0 +1,34 @@
+
+I want to make a 3 Tools in one:
+1) A Signal Recording Tools
+    This tool should be able to Record data from different sources. First we will only have one which will be ADS.
+    This has to be very perfomate, so that a lot of diffrente signals (at least 100) can be recorded whith a sampling time up to 10us.
+    For ADS: each Channel should automaticly set it's sampling time to the cycle time with which the variable is refreashed. Please study this cearfully so that you wont los any data!
+
+2) a analyse tool
+    This tool should be able to make a lot of different operation on the Signals recorded with the Recording Tool. It should be very easy to make mathematical operations on the channels (e.g multiply 2 channels with each other).
+    Here some exapmels:
+    1) Channel1+Channel2 
+    2) 2*Channel1
+    3) Filter(channel1,0.1) (where 0.1 is the Filtertime)
+    4) integral(channel1)
+    5) derivat(channel1)
+    6) integral(channel1)
+    Please create a autocomplete and a help so that the diffrent function can easly be used
+
+
+3) Data Converter:
+    I want this Tool to be able to convert certaine file type of file or file structure to a other.
+    E.g. I want to easly be able to select data in a excel sheet and then be able to import this data. Also I want to be able to save this converter so that the next time i want to convert the same data again i can do thi very easly.
+    be very cerful to seperat the diffrent type of Conevrter. E.g. a Excel to csv Converter needs to be able to open a excel file and then i want to be able to selecte the data which i want to use and want it should be. If it shoudl be a Y-axis reference for a signal or if it is a new Signal.
+
+
+Please note that i want to be able to use the tool independed or togheter.
+Please note that after recording a Signal (or multible signals) with the Recording tool. The Data should directly be avaiable for the analyse tool.
+
+In which language you think this project makes most sense?
+Please elaborate this plan and make it more clear
+Think very hard make a deep research on the subject. Then give me your exact plans bevor you do anything.
+Maby you can take Flow CSV Editor as a basic example.
+
+    
