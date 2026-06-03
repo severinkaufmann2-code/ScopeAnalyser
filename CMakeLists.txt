@@ -27,7 +27,7 @@ option(SCOPE_BUILD_TESTS "Build unit tests" ON)
 option(SCOPE_BUILD_APP "Build integrated shell application" ON)
 option(SCOPE_BUILD_STANDALONE_EXES "Build standalone Recorder/Analyser/Converter executables" ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Gui PrintSupport Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Gui PrintSupport Concurrent Test)
 find_package(HDF5 CONFIG REQUIRED COMPONENTS CXX)
 find_package(HighFive CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
@@ -35,6 +35,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(unofficial-concurrentqueue CONFIG REQUIRED)
 find_package(exprtk CONFIG REQUIRED)
 find_package(QXlsx CONFIG REQUIRED)
+find_package(qcustomplot CONFIG REQUIRED)
 
 include(cmake/scope_helpers.cmake)
 

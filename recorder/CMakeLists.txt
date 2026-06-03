@@ -3,6 +3,9 @@ set(RECORDER_HEADERS
     include/scope/recorder/NotifyChannel.h
     include/scope/recorder/OversampledChannel.h
     include/scope/recorder/RecorderWidget.h
+    ui/SymbolBrowserWidget.h
+    ui/ChannelTableWidget.h
+    ui/LivePreviewPlot.h
 )
 
 set(RECORDER_SOURCES
@@ -27,6 +30,8 @@ scope_add_library(scope_recorder
         scope::scope_ads
         Qt6::Widgets
         Qt6::Gui
+        Qt6::PrintSupport
+        qcustomplot::qcustomplot
     PRIVATE_LIBS
         spdlog::spdlog
     FOLDER scope/recorder
