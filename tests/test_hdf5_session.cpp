@@ -42,12 +42,12 @@ TEST(Hdf5Session, RoundTripFloat64) {
 
     auto session = Hdf5Session::openForRead(path);
     ASSERT_TRUE(session);
-    auto signals = session->loadAllSignals();
-    ASSERT_EQ(signals.size(), 1u);
-    EXPECT_EQ(signals[0]->meta().name, "ch1");
-    EXPECT_EQ(signals[0]->meta().unit, "V");
-    EXPECT_EQ(signals[0]->meta().dataType, DataType::Float64);
-    EXPECT_EQ(signals[0]->sampleCount(), 100u);
+    auto loaded = session->loadAllSignals();
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded[0]->meta().name, "ch1");
+    EXPECT_EQ(loaded[0]->meta().unit, "V");
+    EXPECT_EQ(loaded[0]->meta().dataType, DataType::Float64);
+    EXPECT_EQ(loaded[0]->sampleCount(), 100u);
 
     std::filesystem::remove(path);
 }

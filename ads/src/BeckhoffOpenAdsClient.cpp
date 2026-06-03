@@ -4,8 +4,11 @@
 
 // Beckhoff open-source ADS library headers (fetched via CMake FetchContent).
 #include "AdsLib.h"
+#include "AdsDevice.h"
 #include "AdsNotificationOOI.h"
 #include "AdsVariable.h"
+
+#include <QHash>
 
 #include <atomic>
 #include <cstring>
@@ -18,7 +21,6 @@ using namespace scope::core;
 
 namespace {
 
-constexpr std::uint16_t kSystemServicePort = 10000;
 constexpr std::uint32_t kAdsigrpSymUploadInfo2 = 0xF00F;
 constexpr std::uint32_t kAdsigrpSymUpload      = 0xF00B;
 
@@ -65,10 +67,17 @@ struct BeckhoffOpenAdsClient::Impl {
 
     struct Subscription {
         AdsNotificationHandler handler;
-        std::uint32_t hNotification;
-        AmsAddr ams;
+        AdsHandle              adsHandle;  // RAII; destructor removes the notification
+        std::uint32_t          notificationId{0};
+
+        Subscription(AdsNotificationHandler h, AdsHandle ah, std::uint32_t id)
+            : handler(std::move(h)), adsHandle(std::move(ah)), notificationId(id) {}
     };
+
     std::mutex subsMtx;
+    // Notification dispatch by the PLC-side notification handle (id we get
+    // when the AdsHandle is materialized — its `*adsHandle` value).
+    std::unordered_map<std::uint32_t, Subscription*> byNotificationId;
     std::unordered_map<AdsNotificationHandle, std::unique_ptr<Subscription>> subs;
     std::atomic<AdsNotificationHandle> nextHandle{1};
 
@@ -81,19 +90,13 @@ struct BeckhoffOpenAdsClient::Impl {
         Subscription* sub = nullptr;
         {
             std::lock_guard lk(impl->subsMtx);
-            // Linear scan; subscription count is bounded (~100s) and lookups
-            // happen on the ADS callback thread — we don't allocate.
-            for (auto& [_, s] : impl->subs) {
-                if (s->hNotification == pHeader->hNotification) {
-                    sub = s.get();
-                    break;
-                }
-            }
+            auto it = impl->byNotificationId.find(pHeader->hNotification);
+            if (it != impl->byNotificationId.end()) sub = it->second;
         }
         if (!sub) return;
 
         AdsSample sample;
-        sample.plcTimestampNs  = static_cast<TimestampNs>(pHeader->nTimeStamp) * 100;  // 100ns ticks
+        sample.plcTimestampNs  = static_cast<TimestampNs>(pHeader->nTimeStamp) * 100;
         sample.hostTimestampNs = nowNs();
         sample.data = std::span<const std::byte>(
             reinterpret_cast<const std::byte*>(pHeader) + sizeof(AdsNotificationHeader),
@@ -107,12 +110,11 @@ BeckhoffOpenAdsClient::~BeckhoffOpenAdsClient() { disconnect(); }
 
 bool BeckhoffOpenAdsClient::connect(const AdsRoute& route, QString* errorOut) {
     try {
-        // Parse NetId "1.2.3.4.5.6" into AmsNetId.
         AmsNetId netId{route.netId.toStdString()};
-        // Use empty string for local; AdsLib will add the route via TwinCAT
-        // router if available, otherwise via TCP to the target IP.
+        // The IP argument is the route target IP. For NetIds of the form
+        // "x.y.z.w.1.1" the IP is the first four octets.
         impl_->device = std::make_unique<AdsDevice>(
-            /*ipV4=*/ route.netId.section('.', 0, 3).toStdString(),
+            route.netId.section('.', 0, 3).toStdString(),
             netId,
             route.port);
         impl_->route = route;
@@ -132,13 +134,8 @@ void BeckhoffOpenAdsClient::disconnect() {
     if (!impl_->connected.load()) return;
     {
         std::lock_guard lk(impl_->subsMtx);
-        for (auto& [_, sub] : impl_->subs) {
-            if (impl_->device) {
-                try {
-                    impl_->device->DeleteNotification(sub->hNotification);
-                } catch (...) {}
-            }
-        }
+        // Destroying each Subscription's AdsHandle removes its notification.
+        impl_->byNotificationId.clear();
         impl_->subs.clear();
     }
     impl_->device.reset();
@@ -153,7 +150,6 @@ std::vector<AdsSymbol> BeckhoffOpenAdsClient::listSymbols(QString* errorOut) {
         return {};
     }
     try {
-        // Step 1: read symbol upload info to learn total symbol count and bytes.
         struct UploadInfo {
             std::uint32_t nSymbols;
             std::uint32_t nSymSize;
@@ -161,7 +157,6 @@ std::vector<AdsSymbol> BeckhoffOpenAdsClient::listSymbols(QString* errorOut) {
         std::uint32_t bytesRead = 0;
         impl_->device->ReadReqEx2(kAdsigrpSymUploadInfo2, 0, sizeof(info), &info, &bytesRead);
 
-        // Step 2: pull the whole symbol blob in one shot.
         std::vector<std::byte> blob(info.nSymSize);
         impl_->device->ReadReqEx2(kAdsigrpSymUpload, 0,
                                   static_cast<std::uint32_t>(blob.size()),
@@ -201,19 +196,14 @@ std::vector<AdsSymbol> BeckhoffOpenAdsClient::listSymbols(QString* errorOut) {
 }
 
 std::vector<AdsTaskInfo> BeckhoffOpenAdsClient::listTasks(QString* errorOut) {
-    // The TwinCAT System Service (port 10000) exposes task metadata. The
-    // exact index-group/offset triple is documented in InfoSys under
-    // "TcSysSrv.h". This is a placeholder until validated against a real
-    // system; v1 falls back to per-symbol task cycle lookup, see below.
     if (errorOut) *errorOut = "listTasks(): not yet implemented; use taskCycleForSymbol()";
     return {};
 }
 
 std::uint32_t BeckhoffOpenAdsClient::taskCycleForSymbol(const AdsSymbol& /*symbol*/) {
     // TODO Phase 1b: query the TwinCAT System Service for the task that owns
-    // this symbol and read its CycleTime. Until that's wired up, the recorder
-    // uses a user-provided default (e.g., 1 ms) and lets the user override
-    // per channel. Returning 0 here tells the caller "unknown".
+    // this symbol and read its CycleTime. Until then, the recorder uses a
+    // user-provided default and lets the user override per channel.
     return 0;
 }
 
@@ -227,10 +217,6 @@ AdsNotificationHandle BeckhoffOpenAdsClient::addNotification(
         return 0;
     }
     try {
-        auto sub = std::make_unique<Impl::Subscription>();
-        sub->handler = std::move(handler);
-        impl_->device->GetLocalAddress(&sub->ams);
-
         AdsNotificationAttrib attrib{};
         attrib.cbLength      = spec.length;
         attrib.nTransMode    = (spec.maxAgeUs == 0)
@@ -239,17 +225,20 @@ AdsNotificationHandle BeckhoffOpenAdsClient::addNotification(
         attrib.nMaxDelay     = 0;
         attrib.nCycleTime    = spec.cycleTimeUs * 10;  // ADS cycle is 100ns ticks
 
-        std::uint32_t hNotif = 0;
-        impl_->device->AddNotification(
+        auto adsHandle = impl_->device->GetHandle(
             spec.indexGroup, spec.indexOffset, attrib,
             &Impl::NotificationCallback,
-            reinterpret_cast<std::uintptr_t>(impl_.get()),
-            &hNotif);
-        sub->hNotification = hNotif;
+            static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(impl_.get())));
+
+        const std::uint32_t notifId = *adsHandle;
+
+        auto sub = std::make_unique<Impl::Subscription>(
+            std::move(handler), std::move(adsHandle), notifId);
 
         const auto handle = impl_->nextHandle.fetch_add(1);
         {
             std::lock_guard lk(impl_->subsMtx);
+            impl_->byNotificationId[notifId] = sub.get();
             impl_->subs.emplace(handle, std::move(sub));
         }
         return handle;
@@ -268,12 +257,9 @@ void BeckhoffOpenAdsClient::removeNotification(AdsNotificationHandle handle) {
         if (it == impl_->subs.end()) return;
         sub = std::move(it->second);
         impl_->subs.erase(it);
+        impl_->byNotificationId.erase(sub->notificationId);
     }
-    try {
-        if (impl_->device) impl_->device->DeleteNotification(sub->hNotification);
-    } catch (const std::exception& e) {
-        spdlog::warn("DeleteNotification: {}", e.what());
-    }
+    // sub's destructor releases the AdsHandle, which removes the notification.
 }
 
 bool BeckhoffOpenAdsClient::read(std::uint32_t indexGroup,

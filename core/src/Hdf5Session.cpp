@@ -8,6 +8,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <QHash>
+
 #include <unordered_map>
 
 namespace scope::core {
@@ -100,14 +102,16 @@ bool Hdf5Session::addChannel(const Signal::Meta& meta, QString* errorOut) {
     try {
         auto group = impl_->ensureChannelGroup(meta.name);
 
-        HighFive::DataSpace tsSpace{{0}, {HighFive::DataSpace::UNLIMITED}};
+        const std::vector<std::size_t> startDims{0};
+        const std::vector<std::size_t> maxDims{HighFive::DataSpace::UNLIMITED};
+        HighFive::DataSpace tsSpace(startDims, maxDims);
         HighFive::DataSetCreateProps tsProps;
         tsProps.add(HighFive::Chunking({kChunkSamples}));
         tsProps.add(HighFive::Deflate(kCompressionLevel));
 
         auto tsDataset = group.createDataSet<std::int64_t>("timestamps", tsSpace, tsProps);
 
-        HighFive::DataSpace valSpace{{0}, {HighFive::DataSpace::UNLIMITED}};
+        HighFive::DataSpace valSpace(startDims, maxDims);
         HighFive::DataSetCreateProps valProps;
         valProps.add(HighFive::Chunking({kChunkSamples}));
         valProps.add(HighFive::Deflate(kCompressionLevel));

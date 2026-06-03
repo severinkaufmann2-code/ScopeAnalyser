@@ -8,6 +8,11 @@
 
 #include <memory>
 
+class QLineEdit;
+class QSpinBox;
+class QPushButton;
+class QLabel;
+
 namespace scope::recorder::ui {
 class SymbolBrowserWidget;
 class ChannelTableWidget;
@@ -39,13 +44,13 @@ private:
     std::unique_ptr<scope::core::IAdsClient> client_;
     std::unique_ptr<RecordingSession> session_;
 
-    class QLineEdit*       netIdEdit_;
-    class QSpinBox*        portSpin_;
-    class QPushButton*     connectBtn_;
-    class QPushButton*     disconnectBtn_;
-    class QPushButton*     startBtn_;
-    class QPushButton*     stopBtn_;
-    class QLabel*          statusLabel_;
+    QLineEdit*       netIdEdit_;
+    QSpinBox*        portSpin_;
+    QPushButton*     connectBtn_;
+    QPushButton*     disconnectBtn_;
+    QPushButton*     startBtn_;
+    QPushButton*     stopBtn_;
+    QLabel*          statusLabel_;
 
     ui::SymbolBrowserWidget* symbols_;
     ui::ChannelTableWidget*  channels_;

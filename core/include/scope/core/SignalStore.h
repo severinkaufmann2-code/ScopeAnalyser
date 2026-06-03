@@ -2,6 +2,7 @@
 
 #include "Signal.h"
 
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>

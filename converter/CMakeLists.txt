@@ -25,7 +25,6 @@ scope_add_library(scope_converter
         scope::scope_core
         Qt6::Widgets
         Qt6::Gui
-        QXlsx::QXlsx
     PRIVATE_LIBS
         spdlog::spdlog
         nlohmann_json::nlohmann_json

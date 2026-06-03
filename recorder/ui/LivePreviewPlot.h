@@ -2,6 +2,7 @@
 
 #include "scope/core/SignalStore.h"
 
+#include <QHash>
 #include <QWidget>
 
 #include <unordered_map>

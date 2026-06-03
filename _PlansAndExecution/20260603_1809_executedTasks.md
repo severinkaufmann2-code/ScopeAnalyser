@@ -35,10 +35,38 @@ Session corresponds to plan `20260603_1809_Plans.md`.
   - `tests/`: gtest cases for `SignalStore`, `Hdf5Session` round-trip,
     `FormulaEngine` stub, `ConverterProfile` round-trip.
 
+## Build verification on Linux (Ubuntu 25.10)
+
+- Installed system deps via apt (cmake 3.31, ninja, Qt6 6.9, HDF5 1.14,
+  spdlog, nlohmann_json, gtest).
+- Configured + built the full project end-to-end. All five binaries link:
+  `ScopeAnalyser`, `ScopeRecorder`, `ScopeAnalyserStandalone`,
+  `ScopeConverter`, `scope_tests`.
+- All four Qt apps launch cleanly under `QT_QPA_PLATFORM=offscreen`.
+- All 7 gtest cases pass (SignalStore signals, HDF5 round-trip,
+  FormulaEngine stub, ConverterProfile round-trip).
+
+### Fixes applied during build verification
+
+- Beckhoff/ADS uses `master` branch, not `main`.
+- QXlsx 1.4–1.5 requires `Qt6::GuiPrivate` (not packaged on Ubuntu 25.10);
+  dropped from build until Phase 4 (where we'll re-evaluate the lib).
+- `std::unordered_map<QString, ...>` needs `#include <QHash>` for
+  `std::hash<QString>`; added to SignalStore, Hdf5Session, LivePreviewPlot.
+- BeckhoffOpenAdsClient rewritten for the real Beckhoff/ADS C++ API:
+  `AdsDevice::GetHandle(...)` (returns RAII `AdsHandle`) instead of the
+  imagined `AddNotification` / `DeleteNotification`.
+- `AdsHandle`'s deleter has no default ctor → `Subscription` struct given
+  a concrete constructor and constructed in-place.
+- `QLineEdit` etc. forward declarations moved to global scope (had been
+  inside `scope::recorder`).
+- `signals` is a Qt macro for `public`; renamed the local variable in
+  `test_hdf5_session.cpp` to `loaded`.
+- HighFive `DataSpace{{0}, {UNLIMITED}}` resolved to the wrong constructor
+  overload; switched to explicit `std::vector` args.
+
 ## Pending (next session)
 
-- Install build deps on this Linux box (cmake, ninja, vcpkg, Qt6 dev
-  packages) and verify the project configures + builds end-to-end.
 - Wire up `taskCycleForSymbol()` against a real TwinCAT System Service
   (port 10000) — needs an actual PLC to validate.
 - Phase 2: `OversampledChannel` real implementation + plot polish

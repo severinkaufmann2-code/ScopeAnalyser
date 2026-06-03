@@ -76,19 +76,15 @@ target_link_libraries(qcustomplot PUBLIC Qt6::Widgets Qt6::PrintSupport Qt6::Gui
 target_compile_definitions(qcustomplot PUBLIC QCUSTOMPLOT_USE_LIBRARY)
 add_library(qcustomplot::qcustomplot ALIAS qcustomplot)
 
-# QXlsx — converter dependency
-set(QXlsx_TEST OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(qxlsx
-    GIT_REPOSITORY https://github.com/QtExcel/QXlsx.git
-    GIT_TAG        v1.4.7
-    GIT_SHALLOW    TRUE
-    SOURCE_SUBDIR  QXlsx)
-FetchContent_MakeAvailable(qxlsx)
+# QXlsx is added in Phase 4 when the Excel converter source is implemented.
+# v1.4.x / v1.5.x require Qt6::GuiPrivate which isn't packaged on Ubuntu 25.10
+# without building Qt from source. We'll re-evaluate (QXlsx fork, alternative
+# xlsx lib, or Qt-from-source) when we get there.
 
 # Beckhoff/ADS — open-source ADS-over-TCP client (Linux + Windows).
 FetchContent_Declare(beckhoff_ads
     GIT_REPOSITORY https://github.com/Beckhoff/ADS.git
-    GIT_TAG        main
+    GIT_TAG        master
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(beckhoff_ads)
 
