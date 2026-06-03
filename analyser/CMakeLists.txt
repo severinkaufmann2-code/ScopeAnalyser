@@ -2,14 +2,14 @@ set(ANALYSER_HEADERS
     include/scope/analyser/FormulaEngine.h
     include/scope/analyser/FunctionRegistry.h
     include/scope/analyser/AnalyserWidget.h
+    ui/AnalyserPlot.h
 )
 
 set(ANALYSER_SOURCES
     src/FormulaEngine.cpp
     src/FunctionRegistry.cpp
     ui/AnalyserWidget.cpp
-    ui/FormulaEditor.cpp
-    ui/PlotPanel.cpp
+    ui/AnalyserPlot.cpp
 )
 
 scope_add_library(scope_analyser
@@ -23,7 +23,8 @@ scope_add_library(scope_analyser
         scope::scope_core
         Qt6::Widgets
         Qt6::Gui
-        exprtk
+        Qt6::PrintSupport
+        qcustomplot::qcustomplot
     PRIVATE_LIBS
         spdlog::spdlog
     FOLDER scope/analyser
