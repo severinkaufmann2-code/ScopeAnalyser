@@ -4,6 +4,9 @@
 #include "ChannelTableWidget.h"
 #include "LivePreviewPlot.h"
 
+#include "scope/ads/MockAdsClient.h"
+
+#include <QComboBox>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -18,10 +21,14 @@ namespace scope::recorder {
 
 RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     : QWidget(parent), store_(store) {
-    client_ = scope::core::makeDefaultAdsClient();
 
+    sourceCombo_ = new QComboBox(this);
+    sourceCombo_->addItem("Demo (Mock)");
+    sourceCombo_->addItem("ADS over TCP");
+    netIdLabel_ = new QLabel("AMS NetId:", this);
     netIdEdit_  = new QLineEdit("127.0.0.1.1.1", this);
     netIdEdit_->setMaximumWidth(180);
+    portLabel_  = new QLabel("Port:", this);
     portSpin_   = new QSpinBox(this);
     portSpin_->setRange(1, 65535);
     portSpin_->setValue(851);
@@ -34,9 +41,11 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     statusLabel_ = new QLabel("Disconnected", this);
 
     auto* topBar = new QHBoxLayout();
-    topBar->addWidget(new QLabel("AMS NetId:", this));
+    topBar->addWidget(new QLabel("Source:", this));
+    topBar->addWidget(sourceCombo_);
+    topBar->addWidget(netIdLabel_);
     topBar->addWidget(netIdEdit_);
-    topBar->addWidget(new QLabel("Port:", this));
+    topBar->addWidget(portLabel_);
     topBar->addWidget(portSpin_);
     topBar->addWidget(connectBtn_);
     topBar->addWidget(disconnectBtn_);
@@ -44,6 +53,17 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     topBar->addWidget(startBtn_);
     topBar->addWidget(stopBtn_);
     topBar->addWidget(statusLabel_);
+
+    auto applySourceVisibility = [this]{
+        const bool isAds = sourceCombo_->currentText() == "ADS over TCP";
+        netIdLabel_->setVisible(isAds);
+        netIdEdit_->setVisible(isAds);
+        portLabel_->setVisible(isAds);
+        portSpin_->setVisible(isAds);
+    };
+    applySourceVisibility();
+    connect(sourceCombo_, &QComboBox::currentTextChanged,
+            this, [applySourceVisibility](const QString&){ applySourceVisibility(); });
 
     symbols_   = new ui::SymbolBrowserWidget(this);
     channels_  = new ui::ChannelTableWidget(this);
@@ -76,16 +96,25 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
 RecorderWidget::~RecorderWidget() = default;
 
 void RecorderWidget::onConnectClicked() {
+    if (sourceCombo_->currentText() == "Demo (Mock)") {
+        client_ = scope::ads::makeMockAdsClient();
+    } else {
+        client_ = scope::core::makeDefaultAdsClient();
+    }
+
     scope::core::AdsRoute route;
     route.netId = netIdEdit_->text().trimmed();
     route.port  = static_cast<std::uint16_t>(portSpin_->value());
 
     QString err;
     if (!client_->connect(route, &err)) {
-        QMessageBox::critical(this, "ADS connect failed", err);
+        QMessageBox::critical(this, "Connect failed", err);
+        client_.reset();
         return;
     }
-    statusLabel_->setText("Connected to " + route.netId);
+    statusLabel_->setText(sourceCombo_->currentText() == "Demo (Mock)"
+                              ? QString("Connected to Demo source")
+                              : QString("Connected to ") + route.netId);
     connectBtn_->setEnabled(false);
     disconnectBtn_->setEnabled(true);
     onRefreshSymbols();
@@ -93,7 +122,8 @@ void RecorderWidget::onConnectClicked() {
 
 void RecorderWidget::onDisconnectClicked() {
     onStopClicked();
-    client_->disconnect();
+    if (client_) client_->disconnect();
+    client_.reset();
     statusLabel_->setText("Disconnected");
     connectBtn_->setEnabled(true);
     disconnectBtn_->setEnabled(false);
@@ -101,7 +131,7 @@ void RecorderWidget::onDisconnectClicked() {
 }
 
 void RecorderWidget::onRefreshSymbols() {
-    if (!client_->isConnected()) return;
+    if (!client_ || !client_->isConnected()) return;
     QString err;
     auto syms = client_->listSymbols(&err);
     if (syms.empty() && !err.isEmpty()) {
@@ -112,7 +142,7 @@ void RecorderWidget::onRefreshSymbols() {
 }
 
 void RecorderWidget::onAddSelectedSymbols() {
-    if (!client_->isConnected()) return;
+    if (!client_ || !client_->isConnected()) return;
     auto selected = symbols_->selectedSymbols();
     for (const auto& sym : selected) {
         const auto cycleUs = client_->taskCycleForSymbol(sym);
@@ -121,8 +151,8 @@ void RecorderWidget::onAddSelectedSymbols() {
 }
 
 void RecorderWidget::onStartClicked() {
-    if (!client_->isConnected()) {
-        QMessageBox::information(this, "Not connected", "Connect to a PLC first.");
+    if (!client_ || !client_->isConnected()) {
+        QMessageBox::information(this, "Not connected", "Connect to a source first.");
         return;
     }
     const auto file = QFileDialog::getSaveFileName(

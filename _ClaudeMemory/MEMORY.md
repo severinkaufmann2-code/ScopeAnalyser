@@ -13,3 +13,4 @@
 - [project_scope.md](project_scope.md) — what ScopeAnalyser is and its hard scope rules
 - [stack.md](stack.md) — language, framework, library, build-system decisions
 - [sampling_model.md](sampling_model.md) — the two acquisition modes and the 10 µs caveat
+- [windows_vm.md](windows_vm.md) — how to reach the Windows/TwinCAT VM for test deployments

@@ -3,10 +3,13 @@ add_executable(scope_tests
     test_hdf5_session.cpp
     test_formula_engine.cpp
     test_converter_profile.cpp
+    test_mock_pipeline.cpp
 )
 
 target_link_libraries(scope_tests PRIVATE
     scope::scope_core
+    scope::scope_ads
+    scope::scope_recorder
     scope::scope_analyser
     scope::scope_converter
     Qt6::Test

@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="MAINFast" Id="{3d6956bb-1f86-48d0-b4c5-87dad5ac6c11}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAINFast
+VAR
+	test : BOOL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[test := NOT test;]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

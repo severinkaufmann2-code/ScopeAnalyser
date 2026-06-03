@@ -12,6 +12,7 @@ class QLineEdit;
 class QSpinBox;
 class QPushButton;
 class QLabel;
+class QComboBox;
 
 namespace scope::recorder::ui {
 class SymbolBrowserWidget;
@@ -44,7 +45,10 @@ private:
     std::unique_ptr<scope::core::IAdsClient> client_;
     std::unique_ptr<RecordingSession> session_;
 
+    QComboBox*       sourceCombo_;
+    QLabel*          netIdLabel_;
     QLineEdit*       netIdEdit_;
+    QLabel*          portLabel_;
     QSpinBox*        portSpin_;
     QPushButton*     connectBtn_;
     QPushButton*     disconnectBtn_;

@@ -1,9 +1,11 @@
 set(ADS_HEADERS
     include/scope/ads/BeckhoffOpenAdsClient.h
+    include/scope/ads/MockAdsClient.h
 )
 
 set(ADS_SOURCES
     src/BeckhoffOpenAdsClient.cpp
+    src/MockAdsClient.cpp
 )
 
 scope_add_library(scope_ads
