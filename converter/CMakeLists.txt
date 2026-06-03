@@ -4,6 +4,7 @@ set(CONVERTER_HEADERS
     include/scope/converter/ExcelSource.h
     include/scope/converter/CsvSource.h
     include/scope/converter/ConverterWidget.h
+    ui/MappingPanel.h
 )
 
 set(CONVERTER_SOURCES

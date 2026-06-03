@@ -3,6 +3,7 @@ add_executable(scope_tests
     test_hdf5_session.cpp
     test_formula_engine.cpp
     test_converter_profile.cpp
+    test_csv_converter.cpp
     test_mock_pipeline.cpp
 )
 
