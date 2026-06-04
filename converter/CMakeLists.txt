@@ -5,6 +5,7 @@ set(CONVERTER_HEADERS
     include/scope/converter/CsvSource.h
     include/scope/converter/ConverterWidget.h
     ui/MappingPanel.h
+    ui/ChannelEditDialog.h
 )
 
 set(CONVERTER_SOURCES
@@ -13,6 +14,7 @@ set(CONVERTER_SOURCES
     src/CsvSource.cpp
     ui/ConverterWidget.cpp
     ui/MappingPanel.cpp
+    ui/ChannelEditDialog.cpp
 )
 
 scope_add_library(scope_converter

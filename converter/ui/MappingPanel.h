@@ -2,52 +2,71 @@
 
 #include "scope/converter/ConverterProfile.h"
 
-#include <QHash>
 #include <QWidget>
 
 class QTableWidget;
 class QPushButton;
 class QSpinBox;
+class QDoubleSpinBox;
 class QLineEdit;
 class QComboBox;
+class QCheckBox;
 
 namespace scope::converter::ui {
 
-// Per-column role mapping editor + parse options (column / row / decimal
-// separators, header row). Emits `parseOptionsChanged` when any parse option
-// changes so the host can re-read the source file; `applyRequested` when the
-// user confirms a profile to import.
+// Manual channel-mapping editor. The host opens a CSV; the user clicks
+// "Add channel" and types the column letter + row range + role + name + unit.
+// The user can also enable an X-axis-from-sample-rate mode (default unit ms).
 class MappingPanel : public QWidget {
     Q_OBJECT
 public:
     explicit MappingPanel(QWidget* parent = nullptr);
 
-    void setColumns(const QStringList& columnLabels);
     void setProfile(const ConverterProfile& p);
     ConverterProfile buildProfile(const QString& sourceType) const;
 
-    QString columnDelimiter() const;  // single-character string
-    QString rowDelimiter()    const;  // "\n", "\r\n", or arbitrary user-entered string
+    QString columnDelimiter() const;
+    QString rowDelimiter()    const;
     int     headerRow()       const;
     QString decimal()         const;
+    bool    useSampleRate()   const;
+    double  sampleRateHz()    const;
+    QString sampleRateDisplayUnit() const;
 
 signals:
     void applyRequested();
     void saveProfileRequested();
     void loadProfileRequested();
-    void parseOptionsChanged();       // separators / header row / decimal changed
+    void parseOptionsChanged();
+
+private slots:
+    void onAddChannel();
+    void onEditChannel();
+    void onRemoveChannel();
 
 private:
-    QTableWidget* table_;
+    QTableWidget* channelTable_;
+    QPushButton*  addBtn_;
+    QPushButton*  editBtn_;
+    QPushButton*  removeBtn_;
+
     QComboBox*    colSepCombo_;
     QLineEdit*    colSepCustom_;
     QComboBox*    rowSepCombo_;
     QLineEdit*    rowSepCustom_;
     QSpinBox*     headerSpin_;
     QLineEdit*    decimalEdit_;
+
+    QCheckBox*      useSampleRateCheck_;
+    QDoubleSpinBox* sampleRateValue_;
+    QComboBox*      sampleRateUnit_;
+
     QPushButton*  applyBtn_;
     QPushButton*  saveBtn_;
     QPushButton*  loadBtn_;
+
+    void appendChannelRow(const ColumnMapping& m);
+    ColumnMapping rowToMapping(int row) const;
 };
 
 }  // namespace scope::converter::ui

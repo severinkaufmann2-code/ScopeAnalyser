@@ -21,21 +21,6 @@
 
 namespace scope::converter {
 
-namespace {
-
-QString colLabel(int section) {
-    QString s;
-    int n = section;
-    while (true) {
-        s.prepend(QChar('A' + (n % 26)));
-        n = n / 26 - 1;
-        if (n < 0) break;
-    }
-    return s;
-}
-
-}  // namespace
-
 struct ConverterWidget::Impl {
     QTableView*           preview{nullptr};
     ui::MappingPanel*     mapping{nullptr};
@@ -43,13 +28,6 @@ struct ConverterWidget::Impl {
     std::unique_ptr<CsvSource>          csv;
     std::unique_ptr<QAbstractItemModel> previewModel;
     QString               currentFile;
-
-    QStringList currentColumnLabels() const {
-        QStringList out;
-        if (!csv) return out;
-        for (int i = 0; i < csv->columnCount(); ++i) out << colLabel(i);
-        return out;
-    }
 };
 
 ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* parent)
@@ -59,7 +37,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
 
     impl_->preview = new QTableView(this);
     impl_->preview->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    impl_->preview->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    impl_->preview->setSelectionMode(QAbstractItemView::NoSelection);
     impl_->preview->horizontalHeader()->setDefaultSectionSize(100);
 
     impl_->mapping     = new ui::MappingPanel(this);
@@ -88,7 +66,6 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             impl_->mapping->rowDelimiter());
         impl_->previewModel = impl_->csv->previewModel("file");
         impl_->preview->setModel(impl_->previewModel.get());
-        impl_->mapping->setColumns(impl_->currentColumnLabels());
         impl_->statusLabel->setText(QString("%1: %2 rows × %3 cols")
                                         .arg(QFileInfo(impl_->currentFile).fileName())
                                         .arg(impl_->csv->rowCount())
@@ -143,9 +120,6 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             return;
         }
         impl_->mapping->setProfile(profile);
-        // setProfile fires parseOptionsChanged for combo changes, which calls
-        // reparseCurrentFile if a file is open. Still call once here in case
-        // the combo selections didn't actually change.
         reparseCurrentFile();
     });
 }

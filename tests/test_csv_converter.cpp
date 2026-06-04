@@ -59,6 +59,57 @@ TEST(CsvConverter, ImportsHeaderedFile) {
     std::filesystem::remove(path);
 }
 
+TEST(CsvConverter, SampleRateXAxisDefaultMs) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_rate.csv";
+    {
+        std::ofstream f(path);
+        f << "v\n0\n1\n2\n3\n4\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.headerRow = 1;
+    p.useSampleRate = true;
+    p.sampleRateDisplayUnit = "ms";
+    p.sampleRateHz = 1000.0;       // 1 ms → 1 kHz
+    p.columns = { {"A", ColumnMapping::Role::Signal, "V", "", -1, -1} };
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto view = sigs[0]->snapshotForRead();
+    ASSERT_EQ(view.count, 5u);
+    EXPECT_EQ(view.timestamps[0], 0);
+    EXPECT_EQ(view.timestamps[1], 1'000'000);  // 1 ms in ns
+    EXPECT_EQ(view.timestamps[4], 4'000'000);
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, PerColumnRowRange) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_range.csv";
+    {
+        std::ofstream f(path);
+        f << "t,v\n";
+        for (int i = 0; i < 10; ++i) f << i << "," << (i * 10) << "\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.headerRow = 1;
+    // Take rows 4..8 (0-based), which correspond to data rows where t=3..7.
+    p.columns = {
+        {"A", ColumnMapping::Role::XTime,  "",  "s",  4, 8},
+        {"B", ColumnMapping::Role::Signal, "V", "V",  4, 8},
+    };
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    EXPECT_EQ(sigs[0]->sampleCount(), 5u);
+    auto vs = sigs[0]->readAsDouble();
+    EXPECT_DOUBLE_EQ(vs[0], 30.0);   // row 4 → t=3, v=30
+    EXPECT_DOUBLE_EQ(vs[4], 70.0);   // row 8 → t=7, v=70
+    std::filesystem::remove(path);
+}
+
 TEST(CsvConverter, CustomTabDelimiterAndPipeRowDelimiter) {
     auto path = std::filesystem::temp_directory_path() / "scope_test_csv_custom.csv";
     {
