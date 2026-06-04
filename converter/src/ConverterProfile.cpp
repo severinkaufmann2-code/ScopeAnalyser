@@ -38,6 +38,10 @@ ConverterProfile ConverterProfile::loadFromFile(const std::filesystem::path& pat
         p.decimalSeparator = QString::fromStdString(j.value("decimal", std::string{"."}));
         p.columnDelimiter = QString::fromStdString(j.value("columnDelimiter", std::string{","}));
         p.rowDelimiter    = QString::fromStdString(j.value("rowDelimiter",    std::string{"\n"}));
+        p.useSampleRate   = j.value("useSampleRate", false);
+        p.sampleRateHz    = j.value("sampleRateHz", 0.0);
+        p.sampleRateDisplayUnit = QString::fromStdString(
+            j.value("sampleRateUnit", std::string{"Hz"}));
         if (j.contains("columns")) {
             for (const auto& jc : j["columns"]) {
                 ColumnMapping c;
@@ -45,6 +49,8 @@ ConverterProfile ConverterProfile::loadFromFile(const std::filesystem::path& pat
                 c.role       = roleFromString(jc.value("role", std::string{"ignore"}));
                 c.signalName = QString::fromStdString(jc.value("name", std::string{}));
                 c.unit       = QString::fromStdString(jc.value("unit", std::string{}));
+                c.rowStart   = jc.value("rowStart", -1);
+                c.rowEnd     = jc.value("rowEnd", -1);
                 p.columns.push_back(std::move(c));
             }
         }
@@ -66,6 +72,9 @@ bool ConverterProfile::saveToFile(const std::filesystem::path& path,
         j["decimal"] = decimalSeparator.toStdString();
         j["columnDelimiter"] = columnDelimiter.toStdString();
         j["rowDelimiter"]    = rowDelimiter.toStdString();
+        j["useSampleRate"]   = useSampleRate;
+        j["sampleRateHz"]    = sampleRateHz;
+        j["sampleRateUnit"]  = sampleRateDisplayUnit.toStdString();
         j["columns"] = json::array();
         for (const auto& c : columns) {
             json jc;
@@ -73,6 +82,8 @@ bool ConverterProfile::saveToFile(const std::filesystem::path& path,
             jc["role"] = roleName(c.role);
             jc["name"] = c.signalName.toStdString();
             jc["unit"] = c.unit.toStdString();
+            jc["rowStart"] = c.rowStart;
+            jc["rowEnd"]   = c.rowEnd;
             j["columns"].push_back(std::move(jc));
         }
         std::ofstream f(path);

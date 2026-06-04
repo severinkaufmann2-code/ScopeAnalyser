@@ -14,6 +14,11 @@ struct ColumnMapping {
     Role    role{Role::Ignore};
     QString signalName;   // only used when role == Signal
     QString unit;
+    // Optional row range (0-based, inclusive). -1 means "auto" — the importer
+    // uses headerRow+1 .. last-row. Set by the selection-driven UI when the
+    // user marks a specific cell range as X / Y data.
+    int     rowStart{-1};
+    int     rowEnd{-1};
 };
 
 struct ConverterProfile {
@@ -23,8 +28,15 @@ struct ConverterProfile {
     QString range;            // e.g. "A2:F"
     int     headerRow{1};
     QString decimalSeparator{"."};
-    QString columnDelimiter{","};   // CSV: column separator, single char (e.g. ",", ";", "\t", "|")
+    QString columnDelimiter{","};   // CSV: column separator, single char
     QString rowDelimiter{"\n"};     // CSV: row separator, default newline
+
+    // X-axis-from-sample-rate mode: when true, the importer ignores any
+    // column with role==XTime and generates timestamps from sampleRateHz.
+    bool    useSampleRate{false};
+    double  sampleRateHz{0.0};      // always stored in Hz internally
+    QString sampleRateDisplayUnit{"Hz"};  // for round-tripping the UI choice
+
     std::vector<ColumnMapping> columns;
 
     static ConverterProfile loadFromFile(const std::filesystem::path& path,
