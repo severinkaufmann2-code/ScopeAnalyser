@@ -128,6 +128,111 @@ TEST(ScopePlot, DeriveChannelColorVariesPerIndex) {
     EXPECT_NE(c1, c2);
 }
 
+TEST(ScopePlot, ShiftWheelDisablesAutoFitOnTargetAxis) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(800, 600);
+    sp.show();
+    QApplication::processEvents();
+    const int rightIdx = sp.addYAxis("R", Qt::AlignRight);
+
+    // Add data so rescaleAllYAxes has something to scale to.
+    auto* plot = sp.plot();
+    auto* g = plot->addGraph(plot->xAxis, sp.yAxis(rightIdx));
+    QVector<double> xs = {0, 1, 2}, ys = {0, 5, 10};
+    g->setData(xs, ys, true);
+
+    // First fit puts Y2 at ~[0, 10] (with margin).
+    sp.fitAll();
+    EXPECT_NEAR(sp.yAxis(rightIdx)->range().lower, -0.5, 1e-6);
+    EXPECT_NEAR(sp.yAxis(rightIdx)->range().upper, 10.5, 1e-6);
+
+    // User Shift+Scrolls Y2 — should mark it manual.
+    sp.zoomYBy(0.5, rightIdx);
+    const auto rangeAfterUser = sp.yAxis(rightIdx)->range();
+
+    // Now simulate a "tick" calling rescaleAllYAxes: it should NOT rescale
+    // Y2 anymore because the user touched it.
+    sp.rescaleAllYAxes();
+    EXPECT_EQ(sp.yAxis(rightIdx)->range().lower, rangeAfterUser.lower);
+    EXPECT_EQ(sp.yAxis(rightIdx)->range().upper, rangeAfterUser.upper);
+
+    // fitAll re-arms auto-fit and rescales.
+    sp.fitAll();
+    EXPECT_NEAR(sp.yAxis(rightIdx)->range().lower, -0.5, 1e-6);
+    EXPECT_NEAR(sp.yAxis(rightIdx)->range().upper, 10.5, 1e-6);
+}
+
+TEST(ScopePlot, ShiftWheelOverRightAxisZoomsOnlyRightAxis) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(800, 600);
+    sp.show();
+    QApplication::processEvents();
+
+    const int rightIdx = sp.addYAxis("R", Qt::AlignRight);
+    QApplication::processEvents();
+
+    auto* plot = sp.plot();
+    plot->yAxis->setRange(0, 100);
+    sp.yAxis(rightIdx)->setRange(0, 1000);
+
+    const QRect ar = plot->axisRect()->rect();
+
+    // Synthesise a Shift+Scroll over the right axis label area.
+    const QPointF localPos(ar.right() + 5, ar.center().y());
+    QWheelEvent ev(localPos,
+                   plot->mapToGlobal(localPos.toPoint()),
+                   QPoint(),
+                   QPoint(0, 120),               // one notch up
+                   Qt::NoButton,
+                   Qt::ShiftModifier,
+                   Qt::NoScrollPhase,
+                   false);
+    QApplication::sendEvent(plot, &ev);
+    QApplication::processEvents();
+
+    // Y2 (rightIdx) should have shrunk; Y1 should be unchanged.
+    EXPECT_LT(sp.yAxis(rightIdx)->range().size(), 1000.0);
+    EXPECT_DOUBLE_EQ(plot->yAxis->range().size(), 100.0);
+}
+
+TEST(ScopePlot, ShiftWheelOverLeftAxisZoomsOnlyLeftAxis) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(800, 600);
+    sp.show();
+    QApplication::processEvents();
+
+    const int rightIdx = sp.addYAxis("R", Qt::AlignRight);
+    QApplication::processEvents();
+
+    auto* plot = sp.plot();
+    plot->yAxis->setRange(0, 100);
+    sp.yAxis(rightIdx)->setRange(0, 1000);
+
+    const QRect ar = plot->axisRect()->rect();
+
+    // Shift+Scroll over the LEFT axis area.
+    const QPointF localPos(ar.left() - 5, ar.center().y());
+    QWheelEvent ev(localPos,
+                   plot->mapToGlobal(localPos.toPoint()),
+                   QPoint(),
+                   QPoint(0, 120),
+                   Qt::NoButton,
+                   Qt::ShiftModifier,
+                   Qt::NoScrollPhase,
+                   false);
+    QApplication::sendEvent(plot, &ev);
+    QApplication::processEvents();
+
+    EXPECT_LT(plot->yAxis->range().size(), 100.0);
+    EXPECT_DOUBLE_EQ(sp.yAxis(rightIdx)->range().size(), 1000.0);
+}
+
 TEST(ScopePlot, ClosestYAxisToPosByPixelDistance) {
     GuiAppFixture fixture;
 

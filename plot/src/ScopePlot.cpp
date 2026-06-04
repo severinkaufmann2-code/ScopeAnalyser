@@ -62,6 +62,12 @@ struct ScopePlot::Impl {
     bool            pauseSupported{false};
 
     QList<QCPAxis*> yAxes;          // index 0 = plot->yAxis
+    // When true, this axis still auto-fits to its data on rescaleAllYAxes().
+    // Set to false the moment the user manually zooms / pans the axis (wheel,
+    // region zoom, +/− button, context-menu Set range), so the live-preview
+    // tick stops fighting the user's manual zoom. Re-enabled by fitAll() or
+    // the per-axis "Auto-scale this axis" context-menu action.
+    QHash<QCPAxis*, bool> autoFit;
 
     QCPItemStraightLine* crossV{nullptr};
     QCPItemStraightLine* crossH{nullptr};
@@ -70,6 +76,10 @@ struct ScopePlot::Impl {
     bool                 regionDragging{false};
     QPointF              regionStartPx;
     QCPItemRect*         regionRect{nullptr};
+
+    // True while the user is holding the left mouse button down on the plot
+    // (used to detect pan-via-QCustomPlot-iRangeDrag and mark axes manual).
+    bool                 leftButtonDown{false};
 };
 
 ScopePlot::ScopePlot(QWidget* parent)
@@ -89,6 +99,15 @@ ScopePlot::ScopePlot(QWidget* parent)
     impl_->yAxes.append(impl_->plot->yAxis);
     impl_->plot->yAxis->setLabel("Y1");
     styleAxis(impl_->plot->yAxis, kAxisPalette[0]);
+    impl_->autoFit[impl_->plot->yAxis] = true;
+
+    // Hook range-changed on the primary Y axis so QCustomPlot's iRangeDrag
+    // pan also marks the axis as manual. addYAxis() does the same for new axes.
+    connect(impl_->plot->yAxis,
+            QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged), this,
+            [this](const QCPRange&){
+                if (impl_->leftButtonDown) impl_->autoFit[impl_->plot->yAxis] = false;
+            });
 
     // ---- Toolbar -------------------------------------------------------
     impl_->toolbar = new QWidget(this);
@@ -242,6 +261,11 @@ int ScopePlot::addYAxis(const QString& label, Qt::Alignment side) {
     ax->setVisible(true);
     styleAxis(ax, kAxisPalette[idx % kAxisPalette.size()]);
     impl_->yAxes.append(ax);
+    impl_->autoFit[ax] = true;
+    connect(ax, QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged), this,
+            [this, ax](const QCPRange&){
+                if (impl_->leftButtonDown) impl_->autoFit[ax] = false;
+            });
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
     emit yAxesChanged();
     return idx;
@@ -268,6 +292,7 @@ bool ScopePlot::removeYAxis(int index, QString* errOut) {
     }
     impl_->plot->axisRect()->removeAxis(ax);
     impl_->yAxes.removeAt(index);
+    impl_->autoFit.remove(ax);
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
     emit yAxesChanged();
     return true;
@@ -339,6 +364,9 @@ QColor ScopePlot::deriveChannelColor(int axisIndex, int channelIndexOnAxis) cons
 void ScopePlot::rescaleAllYAxes() {
     for (int i = 0; i < impl_->yAxes.size(); ++i) {
         auto* ax = impl_->yAxes[i];
+        // Skip axes the user has manually zoomed/panned — they're in
+        // manual mode until fitAll() or per-axis "Auto-scale".
+        if (!impl_->autoFit.value(ax, true)) continue;
         bool found = false;
         double min =  std::numeric_limits<double>::infinity();
         double max = -std::numeric_limits<double>::infinity();
@@ -363,7 +391,9 @@ void ScopePlot::rescaleAllYAxes() {
 }
 
 void ScopePlot::fitAll() {
+    // Re-arm auto-fit on every Y axis, then rescale.
     impl_->plot->xAxis->rescale();
+    for (auto* ax : impl_->yAxes) impl_->autoFit[ax] = true;
     rescaleAllYAxes();
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
 }
@@ -375,16 +405,24 @@ void ScopePlot::zoomXBy(double factor) {
 
 void ScopePlot::zoomYBy(double factor, int yAxisIndex) {
     if (yAxisIndex < 0) {
-        for (auto* ax : impl_->yAxes) ax->scaleRange(factor);
+        for (auto* ax : impl_->yAxes) {
+            ax->scaleRange(factor);
+            impl_->autoFit[ax] = false;
+        }
     } else if (yAxisIndex < impl_->yAxes.size()) {
-        impl_->yAxes[yAxisIndex]->scaleRange(factor);
+        auto* ax = impl_->yAxes[yAxisIndex];
+        ax->scaleRange(factor);
+        impl_->autoFit[ax] = false;
     }
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
 }
 
 void ScopePlot::zoomBothBy(double factor) {
     impl_->plot->xAxis->scaleRange(factor);
-    for (auto* ax : impl_->yAxes) ax->scaleRange(factor);
+    for (auto* ax : impl_->yAxes) {
+        ax->scaleRange(factor);
+        impl_->autoFit[ax] = false;
+    }
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
 }
 
@@ -399,11 +437,13 @@ void ScopePlot::zoomAt(QPointF mousePx, double factorX, double factorY,
             for (auto* ax : impl_->yAxes) {
                 const double yCenter = ax->pixelToCoord(mousePx.y());
                 ax->scaleRange(factorY, yCenter);
+                impl_->autoFit[ax] = false;
             }
         } else if (yAxisIndex < impl_->yAxes.size()) {
             auto* ax = impl_->yAxes[yAxisIndex];
             const double yCenter = ax->pixelToCoord(mousePx.y());
             ax->scaleRange(factorY, yCenter);
+            impl_->autoFit[ax] = false;
         }
     }
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
@@ -464,12 +504,11 @@ void ScopePlot::endRegionZoom(QPointF endPx) {
     if (dxPx > 4 && dyPx > 4) {
         impl_->plot->xAxis->setRange(std::min(a.x(), b.x()),
                                      std::max(a.x(), b.x()));
-        // Apply the same fraction-of-range zoom to each Y axis based on
-        // their own pixel-mapped equivalent of the rectangle.
         for (auto* ax : impl_->yAxes) {
             const double y0 = ax->pixelToCoord(impl_->regionStartPx.y());
             const double y1 = ax->pixelToCoord(endPx.y());
             ax->setRange(std::min(y0, y1), std::max(y0, y1));
+            impl_->autoFit[ax] = false;
         }
     }
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
@@ -539,9 +578,11 @@ void ScopePlot::showAxisContextMenu(int axisIndex, QPoint globalPos) {
             -1e15, 1e15, 6, &ok);
         if (!ok || hi <= lo) return;
         ax->setRange(lo, hi);
+        impl_->autoFit[ax] = false;  // user fixed a range manually
         impl_->plot->replot(QCustomPlot::rpQueuedReplot);
     } else if (chosen == fit) {
-        // Rescale only this axis to its assigned graphs.
+        // Re-enable auto-fit for this axis and rescale it now.
+        impl_->autoFit[ax] = true;
         bool found = false;
         double min =  std::numeric_limits<double>::infinity();
         double max = -std::numeric_limits<double>::infinity();
@@ -597,6 +638,9 @@ bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
                 beginRegionZoom(me->position());
                 return true;
             }
+            if (me->button() == Qt::LeftButton) {
+                impl_->leftButtonDown = true;
+            }
             break;
         }
         case QEvent::MouseMove: {
@@ -612,7 +656,11 @@ bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
             auto* me = static_cast<QMouseEvent*>(ev);
             if (impl_->regionDragging && me->button() == Qt::LeftButton) {
                 endRegionZoom(me->position());
+                impl_->leftButtonDown = false;
                 return true;
+            }
+            if (me->button() == Qt::LeftButton) {
+                impl_->leftButtonDown = false;
             }
             break;
         }
