@@ -176,6 +176,26 @@ The plot at the bottom toggles channels via checkboxes.
    different sample rates — every imported signal carries its own timeline.
 5. **Apply (import signals)** → channels flow into the SignalStore and appear
    in the Analyser.
+
+### Export and multi-source import (Converter)
+
+The Converter top bar has four buttons:
+
+- **Open CSV…** / **Load .h5…** — pull signals in from a CSV (after the
+  per-channel mapping is configured + Apply) or directly from an existing
+  HDF5 recording. Names colliding with existing signals are uniquified
+  with ` (2)`, ` (3)`, …
+- **Save .h5…** — write every channel currently in the SignalStore to a
+  recording file (same format the Recorder writes).
+- **Save CSV…** — write every channel to CSV. A small Options dialog
+  appears first; all fields have defaults so clicking OK twice (Options
+  then Save) produces a sensible standard CSV (`,` columns, `\n` rows,
+  `.` decimal, single time column resampled to the union of all
+  signals' timestamps).
+
+The multi-source flow is just: open / configure / Apply (or Load .h5)
+for each input file, then Save once. Every signal in the store ends up
+in the output file regardless of which input it came from.
 5. **Save profile…** → next time the same kind of file comes in, **Load
    profile…** → **Apply** is two clicks.
 

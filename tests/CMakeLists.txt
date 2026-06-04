@@ -4,6 +4,7 @@ add_executable(scope_tests
     test_formula_engine.cpp
     test_converter_profile.cpp
     test_csv_converter.cpp
+    test_csv_writer.cpp
     test_mock_pipeline.cpp
     test_scope_plot.cpp
 )

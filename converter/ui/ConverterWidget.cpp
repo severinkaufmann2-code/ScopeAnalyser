@@ -1,8 +1,11 @@
 #include "scope/converter/ConverterWidget.h"
 #include "scope/converter/ConverterProfile.h"
 #include "scope/converter/CsvSource.h"
+#include "scope/converter/CsvWriter.h"
+#include "scope/core/Hdf5Session.h"
 
 #include "MappingPanel.h"
+#include "CsvExportDialog.h"
 
 #include <QAbstractItemModel>
 #include <QFileDialog>
@@ -33,7 +36,10 @@ struct ConverterWidget::Impl {
 ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* parent)
     : QWidget(parent), store_(store), impl_(std::make_unique<Impl>()) {
 
-    auto* openBtn = new QPushButton("Open CSV…", this);
+    auto* openBtn    = new QPushButton("Open CSV…", this);
+    auto* loadH5Btn  = new QPushButton("Load .h5…", this);
+    auto* saveH5Btn  = new QPushButton("Save .h5…", this);
+    auto* saveCsvBtn = new QPushButton("Save CSV…", this);
 
     impl_->preview = new QTableView(this);
     impl_->preview->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -45,6 +51,10 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
 
     auto* topBar = new QHBoxLayout();
     topBar->addWidget(openBtn);
+    topBar->addWidget(loadH5Btn);
+    topBar->addSpacing(20);
+    topBar->addWidget(saveH5Btn);
+    topBar->addWidget(saveCsvBtn);
     topBar->addStretch();
     topBar->addWidget(impl_->statusLabel);
 
@@ -143,6 +153,123 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             QString("Loaded profile %1 (%2 channel(s))")
                 .arg(QFileInfo(path).fileName())
                 .arg(profile.columns.size()));
+    });
+
+    // ---- Load HDF5: push every channel in the file into the store ------
+    auto uniquify = [this](const QString& base) {
+        if (!store_.contains(base)) return base;
+        for (int i = 2; i < 1000; ++i) {
+            QString c = QString("%1 (%2)").arg(base).arg(i);
+            if (!store_.contains(c)) return c;
+        }
+        return base + " (?)";
+    };
+
+    connect(loadH5Btn, &QPushButton::clicked, this, [this, uniquify]{
+        const QString path = QFileDialog::getOpenFileName(
+            this, "Load recording (.h5)", QString(),
+            "Scope sessions (*.h5);;All files (*)");
+        if (path.isEmpty()) return;
+        QString err;
+        auto session = scope::core::Hdf5Session::openForRead(
+            std::filesystem::path(path.toStdString()), &err);
+        if (!session) {
+            QMessageBox::critical(this, "Load failed",
+                                  err.isEmpty() ? QString("Unknown error") : err);
+            return;
+        }
+        auto loaded = session->loadAllSignals(&err);
+        if (loaded.empty()) {
+            QMessageBox::warning(this, "Empty file",
+                err.isEmpty() ? QString("No channels in this file.") : err);
+            return;
+        }
+        for (auto& s : loaded) {
+            auto meta = s->meta();
+            meta.name = uniquify(meta.name);
+            s->setMeta(meta);
+            store_.add(s);
+        }
+        impl_->statusLabel->setText(QString("Loaded %1: %2 channel(s)")
+                                        .arg(QFileInfo(path).fileName())
+                                        .arg(loaded.size()));
+    });
+
+    // ---- Save HDF5: dump the SignalStore to a recording file ----------
+    connect(saveH5Btn, &QPushButton::clicked, this, [this]{
+        if (store_.size() == 0) {
+            QMessageBox::information(this, "Nothing to save",
+                "The signal store is empty. Apply a CSV or Load an .h5 first.");
+            return;
+        }
+        QFileDialog dlg(this, "Save recording (.h5)");
+        dlg.setAcceptMode(QFileDialog::AcceptSave);
+        dlg.setNameFilters({"Scope sessions (*.h5)", "All files (*)"});
+        dlg.setDefaultSuffix("h5");
+        if (dlg.exec() != QDialog::Accepted) return;
+        const auto sel = dlg.selectedFiles();
+        if (sel.isEmpty()) return;
+        QString path = sel.first();
+        if (!path.endsWith(".h5", Qt::CaseInsensitive)) path += ".h5";
+
+        QString err;
+        auto session = scope::core::Hdf5Session::create(
+            std::filesystem::path(path.toStdString()), &err);
+        if (!session) {
+            QMessageBox::critical(this, "Save failed", err);
+            return;
+        }
+        int written = 0;
+        for (const auto& name : store_.channelNames()) {
+            auto sig = store_.get(name);
+            if (!sig) continue;
+            if (!session->addChannel(sig->meta(), &err)) continue;
+            auto view = sig->snapshotForRead();
+            if (view.count > 0) {
+                session->appendSamples(name, view.timestamps, view.values,
+                                       view.count, &err);
+            }
+            ++written;
+        }
+        session->flush();
+        impl_->statusLabel->setText(QString("Saved %1: %2 channel(s)")
+                                        .arg(QFileInfo(path).fileName())
+                                        .arg(written));
+    });
+
+    // ---- Save CSV: dialog + writer ------------------------------------
+    connect(saveCsvBtn, &QPushButton::clicked, this, [this]{
+        if (store_.size() == 0) {
+            QMessageBox::information(this, "Nothing to save",
+                "The signal store is empty. Apply a CSV or Load an .h5 first.");
+            return;
+        }
+        ui::CsvExportDialog optionsDlg(this);
+        if (optionsDlg.exec() != QDialog::Accepted) return;
+        const auto opts = optionsDlg.options();
+
+        QFileDialog dlg(this, "Save CSV");
+        dlg.setAcceptMode(QFileDialog::AcceptSave);
+        dlg.setNameFilters({"CSV (*.csv)", "Text (*.txt)", "All files (*)"});
+        dlg.setDefaultSuffix("csv");
+        if (dlg.exec() != QDialog::Accepted) return;
+        const auto sel = dlg.selectedFiles();
+        if (sel.isEmpty()) return;
+        QString path = sel.first();
+        if (!path.contains('.')) path += ".csv";
+
+        std::vector<std::shared_ptr<scope::core::Signal>> chans;
+        for (const auto& name : store_.channelNames()) {
+            if (auto s = store_.get(name)) chans.push_back(std::move(s));
+        }
+        QString err;
+        if (!writeCsv(std::filesystem::path(path.toStdString()), chans, opts, &err)) {
+            QMessageBox::critical(this, "Save failed", err);
+            return;
+        }
+        impl_->statusLabel->setText(QString("Saved %1: %2 channel(s)")
+                                        .arg(QFileInfo(path).fileName())
+                                        .arg(chans.size()));
     });
 }
 

@@ -3,18 +3,22 @@ set(CONVERTER_HEADERS
     include/scope/converter/ConverterProfile.h
     include/scope/converter/ExcelSource.h
     include/scope/converter/CsvSource.h
+    include/scope/converter/CsvWriter.h
     include/scope/converter/ConverterWidget.h
     ui/MappingPanel.h
     ui/ChannelEditDialog.h
+    ui/CsvExportDialog.h
 )
 
 set(CONVERTER_SOURCES
     src/ConverterProfile.cpp
     src/ExcelSource.cpp
     src/CsvSource.cpp
+    src/CsvWriter.cpp
     ui/ConverterWidget.cpp
     ui/MappingPanel.cpp
     ui/ChannelEditDialog.cpp
+    ui/CsvExportDialog.cpp
 )
 
 scope_add_library(scope_converter
