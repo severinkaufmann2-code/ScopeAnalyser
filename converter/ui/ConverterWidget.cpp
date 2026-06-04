@@ -99,18 +99,25 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     });
 
     connect(impl_->mapping, &ui::MappingPanel::saveProfileRequested, this, [this]{
-        const QString path = QFileDialog::getSaveFileName(
-            this, "Save profile", QString(), "Scope conversion profile (*.scaconv)");
+        QString path = QFileDialog::getSaveFileName(
+            this, "Save profile", QString(),
+            "Scope conversion profile (*.scaconv);;All files (*)");
         if (path.isEmpty()) return;
+        if (!path.endsWith(".scaconv", Qt::CaseInsensitive)) path += ".scaconv";
         const auto profile = impl_->mapping->buildProfile("csv");
         QString err;
-        if (!profile.saveToFile(std::filesystem::path(path.toStdString()), &err))
+        if (!profile.saveToFile(std::filesystem::path(path.toStdString()), &err)) {
             QMessageBox::critical(this, "Save failed", err);
+            return;
+        }
+        impl_->statusLabel->setText(QString("Profile saved to %1")
+                                        .arg(QFileInfo(path).fileName()));
     });
 
     connect(impl_->mapping, &ui::MappingPanel::loadProfileRequested, this, [this, reparseCurrentFile]{
         const QString path = QFileDialog::getOpenFileName(
-            this, "Load profile", QString(), "Scope conversion profile (*.scaconv)");
+            this, "Load profile", QString(),
+            "Scope conversion profile (*.scaconv);;All files (*)");
         if (path.isEmpty()) return;
         QString err;
         const auto profile = ConverterProfile::loadFromFile(
@@ -121,6 +128,10 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         }
         impl_->mapping->setProfile(profile);
         reparseCurrentFile();
+        impl_->statusLabel->setText(
+            QString("Loaded profile %1 (%2 channel(s))")
+                .arg(QFileInfo(path).fileName())
+                .arg(profile.columns.size()));
     });
 }
 
