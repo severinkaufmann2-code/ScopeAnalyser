@@ -155,9 +155,19 @@ void RecorderWidget::onStartClicked() {
         QMessageBox::information(this, "Not connected", "Connect to a source first.");
         return;
     }
-    const auto file = QFileDialog::getSaveFileName(
-        this, "Save recording session", QString(), "Scope sessions (*.h5)");
-    if (file.isEmpty()) return;
+    // Non-static QFileDialog + setDefaultSuffix("h5") so the existence-
+    // check runs against the real .h5 target and ".h5" is appended if
+    // the user didn't type it. Same trick as Save converter profile /
+    // Save plot layout.
+    QFileDialog dlg(this, "Save recording session");
+    dlg.setAcceptMode(QFileDialog::AcceptSave);
+    dlg.setNameFilters({"Scope sessions (*.h5)", "All files (*)"});
+    dlg.setDefaultSuffix("h5");
+    if (dlg.exec() != QDialog::Accepted) return;
+    const auto sel = dlg.selectedFiles();
+    if (sel.isEmpty()) return;
+    QString file = sel.first();
+    if (!file.endsWith(".h5", Qt::CaseInsensitive)) file += ".h5";
 
     session_ = std::make_unique<RecordingSession>(store_, *client_, this);
     connect(session_.get(), &RecordingSession::statsChanged,
