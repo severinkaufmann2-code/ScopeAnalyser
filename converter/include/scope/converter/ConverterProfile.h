@@ -29,6 +29,11 @@ struct ColumnMapping {
     bool    useSampleRate{false};
     double  sampleRateHz{0.0};
     QString sampleRateDisplayUnit{"ms"};
+
+    // If true, subtract the first timestamp from every sample on import so
+    // the resulting Signal starts at t=0. Useful when mixing rate-based and
+    // column-based imports — both end up anchored at 0.
+    bool    resetTimeToZero{false};
 };
 
 struct ConverterProfile {

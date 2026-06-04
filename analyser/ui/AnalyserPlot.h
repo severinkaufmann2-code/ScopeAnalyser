@@ -45,6 +45,11 @@ private:
     // store yet. When the SignalStore adds one of these, we apply the saved
     // axis assignment instead of the unit-match default.
     QHash<QString, int> pendingAssignments_;
+
+    // When true, each channel renders with its own first sample at x = 0
+    // instead of using the shared min-first-sample base. Useful when
+    // comparing recordings with very different absolute timestamps.
+    bool alignStarts_{false};
 };
 
 }  // namespace scope::analyser::ui

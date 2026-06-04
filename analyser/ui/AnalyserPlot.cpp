@@ -47,6 +47,13 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
     auto* saveBtn    = new QPushButton("Save layout…", this);
     auto* loadBtn    = new QPushButton("Load layout…", this);
     auto* redrawBtn  = new QPushButton("Redraw",   this);
+    auto* alignChk   = new QCheckBox("Align channel starts at t = 0", this);
+    alignChk->setToolTip(
+        "When ON, each channel renders with its own first sample at x = 0\n"
+        "instead of using a shared time origin. Useful when comparing\n"
+        "recordings whose absolute timestamps don't match up (e.g. one\n"
+        "imported with a sample rate, another imported with an X column).\n"
+        "This is view-only — it doesn't modify the stored signals.");
 
     auto* axisBtnRow = new QHBoxLayout();
     axisBtnRow->addWidget(addAxisBtn);
@@ -60,6 +67,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
     leftLayout->addWidget(table_, /*stretch=*/1);
     leftLayout->addLayout(axisBtnRow);
     leftLayout->addLayout(layoutBtnRow);
+    leftLayout->addWidget(alignChk);
     leftLayout->addWidget(redrawBtn);
 
     auto* root = new QHBoxLayout(this);
@@ -69,6 +77,10 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
     connect(redrawBtn,  &QPushButton::clicked, this, &AnalyserPlot::redrawAll);
     connect(saveBtn,    &QPushButton::clicked, this, &AnalyserPlot::saveLayoutDialog);
     connect(loadBtn,    &QPushButton::clicked, this, &AnalyserPlot::loadLayoutDialog);
+    connect(alignChk,   &QCheckBox::toggled, this, [this](bool on){
+        alignStarts_ = on;
+        redrawForActiveChannels();
+    });
     connect(addAxisBtn, &QPushButton::clicked, this, [this]{
         scope_->addYAxis();
         rebuildAxisCombos();
@@ -246,14 +258,19 @@ void AnalyserPlot::redrawForActiveChannels() {
     double xMin = std::numeric_limits<double>::infinity();
     double xMax = -std::numeric_limits<double>::infinity();
 
-    double base = std::numeric_limits<double>::infinity();
-    for (const auto& name : active) {
-        auto sig = store_.get(name);
-        if (!sig) continue;
-        auto view = sig->snapshotForRead();
-        if (view.count > 0) base = std::min(base, view.timestamps[0] / 1e9);
+    // Shared base (used unless alignStarts_ is on, in which case each channel
+    // gets its own base = its first timestamp).
+    double sharedBase = std::numeric_limits<double>::infinity();
+    if (!alignStarts_) {
+        for (const auto& name : active) {
+            auto sig = store_.get(name);
+            if (!sig) continue;
+            auto view = sig->snapshotForRead();
+            if (view.count > 0)
+                sharedBase = std::min(sharedBase, view.timestamps[0] / 1e9);
+        }
+        if (sharedBase == std::numeric_limits<double>::infinity()) sharedBase = 0;
     }
-    if (base == std::numeric_limits<double>::infinity()) base = 0;
 
     for (int r = 0; r < table_->rowCount(); ++r) {
         const QString name = table_->item(r, ColName)->text();
@@ -274,11 +291,14 @@ void AnalyserPlot::redrawForActiveChannels() {
 
         auto view = sig->snapshotForRead();
         auto values = sig->readAsDouble();
+        const double channelBase = alignStarts_
+            ? (view.count > 0 ? view.timestamps[0] / 1e9 : 0.0)
+            : sharedBase;
         QVector<double> xs, ys;
         xs.reserve(static_cast<int>(view.count));
         ys.reserve(static_cast<int>(view.count));
         for (std::size_t i = 0; i < view.count; ++i) {
-            const double x = view.timestamps[i] / 1e9 - base;
+            const double x = view.timestamps[i] / 1e9 - channelBase;
             xs.push_back(x);
             const double v = (i < values.size()) ? values[i] : 0.0;
             ys.push_back(v);

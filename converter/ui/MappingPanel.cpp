@@ -28,6 +28,7 @@ constexpr int kRoleXSourceColumn       = Qt::UserRole;       // QString
 constexpr int kRoleUseSampleRate       = Qt::UserRole + 1;   // bool
 constexpr int kRoleSampleRateHz        = Qt::UserRole + 2;   // double
 constexpr int kRoleSampleRateUnit      = Qt::UserRole + 3;   // QString
+constexpr int kRoleResetTimeToZero     = Qt::UserRole + 4;   // bool
 
 QString xSourceLabel(const ColumnMapping& m) {
     if (m.role != ColumnMapping::Role::Signal) return "—";
@@ -235,6 +236,7 @@ void MappingPanel::appendChannelRow(const ColumnMapping& m) {
     xSrcItem->setData(kRoleUseSampleRate,   m.useSampleRate);
     xSrcItem->setData(kRoleSampleRateHz,    m.sampleRateHz);
     xSrcItem->setData(kRoleSampleRateUnit,  m.sampleRateDisplayUnit);
+    xSrcItem->setData(kRoleResetTimeToZero, m.resetTimeToZero);
     channelTable_->setItem(row, ColCol,    colItem);
     channelTable_->setItem(row, ColRows,   rowsItem);
     channelTable_->setItem(row, ColRole,   roleItem);
@@ -259,6 +261,7 @@ ColumnMapping MappingPanel::rowToMapping(int row) const {
         m.sampleRateHz          = xs->data(kRoleSampleRateHz).toDouble();
         m.sampleRateDisplayUnit = xs->data(kRoleSampleRateUnit).toString();
         if (m.sampleRateDisplayUnit.isEmpty()) m.sampleRateDisplayUnit = "ms";
+        m.resetTimeToZero       = xs->data(kRoleResetTimeToZero).toBool();
     }
     return m;
 }
@@ -317,6 +320,7 @@ void MappingPanel::onEditChannel() {
         xs->setData(kRoleUseSampleRate,   m.useSampleRate);
         xs->setData(kRoleSampleRateHz,    m.sampleRateHz);
         xs->setData(kRoleSampleRateUnit,  m.sampleRateDisplayUnit);
+        xs->setData(kRoleResetTimeToZero, m.resetTimeToZero);
         return;
     }
 }

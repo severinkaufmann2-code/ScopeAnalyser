@@ -110,6 +110,38 @@ TEST(CsvConverter, PerColumnRowRange) {
     std::filesystem::remove(path);
 }
 
+TEST(CsvConverter, ResetTimestampsToZero) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_reset_zero.csv";
+    {
+        // X column starts at 5.0 s, not 0.
+        std::ofstream f(path);
+        f << "t,v\n";
+        for (int i = 0; i < 5; ++i) f << (5.0 + i * 0.1) << "," << i << "\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.headerRow = 1;
+    ColumnMapping x;
+    x.columnId = "A"; x.role = ColumnMapping::Role::XTime; x.unit = "s";
+    ColumnMapping y;
+    y.columnId = "B"; y.role = ColumnMapping::Role::Signal;
+    y.signalName = "V"; y.xSourceColumn = "A";
+    y.resetTimeToZero = true;            // <-- the new option
+    p.columns = {x, y};
+
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto view = sigs[0]->snapshotForRead();
+    ASSERT_EQ(view.count, 5u);
+    // First sample at 0, subsequent +0.1 s.
+    EXPECT_EQ(view.timestamps[0], 0);
+    EXPECT_EQ(view.timestamps[1], 100'000'000);
+    EXPECT_EQ(view.timestamps[4], 400'000'000);
+    std::filesystem::remove(path);
+}
+
 TEST(CsvConverter, PerChannelSampleRate) {
     auto path = std::filesystem::temp_directory_path() / "scope_test_csv_per_ch_rate.csv";
     {
