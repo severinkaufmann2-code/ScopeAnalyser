@@ -617,8 +617,14 @@ bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
     switch (ev->type()) {
         case QEvent::Wheel: {
             auto* w = static_cast<QWheelEvent*>(ev);
-            const double notches = w->angleDelta().y() / 120.0;
-            if (notches == 0) return false;
+            // On X11 (and some other setups) Shift+Wheel converts the
+            // delta from y() to x() — it's the horizontal-scroll
+            // convention. Take whichever axis is non-zero so Shift+Scroll
+            // works the same as plain Scroll.
+            const QPoint d = w->angleDelta();
+            const int rawDelta = (d.y() != 0) ? d.y() : d.x();
+            if (rawDelta == 0) return false;
+            const double notches = rawDelta / 120.0;
             const double factor = std::pow(kZoomStep, notches);
             const QPointF mousePx = w->position();
             const Qt::KeyboardModifiers m = w->modifiers();

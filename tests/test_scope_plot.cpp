@@ -164,6 +164,41 @@ TEST(ScopePlot, ShiftWheelDisablesAutoFitOnTargetAxis) {
     EXPECT_NEAR(sp.yAxis(rightIdx)->range().upper, 10.5, 1e-6);
 }
 
+TEST(ScopePlot, ShiftWheelWithX11HorizontalDeltaStillZoomsY) {
+    // On X11, Shift+Wheel swaps the delta from y() to x() — the
+    // horizontal-scroll convention. ScopePlot must treat that the same as
+    // a y-delta otherwise Shift+Scroll silently does nothing on Linux.
+    GuiAppFixture fixture;
+    scope::plot::ScopePlot sp;
+    sp.resize(800, 600);
+    sp.show();
+    QApplication::processEvents();
+    const int rightIdx = sp.addYAxis("R", Qt::AlignRight);
+    QApplication::processEvents();
+
+    auto* plot = sp.plot();
+    plot->yAxis->setRange(0, 100);
+    sp.yAxis(rightIdx)->setRange(0, 1000);
+
+    const QRect ar = plot->axisRect()->rect();
+    const QPointF localPos(ar.right() + 5, ar.center().y());
+    // X-axis delta (NOT y), Shift held. This is what X11 delivers.
+    QWheelEvent ev(localPos,
+                   plot->mapToGlobal(localPos.toPoint()),
+                   QPoint(),
+                   QPoint(120, 0),
+                   Qt::NoButton,
+                   Qt::ShiftModifier,
+                   Qt::NoScrollPhase,
+                   false);
+    QApplication::sendEvent(plot, &ev);
+    QApplication::processEvents();
+
+    // Y2 should have shrunk.
+    EXPECT_LT(sp.yAxis(rightIdx)->range().size(), 1000.0);
+    EXPECT_DOUBLE_EQ(plot->yAxis->range().size(), 100.0);
+}
+
 TEST(ScopePlot, ShiftWheelOverRightAxisZoomsOnlyRightAxis) {
     GuiAppFixture fixture;
 
