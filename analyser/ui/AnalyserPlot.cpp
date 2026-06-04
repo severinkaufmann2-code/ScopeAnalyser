@@ -1,34 +1,30 @@
 #include "AnalyserPlot.h"
 
 #include "scope/plot/ScopePlot.h"
+#include "scope/plot/PlotLayout.h"
 
 #include <qcustomplot.h>
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
 
-#include <array>
+#include <filesystem>
 #include <limits>
 
 namespace scope::analyser::ui {
 
 namespace {
 enum Col { ColVis = 0, ColName, ColAxis, ColCount };
-
-const std::array<QColor, 10> kPalette = {
-    QColor(  0,114,189), QColor(217, 83, 25), QColor(237,177, 32),
-    QColor(126, 47,142), QColor(119,172, 48), QColor( 77,190,238),
-    QColor(162, 20, 47), QColor(  0,128,  0), QColor(255,128,  0),
-    QColor(128,  0,128),
-};
 }
 
 AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
@@ -48,36 +44,46 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
 
     auto* addAxisBtn = new QPushButton("+ Y axis", this);
     auto* delAxisBtn = new QPushButton("− Y axis", this);
+    auto* saveBtn    = new QPushButton("Save layout…", this);
+    auto* loadBtn    = new QPushButton("Load layout…", this);
     auto* redrawBtn  = new QPushButton("Redraw",   this);
 
     auto* axisBtnRow = new QHBoxLayout();
     axisBtnRow->addWidget(addAxisBtn);
     axisBtnRow->addWidget(delAxisBtn);
+    auto* layoutBtnRow = new QHBoxLayout();
+    layoutBtnRow->addWidget(saveBtn);
+    layoutBtnRow->addWidget(loadBtn);
 
     auto* leftLayout = new QVBoxLayout();
     leftLayout->addWidget(new QLabel("Channels", this));
     leftLayout->addWidget(table_, /*stretch=*/1);
     leftLayout->addLayout(axisBtnRow);
+    leftLayout->addLayout(layoutBtnRow);
     leftLayout->addWidget(redrawBtn);
 
     auto* root = new QHBoxLayout(this);
     root->addLayout(leftLayout);
     root->addWidget(scope_, /*stretch=*/1);
 
-    connect(redrawBtn, &QPushButton::clicked, this, &AnalyserPlot::redrawAll);
+    connect(redrawBtn,  &QPushButton::clicked, this, &AnalyserPlot::redrawAll);
+    connect(saveBtn,    &QPushButton::clicked, this, &AnalyserPlot::saveLayoutDialog);
+    connect(loadBtn,    &QPushButton::clicked, this, &AnalyserPlot::loadLayoutDialog);
     connect(addAxisBtn, &QPushButton::clicked, this, [this]{
         scope_->addYAxis();
         rebuildAxisCombos();
     });
     connect(delAxisBtn, &QPushButton::clicked, this, [this]{
         const int last = scope_->yAxisCount() - 1;
-        if (last <= 0) return;  // can't remove Y1
+        if (last <= 0) return;
         QString err;
         if (!scope_->removeYAxis(last, &err)) {
             QMessageBox::information(this, "Can't remove", err);
             return;
         }
         rebuildAxisCombos();
+        recolorChannels();
+        redrawForActiveChannels();
     });
 
     connect(&store_, &scope::core::SignalStore::channelAdded,
@@ -99,6 +105,21 @@ int AnalyserPlot::pickAxisForUnit(const QString& unit) const {
     return 0;
 }
 
+int AnalyserPlot::axisIndexForRow(int row) const {
+    if (row < 0 || row >= table_->rowCount()) return 0;
+    auto* co = qobject_cast<QComboBox*>(table_->cellWidget(row, ColAxis));
+    return co ? co->currentIndex() : 0;
+}
+
+void AnalyserPlot::setAxisIndexForRow(int row, int axisIndex) {
+    if (row < 0 || row >= table_->rowCount()) return;
+    auto* co = qobject_cast<QComboBox*>(table_->cellWidget(row, ColAxis));
+    if (!co) return;
+    if (axisIndex < 0) axisIndex = 0;
+    if (axisIndex >= co->count()) axisIndex = co->count() - 1;
+    co->setCurrentIndex(axisIndex);
+}
+
 QSet<QString> AnalyserPlot::activeChannels() const {
     QSet<QString> out;
     for (int r = 0; r < table_->rowCount(); ++r) {
@@ -110,16 +131,13 @@ QSet<QString> AnalyserPlot::activeChannels() const {
 }
 
 void AnalyserPlot::rebuildTable() {
-    QHash<QString, std::pair<bool,int>> prev;  // name → (visible, axis)
+    QHash<QString, std::pair<bool,int>> prev;
     for (int r = 0; r < table_->rowCount(); ++r) {
         const QString name = table_->item(r, ColName) ? table_->item(r, ColName)->text() : QString();
         if (name.isEmpty()) continue;
-        bool vis = false;
-        if (auto* cb = qobject_cast<QCheckBox*>(table_->cellWidget(r, ColVis)))
-            vis = cb->isChecked();
-        int axis = 0;
-        if (auto* co = qobject_cast<QComboBox*>(table_->cellWidget(r, ColAxis)))
-            axis = co->currentIndex();
+        bool vis = false; int axis = 0;
+        if (auto* cb = qobject_cast<QCheckBox*>(table_->cellWidget(r, ColVis))) vis = cb->isChecked();
+        if (auto* co = qobject_cast<QComboBox*>(table_->cellWidget(r, ColAxis))) axis = co->currentIndex();
         prev[name] = {vis, axis};
     }
 
@@ -136,8 +154,9 @@ void AnalyserPlot::rebuildTable() {
         if (prev.contains(name)) {
             defaultVis  = prev[name].first;
             defaultAxis = prev[name].second;
+        } else if (pendingAssignments_.contains(name)) {
+            defaultAxis = pendingAssignments_.take(name);
         } else {
-            // New channel: auto-assign by unit if a matching axis exists.
             auto s = store_.get(name);
             if (s) defaultAxis = pickAxisForUnit(s->meta().unit);
         }
@@ -179,11 +198,26 @@ void AnalyserPlot::onAxisComboChanged(int row, int axisIndex) {
     const QString name = table_->item(row, ColName)->text();
     if (!graphs_.contains(name)) return;
     scope_->setGraphYAxis(graphs_[name], axisIndex);
+    recolorChannels();
     scope_->plot()->replot(QCustomPlot::rpQueuedReplot);
 }
 
 void AnalyserPlot::onVisibilityChanged(int /*row*/) {
     redrawForActiveChannels();
+}
+
+void AnalyserPlot::recolorChannels() {
+    // For each axis, give the Nth channel on it the Nth shade derived from
+    // that axis's base colour.
+    QHash<int, int> perAxisCounter;
+    for (int r = 0; r < table_->rowCount(); ++r) {
+        const QString name = table_->item(r, ColName)->text();
+        if (!graphs_.contains(name)) continue;
+        const int axisIdx = axisIndexForRow(r);
+        const int onAxis  = perAxisCounter[axisIdx]++;
+        const QColor c = scope_->deriveChannelColor(axisIdx, onAxis);
+        graphs_[name]->setPen(QPen(c));
+    }
 }
 
 void AnalyserPlot::onChannelAdded(QString /*name*/)   { rebuildTable(); redrawForActiveChannels(); }
@@ -221,27 +255,22 @@ void AnalyserPlot::redrawForActiveChannels() {
     }
     if (base == std::numeric_limits<double>::infinity()) base = 0;
 
-    int colorIdx = 0;
     for (int r = 0; r < table_->rowCount(); ++r) {
         const QString name = table_->item(r, ColName)->text();
         if (!active.contains(name)) continue;
         auto sig = store_.get(name);
         if (!sig) continue;
 
-        int axisIndex = 0;
-        if (auto* co = qobject_cast<QComboBox*>(table_->cellWidget(r, ColAxis)))
-            axisIndex = co->currentIndex();
+        const int axisIndex = axisIndexForRow(r);
 
         QCPGraph* graph = graphs_.value(name, nullptr);
         if (!graph) {
             graph = plot->addGraph(plot->xAxis, scope_->yAxis(axisIndex));
-            graph->setPen(QPen(kPalette[colorIdx % kPalette.size()]));
             graph->setName(name);
             graphs_[name] = graph;
         } else if (graph->valueAxis() != scope_->yAxis(axisIndex)) {
             scope_->setGraphYAxis(graph, axisIndex);
         }
-        ++colorIdx;
 
         auto view = sig->snapshotForRead();
         auto values = sig->readAsDouble();
@@ -259,12 +288,105 @@ void AnalyserPlot::redrawForActiveChannels() {
         graph->setData(xs, ys, /*alreadySorted=*/true);
     }
 
+    recolorChannels();
+
     if (active.isEmpty() || xMin == std::numeric_limits<double>::infinity()) {
         xMin = 0; xMax = 1;
     }
     plot->xAxis->setRange(xMin, xMax);
     scope_->rescaleAllYAxes();
     plot->replot(QCustomPlot::rpQueuedReplot);
+}
+
+void AnalyserPlot::saveLayoutDialog() {
+    QFileDialog dlg(this, "Save plot layout");
+    dlg.setAcceptMode(QFileDialog::AcceptSave);
+    dlg.setNameFilters({"Scope plot layout (*.scolayout)", "All files (*)"});
+    dlg.setDefaultSuffix("scolayout");
+    if (dlg.exec() != QDialog::Accepted) return;
+    const auto sel = dlg.selectedFiles();
+    if (sel.isEmpty()) return;
+    QString path = sel.first();
+    if (!path.endsWith(".scolayout", Qt::CaseInsensitive)) path += ".scolayout";
+
+    scope::plot::PlotLayout layout;
+    for (int i = 0; i < scope_->yAxisCount(); ++i) {
+        auto* ax = scope_->yAxis(i);
+        scope::plot::PlotLayoutAxis a;
+        a.label = ax->label();
+        a.side  = (ax->axisType() == QCPAxis::atRight) ? "right" : "left";
+        a.hasRange = true;
+        a.min = ax->range().lower;
+        a.max = ax->range().upper;
+        layout.axes.append(a);
+    }
+    for (int r = 0; r < table_->rowCount(); ++r) {
+        scope::plot::PlotLayoutChannel c;
+        c.name = table_->item(r, ColName)->text();
+        c.axisIndex = axisIndexForRow(r);
+        layout.channels.append(c);
+    }
+    QString err;
+    if (!layout.saveToFile(std::filesystem::path(path.toStdString()), &err)) {
+        QMessageBox::critical(this, "Save failed", err);
+    }
+}
+
+void AnalyserPlot::loadLayoutDialog() {
+    QFileDialog dlg(this, "Load plot layout");
+    dlg.setAcceptMode(QFileDialog::AcceptOpen);
+    dlg.setNameFilters({"Scope plot layout (*.scolayout)", "All files (*)"});
+    if (dlg.exec() != QDialog::Accepted) return;
+    const auto sel = dlg.selectedFiles();
+    if (sel.isEmpty()) return;
+
+    QString err;
+    auto layout = scope::plot::PlotLayout::loadFromFile(
+        std::filesystem::path(sel.first().toStdString()), &err);
+    if (!err.isEmpty()) {
+        QMessageBox::critical(this, "Load failed", err);
+        return;
+    }
+
+    // Remove extra axes (keep Y1).
+    while (scope_->yAxisCount() > 1) {
+        QString rmErr;
+        // Move any graphs off the to-be-removed axis to Y1 first.
+        const int idx = scope_->yAxisCount() - 1;
+        for (int g = 0; g < scope_->plot()->graphCount(); ++g) {
+            if (scope_->plot()->graph(g)->valueAxis() == scope_->yAxis(idx))
+                scope_->setGraphYAxis(scope_->plot()->graph(g), 0);
+        }
+        if (!scope_->removeYAxis(idx, &rmErr)) break;
+    }
+    // Add axes from the layout (Y1 already exists at index 0).
+    for (int i = 0; i < layout.axes.size(); ++i) {
+        const auto& la = layout.axes[i];
+        const Qt::Alignment side = (la.side == "right") ? Qt::AlignRight : Qt::AlignLeft;
+        if (i == 0) {
+            scope_->yAxis(0)->setLabel(la.label);
+            if (la.hasRange) scope_->yAxis(0)->setRange(la.min, la.max);
+        } else {
+            const int newIdx = scope_->addYAxis(la.label, side);
+            if (la.hasRange) scope_->yAxis(newIdx)->setRange(la.min, la.max);
+        }
+    }
+    rebuildAxisCombos();
+
+    // Apply channel assignments; remember pending for unknown channels.
+    pendingAssignments_.clear();
+    for (const auto& c : layout.channels) {
+        bool found = false;
+        for (int r = 0; r < table_->rowCount(); ++r) {
+            if (table_->item(r, ColName)->text() == c.name) {
+                setAxisIndexForRow(r, c.axisIndex);
+                found = true;
+                break;
+            }
+        }
+        if (!found) pendingAssignments_.insert(c.name, c.axisIndex);
+    }
+    redrawForActiveChannels();
 }
 
 }  // namespace scope::analyser::ui

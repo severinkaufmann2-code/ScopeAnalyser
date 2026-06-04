@@ -289,13 +289,51 @@ int ScopePlot::graphYAxisIndex(QCPGraph* graph) const {
 }
 
 int ScopePlot::closestYAxisToPos(QPointF pixelPos) const {
+    // QCPAxis::selectTest() returns -1 when the axis's selectable parts are
+    // disabled (the default), so we can't rely on it. Compute the axis's
+    // pixel-X directly: left axes sit at axisRect.left() - offset, right axes
+    // at axisRect.right() + offset. Then take horizontal distance to the
+    // mouse cursor — hovering near a side picks that side's nearest axis.
     int best = 0;
     double bestDist = std::numeric_limits<double>::infinity();
+    const QRect rect = impl_->plot->axisRect()->rect();
     for (int i = 0; i < impl_->yAxes.size(); ++i) {
-        const double d = impl_->yAxes[i]->selectTest(pixelPos, /*onlySelectable*/ false);
-        if (d >= 0 && d < bestDist) { bestDist = d; best = i; }
+        auto* ax = impl_->yAxes[i];
+        double axisX = 0;
+        if (ax->axisType() == QCPAxis::atLeft) {
+            axisX = rect.left() - ax->offset();
+        } else if (ax->axisType() == QCPAxis::atRight) {
+            axisX = rect.right() + ax->offset();
+        } else {
+            continue;
+        }
+        const double d = std::abs(pixelPos.x() - axisX);
+        if (d < bestDist) { bestDist = d; best = i; }
     }
     return best;
+}
+
+QColor ScopePlot::axisBaseColor(int axisIndex) const {
+    if (axisIndex < 0) axisIndex = 0;
+    return kAxisPalette[axisIndex % kAxisPalette.size()];
+}
+
+QColor ScopePlot::deriveChannelColor(int axisIndex, int channelIndexOnAxis) const {
+    // The first channel on each axis renders in the axis's exact base colour
+    // (so the trace and the axis label match perfectly). Subsequent channels
+    // share the hue but get distinct shades by adjusting saturation + value.
+    const QColor base = axisBaseColor(axisIndex);
+    const int idx = ((channelIndexOnAxis % 6) + 6) % 6;
+    if (idx == 0) return base;
+
+    static const int kDeltaSat[6] = {  0,  +20,  -30,  +40,  -50,  +60};
+    static const int kDeltaVal[6] = {  0,  -40,  +40,  -70,  +70,  -90};
+    int h, s, v, a;
+    base.getHsv(&h, &s, &v, &a);
+    if (h < 0) h = 0;   // grayscale → fall back to deterministic hue
+    s = std::clamp(s + kDeltaSat[idx], 60, 255);
+    v = std::clamp(v + kDeltaVal[idx], 30, 255);
+    return QColor::fromHsv(h, s, v, a);
 }
 
 void ScopePlot::rescaleAllYAxes() {

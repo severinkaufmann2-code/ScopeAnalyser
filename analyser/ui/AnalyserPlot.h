@@ -12,7 +12,6 @@ namespace scope::plot { class ScopePlot; }
 
 namespace scope::analyser::ui {
 
-// Multi-channel plot with per-channel visibility and Y-axis assignment.
 class AnalyserPlot : public QWidget {
     Q_OBJECT
 public:
@@ -22,6 +21,8 @@ public slots:
     void redrawAll();
     void onChannelAdded(QString name);
     void onChannelRemoved(QString name);
+    void saveLayoutDialog();
+    void loadLayoutDialog();
 
 private:
     void rebuildTable();
@@ -29,13 +30,21 @@ private:
     void rebuildAxisCombos();
     void onAxisComboChanged(int row, int axisIndex);
     void onVisibilityChanged(int row);
+    void recolorChannels();
     QSet<QString> activeChannels() const;
     int  pickAxisForUnit(const QString& unit) const;
+    int  axisIndexForRow(int row) const;
+    void setAxisIndexForRow(int row, int axisIndex);
 
     scope::core::SignalStore& store_;
     QTableWidget*             table_{nullptr};
     scope::plot::ScopePlot*   scope_{nullptr};
     QHash<QString, QCPGraph*> graphs_;
+
+    // Channels referenced by a loaded layout that haven't appeared in the
+    // store yet. When the SignalStore adds one of these, we apply the saved
+    // axis assignment instead of the unit-match default.
+    QHash<QString, int> pendingAssignments_;
 };
 
 }  // namespace scope::analyser::ui

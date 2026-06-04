@@ -19,6 +19,10 @@ public:
 
     void setWindowSeconds(double seconds);
 
+public slots:
+    void saveLayoutDialog();
+    void loadLayoutDialog();
+
 private slots:
     void onChannelAdded(QString name);
     void onChannelRemoved(QString name);
@@ -29,7 +33,10 @@ private slots:
 
 private:
     void rebuildTable();
+    void recolorChannels();
     int  pickAxisForUnit(const QString& unit) const;
+    int  axisIndexForRow(int row) const;
+    void setAxisIndexForRow(int row, int axisIndex);
     QSet<QString> activeChannels() const;
 
     scope::core::SignalStore&    store_;
@@ -37,6 +44,7 @@ private:
     QTableWidget*                table_{nullptr};
     double                       windowSeconds_{5.0};
     QHash<QString, QCPGraph*>    graphs_;
+    QHash<QString, int>          pendingAssignments_;
 };
 
 }  // namespace scope::recorder::ui

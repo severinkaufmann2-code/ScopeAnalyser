@@ -102,6 +102,16 @@ axes, alternating between the left and right side. To use them:
    empty).
 5. When a new channel arrives whose unit text matches an existing
    axis's label, it auto-assigns to that axis.
+6. **Channel colours match their axis colour.** The first trace on
+   each axis uses the axis's exact colour; additional traces on the
+   same axis share the hue and vary in saturation/brightness so
+   they're related but visually distinct.
+7. **`Save layout…` / `Load layout…`** in the channels sidebar writes
+   a `.scolayout` JSON file with the axes (labels, sides, ranges) and
+   the channel→axis assignments. Loading a layout restores everything
+   and remembers channel names that aren't currently in the store —
+   when those channels later appear, they're placed on the saved axis
+   automatically.
 
 ### Recorder
 

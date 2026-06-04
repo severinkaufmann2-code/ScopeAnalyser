@@ -1,4 +1,5 @@
 #include "scope/plot/ScopePlot.h"
+#include "scope/plot/PlotLayout.h"
 
 #include <qcustomplot.h>
 
@@ -7,6 +8,7 @@
 #include <QCoreApplication>
 #include <QSignalSpy>
 
+#include <filesystem>
 #include <memory>
 
 namespace {
@@ -108,6 +110,70 @@ TEST(ScopePlot, RemoveYAxisRefusesPrimary) {
     QString err;
     EXPECT_FALSE(sp.removeYAxis(0, &err));
     EXPECT_TRUE(err.contains("primary"));
+}
+
+TEST(ScopePlot, DeriveChannelColorVariesPerIndex) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    const auto base = sp.axisBaseColor(0);
+    const auto c0   = sp.deriveChannelColor(0, 0);
+    const auto c1   = sp.deriveChannelColor(0, 1);
+    const auto c2   = sp.deriveChannelColor(0, 2);
+    // First channel matches the axis base colour exactly.
+    EXPECT_EQ(c0, base);
+    // Subsequent channels differ from the base AND from each other.
+    EXPECT_NE(c1, base);
+    EXPECT_NE(c2, base);
+    EXPECT_NE(c1, c2);
+}
+
+TEST(ScopePlot, ClosestYAxisToPosByPixelDistance) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(800, 600);
+    sp.show();
+    QApplication::processEvents();
+
+    // Add a right-side axis (index 1).
+    const int rightIdx = sp.addYAxis(QString(), Qt::AlignRight);
+    QApplication::processEvents();
+
+    auto* plot = sp.plot();
+    const QRect ar = plot->axisRect()->rect();
+
+    // Mouse far left → Y1 (index 0).
+    EXPECT_EQ(sp.closestYAxisToPos(QPointF(ar.left() - 5, ar.center().y())), 0);
+    // Mouse far right → the right-side axis we just added.
+    EXPECT_EQ(sp.closestYAxisToPos(QPointF(ar.right() + 5, ar.center().y())),
+              rightIdx);
+}
+
+TEST(ScopePlot, LayoutFileRoundTrip) {
+    auto path = std::filesystem::temp_directory_path() / "scope_layout.scolayout";
+
+    scope::plot::PlotLayout layout;
+    layout.axes.append({"Volts", "left",  true, -10.0, 10.0});
+    layout.axes.append({"rpm",   "right", true,   0.0, 5000.0});
+    layout.channels.append({"speed",  0});
+    layout.channels.append({"torque", 1});
+    layout.channels.append({"temp",   0});
+
+    QString err;
+    ASSERT_TRUE(layout.saveToFile(path, &err)) << err.toStdString();
+
+    auto loaded = scope::plot::PlotLayout::loadFromFile(path, &err);
+    ASSERT_TRUE(err.isEmpty()) << err.toStdString();
+    ASSERT_EQ(loaded.axes.size(), 2);
+    EXPECT_EQ(loaded.axes[0].label, "Volts");
+    EXPECT_EQ(loaded.axes[1].side,  "right");
+    EXPECT_DOUBLE_EQ(loaded.axes[1].max, 5000.0);
+    ASSERT_EQ(loaded.channels.size(), 3);
+    EXPECT_EQ(loaded.channels[1].name, "torque");
+    EXPECT_EQ(loaded.channels[1].axisIndex, 1);
+
+    std::filesystem::remove(path);
 }
 
 TEST(ScopePlot, FitAllRescalesEachYAxisIndependently) {

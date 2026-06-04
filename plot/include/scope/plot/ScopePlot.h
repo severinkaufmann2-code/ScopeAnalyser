@@ -59,6 +59,13 @@ public:
     // Re-scale every Y axis independently to the data of its assigned graphs.
     void rescaleAllYAxes();
 
+    // Base palette colour for axis `axisIndex`.
+    QColor axisBaseColor(int axisIndex) const;
+    // A distinct shade of the axis colour for the Nth channel on that axis.
+    // Repeats after a handful of channels; the first one is the axis colour
+    // itself.
+    QColor deriveChannelColor(int axisIndex, int channelIndexOnAxis) const;
+
     // Zoom helpers (multiply axis range; <1 = zoom in)
     void zoomXBy(double factor);
     void zoomYBy(double factor, int yAxisIndex = -1);   // -1 = all Y axes
