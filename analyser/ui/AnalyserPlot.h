@@ -6,12 +6,13 @@
 #include <QWidget>
 
 class QCPGraph;
-class QListWidget;
+class QTableWidget;
 
 namespace scope::plot { class ScopePlot; }
 
 namespace scope::analyser::ui {
 
+// Multi-channel plot with per-channel visibility and Y-axis assignment.
 class AnalyserPlot : public QWidget {
     Q_OBJECT
 public:
@@ -23,12 +24,16 @@ public slots:
     void onChannelRemoved(QString name);
 
 private:
-    void rebuildList();
+    void rebuildTable();
     void redrawForActiveChannels();
+    void rebuildAxisCombos();
+    void onAxisComboChanged(int row, int axisIndex);
+    void onVisibilityChanged(int row);
     QSet<QString> activeChannels() const;
+    int  pickAxisForUnit(const QString& unit) const;
 
     scope::core::SignalStore& store_;
-    QListWidget*              list_{nullptr};
+    QTableWidget*             table_{nullptr};
     scope::plot::ScopePlot*   scope_{nullptr};
     QHash<QString, QCPGraph*> graphs_;
 };

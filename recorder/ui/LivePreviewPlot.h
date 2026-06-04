@@ -5,9 +5,8 @@
 #include <QHash>
 #include <QWidget>
 
-#include <unordered_map>
-
 class QCPGraph;
+class QTableWidget;
 
 namespace scope::plot { class ScopePlot; }
 
@@ -24,12 +23,20 @@ private slots:
     void onChannelAdded(QString name);
     void onChannelRemoved(QString name);
     void onTick();
+    void onAxisComboChanged(int row, int axisIndex);
+    void onVisibilityChanged();
+    void rebuildAxisCombos();
 
 private:
+    void rebuildTable();
+    int  pickAxisForUnit(const QString& unit) const;
+    QSet<QString> activeChannels() const;
+
     scope::core::SignalStore&    store_;
     scope::plot::ScopePlot*      scope_{nullptr};
+    QTableWidget*                table_{nullptr};
     double                       windowSeconds_{5.0};
-    std::unordered_map<QString, QCPGraph*> graphs_;
+    QHash<QString, QCPGraph*>    graphs_;
 };
 
 }  // namespace scope::recorder::ui

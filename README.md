@@ -84,9 +84,24 @@ Both plots share the same `ScopePlot` widget with these conventions
 | Mouse hover | Crosshair + X / Y readout per channel |
 
 A toolbar above each plot exposes the same actions as buttons:
-`⤢ Fit`, `↔ +` / `↔ −`, `↕ +` / `↕ −`, `PNG…` (save image).
-The Recorder's plot also has `⏸ Pause` / `▶ Resume` to freeze the
-display while recording continues in the background.
+`⤢ Fit`, `↔ +` / `↔ −`, `↕ +` / `↕ −`, `Y+` (add a Y axis), `PNG…`
+(save image). The Recorder's plot also has `⏸ Pause` / `▶ Resume` to
+freeze the display while recording continues in the background.
+
+**Multiple Y axes** — both plots support an arbitrary number of Y
+axes, alternating between the left and right side. To use them:
+
+1. Click **`Y+`** in the toolbar to add a new axis. It appears with
+   default label `Y2`, `Y3`, …
+2. In the channels sidebar to the left, each channel has an **Axis**
+   dropdown. Pick the axis you want this channel scaled against.
+3. **Shift+Scroll** zooms the axis nearest the mouse cursor, so you
+   can scale each axis independently.
+4. **Right-click an axis label** for a context menu: rename, set
+   range manually, auto-scale this axis only, or remove it (only if
+   empty).
+5. When a new channel arrives whose unit text matches an existing
+   axis's label, it auto-assigns to that axis.
 
 ### Recorder
 
