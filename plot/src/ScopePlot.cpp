@@ -16,6 +16,8 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
+#include <spdlog/spdlog.h>
+
 #include <array>
 #include <cmath>
 #include <limits>
@@ -617,21 +619,52 @@ bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
     switch (ev->type()) {
         case QEvent::Wheel: {
             auto* w = static_cast<QWheelEvent*>(ev);
-            // On X11 (and some other setups) Shift+Wheel converts the
-            // delta from y() to x() — it's the horizontal-scroll
-            // convention. Take whichever axis is non-zero so Shift+Scroll
-            // works the same as plain Scroll.
+            // X11 swaps angleDelta() from y() to x() when Shift is held; high-
+            // precision devices may only fill pixelDelta(). Take whichever
+            // non-zero source we can find.
             const QPoint d = w->angleDelta();
-            const int rawDelta = (d.y() != 0) ? d.y() : d.x();
+            int rawDelta = (d.y() != 0) ? d.y() : d.x();
+            if (rawDelta == 0) {
+                const QPoint p = w->pixelDelta();
+                rawDelta = (p.y() != 0) ? p.y() : p.x();
+            }
             if (rawDelta == 0) return false;
             const double notches = rawDelta / 120.0;
             const double factor = std::pow(kZoomStep, notches);
             const QPointF mousePx = w->position();
             const Qt::KeyboardModifiers m = w->modifiers();
-            if (m & Qt::ControlModifier)        zoomAt(mousePx, factor, 0,    -1);
-            else if (m & Qt::ShiftModifier) {
+
+            // Where is the cursor relative to the inner plot rect?
+            const QRect ar = impl_->plot->axisRect()->rect();
+            const bool overYAxisArea = (mousePx.x() < ar.left()
+                                        || mousePx.x() > ar.right());
+            const bool overXAxisArea = (mousePx.y() < ar.top()
+                                        || mousePx.y() > ar.bottom());
+
+            spdlog::debug("Wheel: angleDelta=({},{}), pixelDelta=({},{}), "
+                          "mods=0x{:x}, mouse=({:.0f},{:.0f}), "
+                          "overY={}, overX={}",
+                          d.x(), d.y(),
+                          w->pixelDelta().x(), w->pixelDelta().y(),
+                          static_cast<int>(m), mousePx.x(), mousePx.y(),
+                          overYAxisArea, overXAxisArea);
+
+            // Routing (first match wins):
+            //  1. Modifier-explicit zoom (Ctrl=X, Shift/Alt=closest Y)
+            //  2. Cursor hovering over an axis label area zooms that axis
+            //  3. Otherwise: zoom both axes (default)
+            // Some window managers eat Shift+Wheel, so the hover convention
+            // and Alt are alternative ways to get axis-specific zoom.
+            if (m & Qt::ControlModifier) {
+                zoomAt(mousePx, factor, 0, -1);
+            } else if (m & (Qt::ShiftModifier | Qt::AltModifier)) {
                 const int idx = closestYAxisToPos(mousePx);
                 zoomAt(mousePx, 0, factor, idx);
+            } else if (overYAxisArea) {
+                const int idx = closestYAxisToPos(mousePx);
+                zoomAt(mousePx, 0, factor, idx);
+            } else if (overXAxisArea) {
+                zoomAt(mousePx, factor, 0, -1);
             } else {
                 zoomAt(mousePx, factor, factor, -1);
             }

@@ -73,15 +73,22 @@ Both plots share the same `ScopePlot` widget with these conventions
 
 | Action | What it does |
 |---|---|
-| Scroll | Zoom both axes, centred on mouse |
-| **Ctrl+Scroll** | **Zoom X axis only** |
-| **Shift+Scroll** | **Zoom Y axis only** |
+| Scroll (over plot area) | Zoom both axes, centred on mouse |
+| **Scroll (over a Y-axis label area)** | **Zoom that Y axis only** |
+| **Scroll (over the X-axis label area)** | **Zoom X axis only** |
+| **Ctrl+Scroll** | Zoom X axis only (anywhere) |
+| **Shift+Scroll** or **Alt+Scroll** | Zoom the Y axis nearest the cursor (anywhere) |
 | Left-drag | Pan |
-| **Ctrl+Left-drag** | **Zoom to drawn rectangle** |
+| **Ctrl+Left-drag** | Zoom to drawn rectangle |
 | `Home` | Fit all data |
 | `+` / `-` | Zoom in / out |
 | Arrow keys | Pan |
 | Mouse hover | Crosshair + X / Y readout per channel |
+
+Note: some Linux window managers (i3, KWin, etc.) intercept
+Shift+Wheel for window operations. If your `Shift+Scroll` does nothing,
+either use **`Alt+Scroll`** or simply **hover over the axis label area
+and scroll** — both produce the same axis-specific zoom.
 
 A toolbar above each plot exposes the same actions as buttons:
 `⤢ Fit`, `↔ +` / `↔ −`, `↕ +` / `↕ −`, `Y+` (add a Y axis), `PNG…`

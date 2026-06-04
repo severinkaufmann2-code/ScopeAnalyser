@@ -128,6 +128,100 @@ TEST(ScopePlot, DeriveChannelColorVariesPerIndex) {
     EXPECT_NE(c1, c2);
 }
 
+TEST(ScopePlot, AltWheelZoomsClosestYAxis) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(800, 600);
+    sp.show();
+    QApplication::processEvents();
+    const int rightIdx = sp.addYAxis("R", Qt::AlignRight);
+    QApplication::processEvents();
+
+    auto* plot = sp.plot();
+    plot->yAxis->setRange(0, 100);
+    sp.yAxis(rightIdx)->setRange(0, 1000);
+
+    const QRect ar = plot->axisRect()->rect();
+    const QPointF localPos(ar.right() + 5, ar.center().y());
+    QWheelEvent ev(localPos,
+                   plot->mapToGlobal(localPos.toPoint()),
+                   QPoint(),
+                   QPoint(0, 120),
+                   Qt::NoButton,
+                   Qt::AltModifier,         // <-- Alt, not Shift
+                   Qt::NoScrollPhase,
+                   false);
+    QApplication::sendEvent(plot, &ev);
+    QApplication::processEvents();
+
+    EXPECT_LT(sp.yAxis(rightIdx)->range().size(), 1000.0);
+    EXPECT_DOUBLE_EQ(plot->yAxis->range().size(), 100.0);
+}
+
+TEST(ScopePlot, NoModifierWheelOverYAxisAreaZoomsThatAxis) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(800, 600);
+    sp.show();
+    QApplication::processEvents();
+    const int rightIdx = sp.addYAxis("R", Qt::AlignRight);
+    QApplication::processEvents();
+
+    auto* plot = sp.plot();
+    plot->xAxis->setRange(0, 10);
+    plot->yAxis->setRange(0, 100);
+    sp.yAxis(rightIdx)->setRange(0, 1000);
+
+    const QRect ar = plot->axisRect()->rect();
+    // Hover OVER the right-axis label area (outside the inner plot rect)
+    // with NO modifier — should zoom only Y2, not X, not Y1.
+    const QPointF localPos(ar.right() + 5, ar.center().y());
+    QWheelEvent ev(localPos,
+                   plot->mapToGlobal(localPos.toPoint()),
+                   QPoint(),
+                   QPoint(0, 120),
+                   Qt::NoButton,
+                   Qt::NoModifier,
+                   Qt::NoScrollPhase,
+                   false);
+    QApplication::sendEvent(plot, &ev);
+    QApplication::processEvents();
+
+    EXPECT_LT(sp.yAxis(rightIdx)->range().size(), 1000.0);
+    EXPECT_DOUBLE_EQ(plot->yAxis->range().size(), 100.0);
+    EXPECT_DOUBLE_EQ(plot->xAxis->range().size(), 10.0);
+}
+
+TEST(ScopePlot, NoModifierWheelOverPlotCenterZoomsBoth) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(800, 600);
+    sp.show();
+    QApplication::processEvents();
+    auto* plot = sp.plot();
+    plot->xAxis->setRange(0, 10);
+    plot->yAxis->setRange(0, 100);
+
+    const QRect ar = plot->axisRect()->rect();
+    const QPointF localPos(ar.center());
+    QWheelEvent ev(localPos,
+                   plot->mapToGlobal(localPos.toPoint()),
+                   QPoint(),
+                   QPoint(0, 120),
+                   Qt::NoButton,
+                   Qt::NoModifier,
+                   Qt::NoScrollPhase,
+                   false);
+    QApplication::sendEvent(plot, &ev);
+    QApplication::processEvents();
+
+    EXPECT_LT(plot->xAxis->range().size(), 10.0);
+    EXPECT_LT(plot->yAxis->range().size(), 100.0);
+}
+
 TEST(ScopePlot, ShiftWheelDisablesAutoFitOnTargetAxis) {
     GuiAppFixture fixture;
 
