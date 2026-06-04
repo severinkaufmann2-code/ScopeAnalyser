@@ -650,16 +650,25 @@ bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
                           overYAxisArea, overXAxisArea);
 
             // Routing (first match wins):
-            //  1. Modifier-explicit zoom (Ctrl=X, Shift/Alt=closest Y)
-            //  2. Cursor hovering over an axis label area zooms that axis
-            //  3. Otherwise: zoom both axes (default)
-            // Some window managers eat Shift+Wheel, so the hover convention
-            // and Alt are alternative ways to get axis-specific zoom.
+            //  1. Ctrl modifier         → X only
+            //  2. Shift / Alt modifier  → if cursor is hovering near a Y
+            //                             axis: that axis only. Otherwise
+            //                             (mouse in plot interior): all Y
+            //                             axes together. This way you can
+            //                             still hit "zoom all Y" with Shift
+            //                             when you don't want to pick one.
+            //  3. Cursor over a Y-axis label area (no modifier) → that axis
+            //  4. Cursor over the X-axis label area (no modifier) → X only
+            //  5. Default (cursor inside plot rect, no modifier) → zoom both
             if (m & Qt::ControlModifier) {
                 zoomAt(mousePx, factor, 0, -1);
             } else if (m & (Qt::ShiftModifier | Qt::AltModifier)) {
-                const int idx = closestYAxisToPos(mousePx);
-                zoomAt(mousePx, 0, factor, idx);
+                if (overYAxisArea) {
+                    const int idx = closestYAxisToPos(mousePx);
+                    zoomAt(mousePx, 0, factor, idx);
+                } else {
+                    zoomAt(mousePx, 0, factor, -1);   // all Y axes
+                }
             } else if (overYAxisArea) {
                 const int idx = closestYAxisToPos(mousePx);
                 zoomAt(mousePx, 0, factor, idx);

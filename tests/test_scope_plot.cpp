@@ -128,6 +128,42 @@ TEST(ScopePlot, DeriveChannelColorVariesPerIndex) {
     EXPECT_NE(c1, c2);
 }
 
+TEST(ScopePlot, ShiftWheelInPlotCenterZoomsAllYAxes) {
+    // Hovering anywhere INSIDE the plot rect with Shift held should zoom
+    // every Y axis at once (don't force the user to pick one). Hovering
+    // outside the plot rect — over an axis label area — still picks just
+    // that axis.
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(800, 600);
+    sp.show();
+    QApplication::processEvents();
+    const int rightIdx = sp.addYAxis("R", Qt::AlignRight);
+    QApplication::processEvents();
+
+    auto* plot = sp.plot();
+    plot->yAxis->setRange(0, 100);
+    sp.yAxis(rightIdx)->setRange(0, 1000);
+
+    const QRect ar = plot->axisRect()->rect();
+    const QPointF localPos(ar.center());
+    QWheelEvent ev(localPos,
+                   plot->mapToGlobal(localPos.toPoint()),
+                   QPoint(),
+                   QPoint(0, 120),
+                   Qt::NoButton,
+                   Qt::ShiftModifier,
+                   Qt::NoScrollPhase,
+                   false);
+    QApplication::sendEvent(plot, &ev);
+    QApplication::processEvents();
+
+    // BOTH axes should have shrunk.
+    EXPECT_LT(plot->yAxis->range().size(), 100.0);
+    EXPECT_LT(sp.yAxis(rightIdx)->range().size(), 1000.0);
+}
+
 TEST(ScopePlot, AltWheelZoomsClosestYAxis) {
     GuiAppFixture fixture;
 

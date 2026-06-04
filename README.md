@@ -77,7 +77,8 @@ Both plots share the same `ScopePlot` widget with these conventions
 | **Scroll (over a Y-axis label area)** | **Zoom that Y axis only** |
 | **Scroll (over the X-axis label area)** | **Zoom X axis only** |
 | **Ctrl+Scroll** | Zoom X axis only (anywhere) |
-| **Shift+Scroll** or **Alt+Scroll** | Zoom the Y axis nearest the cursor (anywhere) |
+| **Shift+Scroll** or **Alt+Scroll** over a Y-axis area | Zoom that Y axis only |
+| **Shift+Scroll** or **Alt+Scroll** over the plot interior | Zoom **all** Y axes together |
 | Left-drag | Pan |
 | **Ctrl+Left-drag** | Zoom to drawn rectangle |
 | `Home` | Fit all data |
