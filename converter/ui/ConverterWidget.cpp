@@ -99,11 +99,22 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     });
 
     connect(impl_->mapping, &ui::MappingPanel::saveProfileRequested, this, [this]{
-        QString path = QFileDialog::getSaveFileName(
-            this, "Save profile", QString(),
-            "Scope conversion profile (*.scaconv);;All files (*)");
-        if (path.isEmpty()) return;
+        // Use the non-static dialog API so we can set a default suffix.
+        // With setDefaultSuffix, Qt appends ".scaconv" if the user didn't
+        // type it AND runs the "file already exists?" check against the
+        // full name — so an unrelated extensionless file with the same
+        // base name doesn't trigger a bogus overwrite prompt.
+        QFileDialog dlg(this, "Save profile");
+        dlg.setAcceptMode(QFileDialog::AcceptSave);
+        dlg.setNameFilters({"Scope conversion profile (*.scaconv)",
+                            "All files (*)"});
+        dlg.setDefaultSuffix("scaconv");
+        if (dlg.exec() != QDialog::Accepted) return;
+        const QStringList sel = dlg.selectedFiles();
+        if (sel.isEmpty()) return;
+        QString path = sel.first();
         if (!path.endsWith(".scaconv", Qt::CaseInsensitive)) path += ".scaconv";
+
         const auto profile = impl_->mapping->buildProfile("csv");
         QString err;
         if (!profile.saveToFile(std::filesystem::path(path.toStdString()), &err)) {
