@@ -59,6 +59,36 @@ TEST(CsvConverter, ImportsHeaderedFile) {
     std::filesystem::remove(path);
 }
 
+TEST(CsvConverter, CustomTabDelimiterAndPipeRowDelimiter) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_custom.csv";
+    {
+        // Tab-separated, pipe-separated rows (all on one line).
+        std::ofstream f(path);
+        f << "t\tv|0.0\t10.0|0.1\t20.0|0.2\t30.0";
+    }
+    CsvSource src(path, "\t", "|");
+    EXPECT_EQ(src.rowCount(), 4);     // header + 3 data rows
+    EXPECT_EQ(src.columnCount(), 2);
+
+    ConverterProfile p;
+    p.headerRow = 1;
+    p.decimalSeparator = ".";
+    p.columnDelimiter = "\t";
+    p.rowDelimiter    = "|";
+    p.columns = {
+        {"A", ColumnMapping::Role::XTime,  "",     "s"},
+        {"B", ColumnMapping::Role::Signal, "V",    "V"},
+    };
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    EXPECT_EQ(sigs[0]->sampleCount(), 3u);
+    auto vs = sigs[0]->readAsDouble();
+    EXPECT_DOUBLE_EQ(vs[2], 30.0);
+
+    std::filesystem::remove(path);
+}
+
 TEST(CsvConverter, HandlesEuropeanDecimals) {
     auto path = std::filesystem::temp_directory_path() / "scope_test_csv_eu.csv";
     {
@@ -67,7 +97,7 @@ TEST(CsvConverter, HandlesEuropeanDecimals) {
         f << "0,0;0,0\n";
         f << "0,1;1,5\n";
     }
-    CsvSource src(path, ';');
+    CsvSource src(path, ";");
     EXPECT_EQ(src.columnCount(), 2);
 
     ConverterProfile p;

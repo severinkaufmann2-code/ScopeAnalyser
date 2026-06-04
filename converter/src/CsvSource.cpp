@@ -15,7 +15,9 @@ using scope::core::TimestampNs;
 
 namespace {
 
-// Simple CSV row splitter that handles double-quoted fields.
+// Simple CSV row splitter that handles double-quoted fields. The delimiter
+// must be a single character (the only kind of column separator CSV files use
+// in practice).
 QStringList splitCsv(const QString& line, QChar delim) {
     QStringList out;
     QString    cur;
@@ -89,15 +91,36 @@ int labelToCol(const QString& label) {
 
 }  // namespace
 
-CsvSource::CsvSource(const std::filesystem::path& path, QChar delimiter, QChar decimal)
-    : path_(path), delimiter_(delimiter), decimal_(decimal) {
+CsvSource::CsvSource(const std::filesystem::path& path,
+                     QString columnDelimiter,
+                     QString rowDelimiter,
+                     QChar decimal)
+    : path_(path),
+      columnDelimiter_(std::move(columnDelimiter)),
+      rowDelimiter_(std::move(rowDelimiter)),
+      decimal_(decimal) {
+
     QFile f(QString::fromStdString(path.string()));
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+    if (!f.open(QIODevice::ReadOnly)) return;
+
+    const QChar colChar = columnDelimiter_.isEmpty() ? QChar(',') : columnDelimiter_[0];
+
     QTextStream ts(&f);
-    while (!ts.atEnd()) {
-        const QString line = ts.readLine();
-        if (line.isEmpty() && ts.atEnd()) break;
-        rows_.push_back(splitCsv(line, delimiter_));
+    if (rowDelimiter_ == "\n" || rowDelimiter_ == "\r\n") {
+        // Standard line-based parsing — QTextStream::readLine handles both
+        // \n and \r\n. Empty trailing lines are ignored.
+        while (!ts.atEnd()) {
+            const QString line = ts.readLine();
+            if (line.isEmpty() && ts.atEnd()) break;
+            rows_.push_back(splitCsv(line, colChar));
+        }
+    } else {
+        // Custom row delimiter — read whole file then split.
+        const QString all = ts.readAll();
+        const auto parts = all.split(rowDelimiter_, Qt::SkipEmptyParts);
+        for (const auto& part : parts) {
+            rows_.push_back(splitCsv(part, colChar));
+        }
     }
 }
 

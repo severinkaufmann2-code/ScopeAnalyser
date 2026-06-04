@@ -6,6 +6,7 @@
 
 #include <QAbstractItemModel>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -41,6 +42,7 @@ struct ConverterWidget::Impl {
     QLabel*               statusLabel{nullptr};
     std::unique_ptr<CsvSource>          csv;
     std::unique_ptr<QAbstractItemModel> previewModel;
+    QString               currentFile;
 
     QStringList currentColumnLabels() const {
         QStringList out;
@@ -78,20 +80,32 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     root->addLayout(topBar);
     root->addWidget(split, /*stretch=*/1);
 
-    connect(openBtn, &QPushButton::clicked, this, [this]{
-        const QString path = QFileDialog::getOpenFileName(
-            this, "Open CSV file", QString(), "CSV files (*.csv);;All files (*)");
-        if (path.isEmpty()) return;
+    auto reparseCurrentFile = [this]{
+        if (impl_->currentFile.isEmpty()) return;
         impl_->csv = std::make_unique<CsvSource>(
-            std::filesystem::path(path.toStdString()));
+            std::filesystem::path(impl_->currentFile.toStdString()),
+            impl_->mapping->columnDelimiter(),
+            impl_->mapping->rowDelimiter());
         impl_->previewModel = impl_->csv->previewModel("file");
         impl_->preview->setModel(impl_->previewModel.get());
         impl_->mapping->setColumns(impl_->currentColumnLabels());
-        impl_->statusLabel->setText(QString("%1: %2 rows x %3 cols")
-                                        .arg(QFileInfo(path).fileName())
+        impl_->statusLabel->setText(QString("%1: %2 rows × %3 cols")
+                                        .arg(QFileInfo(impl_->currentFile).fileName())
                                         .arg(impl_->csv->rowCount())
                                         .arg(impl_->csv->columnCount()));
+    };
+
+    connect(openBtn, &QPushButton::clicked, this, [this, reparseCurrentFile]{
+        const QString path = QFileDialog::getOpenFileName(
+            this, "Open CSV file", QString(),
+            "CSV / text files (*.csv *.tsv *.txt);;All files (*)");
+        if (path.isEmpty()) return;
+        impl_->currentFile = path;
+        reparseCurrentFile();
     });
+
+    connect(impl_->mapping, &ui::MappingPanel::parseOptionsChanged,
+            this, [this, reparseCurrentFile]{ reparseCurrentFile(); });
 
     connect(impl_->mapping, &ui::MappingPanel::applyRequested, this, [this]{
         if (!impl_->csv) { QMessageBox::information(this, "No file", "Open a CSV first."); return; }
@@ -117,7 +131,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             QMessageBox::critical(this, "Save failed", err);
     });
 
-    connect(impl_->mapping, &ui::MappingPanel::loadProfileRequested, this, [this]{
+    connect(impl_->mapping, &ui::MappingPanel::loadProfileRequested, this, [this, reparseCurrentFile]{
         const QString path = QFileDialog::getOpenFileName(
             this, "Load profile", QString(), "Scope conversion profile (*.scaconv)");
         if (path.isEmpty()) return;
@@ -129,6 +143,10 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             return;
         }
         impl_->mapping->setProfile(profile);
+        // setProfile fires parseOptionsChanged for combo changes, which calls
+        // reparseCurrentFile if a file is open. Still call once here in case
+        // the combo selections didn't actually change.
+        reparseCurrentFile();
     });
 }
 

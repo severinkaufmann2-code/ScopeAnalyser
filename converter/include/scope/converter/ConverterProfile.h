@@ -23,6 +23,8 @@ struct ConverterProfile {
     QString range;            // e.g. "A2:F"
     int     headerRow{1};
     QString decimalSeparator{"."};
+    QString columnDelimiter{","};   // CSV: column separator, single char (e.g. ",", ";", "\t", "|")
+    QString rowDelimiter{"\n"};     // CSV: row separator, default newline
     std::vector<ColumnMapping> columns;
 
     static ConverterProfile loadFromFile(const std::filesystem::path& path,

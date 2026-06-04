@@ -11,11 +11,18 @@ namespace scope::converter {
 // CSV file source. Reads the entire file into memory once on construction;
 // callers then enumerate the single region ("file") and ask for previews or
 // apply a profile.
+//
+// `columnDelimiter` is a single character (e.g. ",", ";", "\t", "|").
+// `rowDelimiter` is a string. The default "\n" also accepts "\r\n" (the
+// trailing "\r" of each line is stripped). Any other value is treated as an
+// exact byte-sequence row separator (useful for files where the whole CSV
+// lives on one line separated by some non-newline character).
 class CsvSource : public IConverterSource {
 public:
     explicit CsvSource(const std::filesystem::path& path,
-                       QChar delimiter = ',',
-                       QChar decimal   = '.');
+                       QString columnDelimiter = ",",
+                       QString rowDelimiter    = "\n",
+                       QChar   decimal         = '.');
     ~CsvSource() override;
 
     QString id() const override { return "csv"; }
@@ -33,8 +40,9 @@ public:
 
 private:
     std::filesystem::path path_;
-    QChar  delimiter_;
-    QChar  decimal_;
+    QString columnDelimiter_;
+    QString rowDelimiter_;
+    QChar   decimal_;
     std::vector<QStringList> rows_;
 };
 

@@ -36,6 +36,8 @@ ConverterProfile ConverterProfile::loadFromFile(const std::filesystem::path& pat
         p.range = QString::fromStdString(j.value("range", std::string{}));
         p.headerRow = j.value("headerRow", 1);
         p.decimalSeparator = QString::fromStdString(j.value("decimal", std::string{"."}));
+        p.columnDelimiter = QString::fromStdString(j.value("columnDelimiter", std::string{","}));
+        p.rowDelimiter    = QString::fromStdString(j.value("rowDelimiter",    std::string{"\n"}));
         if (j.contains("columns")) {
             for (const auto& jc : j["columns"]) {
                 ColumnMapping c;
@@ -62,6 +64,8 @@ bool ConverterProfile::saveToFile(const std::filesystem::path& path,
         j["range"]   = range.toStdString();
         j["headerRow"] = headerRow;
         j["decimal"] = decimalSeparator.toStdString();
+        j["columnDelimiter"] = columnDelimiter.toStdString();
+        j["rowDelimiter"]    = rowDelimiter.toStdString();
         j["columns"] = json::array();
         for (const auto& c : columns) {
             json jc;
