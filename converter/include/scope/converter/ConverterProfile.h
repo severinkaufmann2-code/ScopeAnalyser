@@ -7,35 +7,46 @@
 
 namespace scope::converter {
 
-// One channel the user has manually added in the Converter. References a
-// single column by letter (e.g. "A") and optionally a row range (1-based for
-// the UI, stored 0-based here; -1 means "auto", i.e. headerRow+1 .. EOF).
+// One channel the user has manually added. References a single column by
+// letter (e.g. "A") and optionally a row range (-1 means "auto").
+//
+// For Y signals, the X source is per-channel:
+//   useSampleRate=true  → synthesise timestamps from sampleRateHz
+//   xSourceColumn != "" → take timestamps from that column (must also exist
+//                          in the profile with role==XTime)
+//   neither set         → fall back to profile-level useSampleRate, or the
+//                          first XTime column in the profile (back-compat).
 struct ColumnMapping {
     enum class Role { Ignore, XTime, Signal };
-    QString columnId;     // "A", "B", ...
+    QString columnId;
     Role    role{Role::Ignore};
-    QString signalName;   // only used when role == Signal
+    QString signalName;
     QString unit;
-    int     rowStart{-1}; // 0-based inclusive; -1 = auto
-    int     rowEnd{-1};   // 0-based inclusive; -1 = auto
+    int     rowStart{-1};
+    int     rowEnd{-1};
+
+    QString xSourceColumn;            // letter of the X column to use, or empty
+    bool    useSampleRate{false};
+    double  sampleRateHz{0.0};
+    QString sampleRateDisplayUnit{"ms"};
 };
 
 struct ConverterProfile {
     int version{1};
-    QString sourceType;       // "excel", "csv"
-    QString sheet;            // Excel-specific
-    QString range;            // e.g. "A2:F"
+    QString sourceType;
+    QString sheet;
+    QString range;
     int     headerRow{1};
     QString decimalSeparator{"."};
     QString columnDelimiter{","};
     QString rowDelimiter{"\n"};
 
-    // X-axis from sample rate. When enabled the importer ignores any column
-    // whose role is XTime and synthesises timestamps spaced 1/sampleRateHz
-    // apart, starting at 0.
+    // Profile-level X-from-sample-rate. Kept for backward compatibility with
+    // earlier .scaconv files. Applied per Y signal only when that signal has
+    // no per-channel X source set.
     bool    useSampleRate{false};
     double  sampleRateHz{0.0};
-    QString sampleRateDisplayUnit{"ms"};  // round-tripped for the UI
+    QString sampleRateDisplayUnit{"ms"};
 
     std::vector<ColumnMapping> columns;
 

@@ -110,6 +110,98 @@ TEST(CsvConverter, PerColumnRowRange) {
     std::filesystem::remove(path);
 }
 
+TEST(CsvConverter, PerChannelSampleRate) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_per_ch_rate.csv";
+    {
+        std::ofstream f(path);
+        f << "fast,slow\n";
+        for (int i = 0; i < 5; ++i) f << i << "," << (i * 10) << "\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.headerRow = 1;
+    // Two Y channels with DIFFERENT sample rates — no X column at all.
+    ColumnMapping fast;
+    fast.columnId = "A"; fast.role = ColumnMapping::Role::Signal;
+    fast.signalName = "Fast"; fast.useSampleRate = true;
+    fast.sampleRateHz = 1000.0;             // 1 ms tick
+    ColumnMapping slow;
+    slow.columnId = "B"; slow.role = ColumnMapping::Role::Signal;
+    slow.signalName = "Slow"; slow.useSampleRate = true;
+    slow.sampleRateHz = 100.0;              // 10 ms tick
+    p.columns = {fast, slow};
+
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 2u) << err.toStdString();
+
+    auto findByName = [&](const QString& name) -> std::shared_ptr<Signal> {
+        for (const auto& s : sigs) if (s->meta().name == name) return s;
+        return nullptr;
+    };
+    auto fastSig = findByName("Fast");
+    auto slowSig = findByName("Slow");
+    ASSERT_TRUE(fastSig);
+    ASSERT_TRUE(slowSig);
+    // Both 5 samples, same data rows, different timestamps.
+    EXPECT_EQ(fastSig->sampleCount(), 5u);
+    EXPECT_EQ(slowSig->sampleCount(), 5u);
+    auto fv = fastSig->snapshotForRead();
+    auto sv = slowSig->snapshotForRead();
+    EXPECT_EQ(fv.timestamps[1], 1'000'000);    // 1 ms
+    EXPECT_EQ(sv.timestamps[1], 10'000'000);   // 10 ms
+    EXPECT_EQ(fastSig->meta().sampleRateHz, 1000.0);
+    EXPECT_EQ(slowSig->meta().sampleRateHz, 100.0);
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, MixedXSourceAndRate) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_mixed.csv";
+    {
+        std::ofstream f(path);
+        f << "t,a,b\n";
+        for (int i = 0; i < 4; ++i) f << (i * 0.1) << "," << i << "," << (i * 100) << "\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.headerRow = 1;
+    ColumnMapping x;
+    x.columnId = "A"; x.role = ColumnMapping::Role::XTime; x.unit = "s";
+    ColumnMapping yA;
+    yA.columnId = "B"; yA.role = ColumnMapping::Role::Signal;
+    yA.signalName = "FromX"; yA.xSourceColumn = "A";
+    ColumnMapping yB;
+    yB.columnId = "C"; yB.role = ColumnMapping::Role::Signal;
+    yB.signalName = "FromRate"; yB.useSampleRate = true;
+    yB.sampleRateHz = 500.0;   // 2 ms tick
+    p.columns = {x, yA, yB};
+
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 2u) << err.toStdString();
+
+    auto findByName = [&](const QString& name) -> std::shared_ptr<Signal> {
+        for (const auto& s : sigs) if (s->meta().name == name) return s;
+        return nullptr;
+    };
+    auto fromX = findByName("FromX");
+    auto fromR = findByName("FromRate");
+    ASSERT_TRUE(fromX);
+    ASSERT_TRUE(fromR);
+
+    // FromX: timestamps come from column A (0.0, 0.1, 0.2, 0.3 seconds)
+    auto xView = fromX->snapshotForRead();
+    EXPECT_EQ(xView.timestamps[1], 100'000'000);  // 0.1 s = 1e8 ns
+
+    // FromRate: timestamps come from sample rate (0, 2 ms, 4 ms, 6 ms)
+    auto rView = fromR->snapshotForRead();
+    EXPECT_EQ(rView.timestamps[1], 2'000'000);    // 2 ms = 2e6 ns
+
+    std::filesystem::remove(path);
+}
+
 TEST(CsvConverter, CustomTabDelimiterAndPipeRowDelimiter) {
     auto path = std::filesystem::temp_directory_path() / "scope_test_csv_custom.csv";
     {

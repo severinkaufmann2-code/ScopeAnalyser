@@ -240,6 +240,77 @@ std::shared_ptr<Signal> impl_Cos(const FunctionArgs& a, QString* err)  {
     return elementwiseUnary(a, err, "Cos",  [](double v){ return std::cos(v); });
 }
 
+// Helpers for Resample.
+bool isConstantHere(const std::shared_ptr<Signal>& s) {
+    if (!s) return false;
+    auto view = s->snapshotForRead();
+    return view.count == 1 && view.timestamps[0] == 0
+        && s->meta().sourceSymbol.isEmpty();
+}
+
+double interpAtHere(const TimestampNs* ts, const std::vector<double>& vals,
+                    std::size_t n, TimestampNs t, std::size_t& cursor) {
+    if (n == 0) return 0.0;
+    if (t <= ts[0]) return vals[0];
+    if (t >= ts[n - 1]) return vals[n - 1];
+    while (cursor + 1 < n && ts[cursor + 1] < t) ++cursor;
+    const std::size_t hi = std::min(cursor + 1, n - 1);
+    if (cursor == hi) return vals[cursor];
+    const double dt = static_cast<double>(ts[hi] - ts[cursor]);
+    if (dt == 0) return vals[cursor];
+    const double frac = static_cast<double>(t - ts[cursor]) / dt;
+    return vals[cursor] + frac * (vals[hi] - vals[cursor]);
+}
+
+// Resample(signal, target):
+//   target = scalar constant  → resample to that target rate in Hz, evenly
+//                                spaced timestamps over the signal's range.
+//   target = another signal   → resample to that signal's timestamps,
+//                                restricted to the source signal's range.
+std::shared_ptr<Signal> impl_Resample(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 2, err, "Resample")) return nullptr;
+    auto src = a[0];
+    auto target = a[1];
+    auto srcView = src->snapshotForRead();
+    auto srcVals = src->readAsDouble();
+    std::vector<TimestampNs> outTs;
+    if (srcView.count == 0) return makeDoubleSignal("Resample", outTs, {}, src->meta().unit);
+
+    if (isConstantHere(target)) {
+        double rate = 0;
+        if (!asScalar(target, rate) || rate <= 0) {
+            if (err) *err = "Resample: target rate must be a positive scalar (Hz)";
+            return nullptr;
+        }
+        const auto dtNs = static_cast<TimestampNs>(1e9 / rate);
+        if (dtNs <= 0) {
+            if (err) *err = "Resample: rate too high for nanosecond timestamps";
+            return nullptr;
+        }
+        const TimestampNs first = srcView.timestamps[0];
+        const TimestampNs last  = srcView.timestamps[srcView.count - 1];
+        for (TimestampNs t = first; t <= last; t += dtNs) outTs.push_back(t);
+    } else {
+        auto tView = target->snapshotForRead();
+        const TimestampNs lo = srcView.timestamps[0];
+        const TimestampNs hi = srcView.timestamps[srcView.count - 1];
+        outTs.reserve(tView.count);
+        for (std::size_t i = 0; i < tView.count; ++i) {
+            const TimestampNs t = tView.timestamps[i];
+            if (t >= lo && t <= hi) outTs.push_back(t);
+        }
+    }
+
+    std::vector<double> outVals;
+    outVals.reserve(outTs.size());
+    std::size_t cursor = 0;
+    for (TimestampNs t : outTs) {
+        outVals.push_back(
+            interpAtHere(srcView.timestamps, srcVals, srcView.count, t, cursor));
+    }
+    return makeDoubleSignal("Resample", outTs, outVals, src->meta().unit);
+}
+
 }  // namespace
 
 FunctionRegistry& FunctionRegistry::instance() {
@@ -290,6 +361,10 @@ void FunctionRegistry::registerBuiltins() {
         "Element-wise sine.", 1, 1, &impl_Sin);
     add("Cos",        "Cos(signal)",
         "Element-wise cosine.", 1, 1, &impl_Cos);
+    add("Resample",   "Resample(signal, rate_Hz_or_reference_signal)",
+        "Linear-interpolate signal onto a new time grid. Pass a positive scalar "
+        "for the target rate in Hz, or another signal to copy its timestamps.",
+        2, 2, &impl_Resample);
 }
 
 }  // namespace scope::analyser

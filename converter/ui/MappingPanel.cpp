@@ -21,7 +21,33 @@ namespace scope::converter::ui {
 
 namespace {
 
-enum Col { ColCol = 0, ColRows, ColRole, ColName, ColUnit, ColCount };
+enum Col { ColCol = 0, ColRows, ColRole, ColName, ColUnit, ColXSource, ColCount };
+
+// Custom roles to stash the per-channel X-source state on the X-source item.
+constexpr int kRoleXSourceColumn       = Qt::UserRole;       // QString
+constexpr int kRoleUseSampleRate       = Qt::UserRole + 1;   // bool
+constexpr int kRoleSampleRateHz        = Qt::UserRole + 2;   // double
+constexpr int kRoleSampleRateUnit      = Qt::UserRole + 3;   // QString
+
+QString xSourceLabel(const ColumnMapping& m) {
+    if (m.role != ColumnMapping::Role::Signal) return "—";
+    if (m.useSampleRate) {
+        return QString("rate: %1 %2")
+            .arg(QString::number(
+                (m.sampleRateDisplayUnit == "Hz" || m.sampleRateDisplayUnit == "kHz"
+                 || m.sampleRateDisplayUnit == "MHz")
+                ? (m.sampleRateDisplayUnit == "Hz"  ? m.sampleRateHz
+                  : m.sampleRateDisplayUnit == "kHz" ? m.sampleRateHz / 1e3
+                  : m.sampleRateHz / 1e6)
+                : (m.sampleRateDisplayUnit == "s"  ? 1.0 / m.sampleRateHz
+                  : m.sampleRateDisplayUnit == "ms" ? 1e3 / m.sampleRateHz
+                  : m.sampleRateDisplayUnit == "µs" ? 1e6 / m.sampleRateHz
+                  : m.sampleRateDisplayUnit == "ns" ? 1e9 / m.sampleRateHz
+                  : m.sampleRateHz), 'g', 4))
+            .arg(m.sampleRateDisplayUnit);
+    }
+    return m.xSourceColumn.isEmpty() ? "(auto)" : ("col " + m.xSourceColumn);
+}
 
 const char* roleName(ColumnMapping::Role r) {
     switch (r) {
@@ -87,7 +113,7 @@ QString formatRowRange(int start, int end) {
 
 MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
     channelTable_ = new QTableWidget(0, ColCount, this);
-    channelTable_->setHorizontalHeaderLabels({"Col", "Rows", "Role", "Name", "Unit"});
+    channelTable_->setHorizontalHeaderLabels({"Col", "Rows", "Role", "Name", "Unit", "X source"});
     channelTable_->horizontalHeader()->setSectionResizeMode(ColName, QHeaderView::Stretch);
     channelTable_->verticalHeader()->setVisible(false);
     channelTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -119,14 +145,9 @@ MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
     decimalEdit_ = new QLineEdit(".", this);
     decimalEdit_->setMaximumWidth(40);
 
-    useSampleRateCheck_ = new QCheckBox("X-axis from sample time / rate", this);
-    sampleRateValue_    = new QDoubleSpinBox(this);
-    sampleRateValue_->setRange(0.0, 1e12);
-    sampleRateValue_->setDecimals(6);
-    sampleRateValue_->setValue(1.0);
-    sampleRateUnit_     = new QComboBox(this);
-    for (const auto& u : kRateUnits) sampleRateUnit_->addItem(QString::fromUtf8(u.label));
-    sampleRateUnit_->setCurrentIndex(kDefaultRateUnitIndex);
+    // Profile-level sample-rate widgets used to live here; they're now
+    // per-channel (in ChannelEditDialog). The data fields stay on the profile
+    // struct for back-compat with older .scaconv files.
 
     applyBtn_ = new QPushButton("Apply (import signals)", this);
     saveBtn_  = new QPushButton("Save profile…", this);
@@ -149,11 +170,6 @@ MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
 
     opts->addWidget(new QLabel("Decimal separator:", this), row, 0);
     opts->addWidget(decimalEdit_, row++, 1);
-
-    opts->addWidget(useSampleRateCheck_, row, 0);
-    auto* rr = new QHBoxLayout();
-    rr->addWidget(sampleRateValue_); rr->addWidget(sampleRateUnit_); rr->addStretch();
-    opts->addLayout(rr, row++, 1);
 
     auto* chBtnRow = new QHBoxLayout();
     chBtnRow->addWidget(addBtn_);
@@ -214,11 +230,17 @@ void MappingPanel::appendChannelRow(const ColumnMapping& m) {
     roleItem->setData(Qt::UserRole, static_cast<int>(m.role));
     auto* nameItem = new QTableWidgetItem(m.signalName);
     auto* unitItem = new QTableWidgetItem(m.unit);
-    channelTable_->setItem(row, ColCol,  colItem);
-    channelTable_->setItem(row, ColRows, rowsItem);
-    channelTable_->setItem(row, ColRole, roleItem);
-    channelTable_->setItem(row, ColName, nameItem);
-    channelTable_->setItem(row, ColUnit, unitItem);
+    auto* xSrcItem = new QTableWidgetItem(xSourceLabel(m));
+    xSrcItem->setData(kRoleXSourceColumn,   m.xSourceColumn);
+    xSrcItem->setData(kRoleUseSampleRate,   m.useSampleRate);
+    xSrcItem->setData(kRoleSampleRateHz,    m.sampleRateHz);
+    xSrcItem->setData(kRoleSampleRateUnit,  m.sampleRateDisplayUnit);
+    channelTable_->setItem(row, ColCol,    colItem);
+    channelTable_->setItem(row, ColRows,   rowsItem);
+    channelTable_->setItem(row, ColRole,   roleItem);
+    channelTable_->setItem(row, ColName,   nameItem);
+    channelTable_->setItem(row, ColUnit,   unitItem);
+    channelTable_->setItem(row, ColXSource, xSrcItem);
 }
 
 ColumnMapping MappingPanel::rowToMapping(int row) const {
@@ -231,11 +253,24 @@ ColumnMapping MappingPanel::rowToMapping(int row) const {
                       channelTable_->item(row, ColRole)->data(Qt::UserRole).toInt());
     m.signalName= channelTable_->item(row, ColName)->text();
     m.unit      = channelTable_->item(row, ColUnit)->text();
+    if (auto* xs = channelTable_->item(row, ColXSource)) {
+        m.xSourceColumn         = xs->data(kRoleXSourceColumn).toString();
+        m.useSampleRate         = xs->data(kRoleUseSampleRate).toBool();
+        m.sampleRateHz          = xs->data(kRoleSampleRateHz).toDouble();
+        m.sampleRateDisplayUnit = xs->data(kRoleSampleRateUnit).toString();
+        if (m.sampleRateDisplayUnit.isEmpty()) m.sampleRateDisplayUnit = "ms";
+    }
     return m;
 }
 
 void MappingPanel::onAddChannel() {
     ChannelEditDialog dlg(this);
+    QStringList xCols;
+    for (int r = 0; r < channelTable_->rowCount(); ++r) {
+        const auto m = rowToMapping(r);
+        if (m.role == ColumnMapping::Role::XTime) xCols << m.columnId;
+    }
+    dlg.setAvailableXColumns(xCols);
     while (dlg.exec() == QDialog::Accepted) {
         ColumnMapping m;
         QString err;
@@ -252,6 +287,13 @@ void MappingPanel::onEditChannel() {
     const int row = channelTable_->currentRow();
     if (row < 0) return;
     ChannelEditDialog dlg(this);
+    QStringList xCols;
+    for (int r = 0; r < channelTable_->rowCount(); ++r) {
+        if (r == row) continue;
+        const auto m = rowToMapping(r);
+        if (m.role == ColumnMapping::Role::XTime) xCols << m.columnId;
+    }
+    dlg.setAvailableXColumns(xCols);
     dlg.setMapping(rowToMapping(row));
     while (dlg.exec() == QDialog::Accepted) {
         ColumnMapping m;
@@ -269,6 +311,12 @@ void MappingPanel::onEditChannel() {
         channelTable_->item(row, ColRole)->setData(Qt::UserRole, static_cast<int>(m.role));
         channelTable_->item(row, ColName)->setText(m.signalName);
         channelTable_->item(row, ColUnit)->setText(m.unit);
+        auto* xs = channelTable_->item(row, ColXSource);
+        xs->setText(xSourceLabel(m));
+        xs->setData(kRoleXSourceColumn,   m.xSourceColumn);
+        xs->setData(kRoleUseSampleRate,   m.useSampleRate);
+        xs->setData(kRoleSampleRateHz,    m.sampleRateHz);
+        xs->setData(kRoleSampleRateUnit,  m.sampleRateDisplayUnit);
         return;
     }
 }
@@ -299,14 +347,8 @@ void MappingPanel::setProfile(const ConverterProfile& p) {
     headerSpin_->setValue(p.headerRow);
     decimalEdit_->setText(p.decimalSeparator);
 
-    useSampleRateCheck_->setChecked(p.useSampleRate);
-    if (p.sampleRateHz > 0) {
-        const int idx = unitIndexFromName(p.sampleRateDisplayUnit);
-        sampleRateUnit_->setCurrentIndex(idx);
-        const auto& u = kRateUnits[idx];
-        const double v = (u.m > 0) ? p.sampleRateHz / u.m : 1.0 / (p.sampleRateHz * -u.m);
-        sampleRateValue_->setValue(v);
-    }
+    // Profile-level useSampleRate / sampleRateHz are kept on the loaded
+    // profile for back-compat with old files; no UI here.
 
     channelTable_->setRowCount(0);
     for (const auto& c : p.columns) appendChannelRow(c);
@@ -319,9 +361,9 @@ ConverterProfile MappingPanel::buildProfile(const QString& sourceType) const {
     p.decimalSeparator = decimalEdit_->text().isEmpty() ? QString(".") : decimalEdit_->text();
     p.columnDelimiter = columnDelimiter();
     p.rowDelimiter    = rowDelimiter();
-    p.useSampleRate   = useSampleRate();
-    p.sampleRateHz    = sampleRateHz();
-    p.sampleRateDisplayUnit = sampleRateDisplayUnit();
+    // New profiles use only per-channel sample rate. Profile-level fields
+    // are zero-initialised in the data model; old loaded profiles preserve
+    // their values for back-compat (we don't write them back to false here).
     for (int r = 0; r < channelTable_->rowCount(); ++r) {
         p.columns.push_back(rowToMapping(r));
     }
@@ -340,10 +382,8 @@ QString MappingPanel::rowDelimiter() const {
 }
 int     MappingPanel::headerRow()       const { return headerSpin_->value(); }
 QString MappingPanel::decimal()         const { return decimalEdit_->text(); }
-bool    MappingPanel::useSampleRate()   const { return useSampleRateCheck_->isChecked(); }
-double  MappingPanel::sampleRateHz()    const {
-    return rateValueToHz(sampleRateValue_->value(), sampleRateUnit_->currentIndex());
-}
-QString MappingPanel::sampleRateDisplayUnit() const { return sampleRateUnit_->currentText(); }
+bool    MappingPanel::useSampleRate()   const { return false; }
+double  MappingPanel::sampleRateHz()    const { return 0.0; }
+QString MappingPanel::sampleRateDisplayUnit() const { return QString("ms"); }
 
 }  // namespace scope::converter::ui

@@ -97,8 +97,15 @@ Energy   = RMS(Mock.sine_1hz, 0.5)
 ```
 
 Functions: `Filter`, `Integral`, `Derivative`, `Mean`, `RMS`, `Min`, `Max`,
-`Shift`, `Abs`, `Sqrt`, `Log`, `Sin`, `Cos`. See the side panel for the full
-reference.
+`Shift`, `Abs`, `Sqrt`, `Log`, `Sin`, `Cos`, `Resample`. See the side panel
+for the full reference.
+
+**Different sample rates per channel work out of the box.** When two channels
+of different rates appear in the same expression (e.g. `Hi + Lo` where `Hi`
+is 1 kHz and `Lo` is 100 Hz), the engine linear-interpolates onto the
+intersection of their time ranges using the higher-rate signal's grid. For
+explicit control use `Resample(signal, 1000)` (to 1 kHz) or
+`Resample(signal, OtherChannel)` (to another signal's timestamps).
 
 The plot at the bottom toggles channels via checkboxes.
 
@@ -108,7 +115,11 @@ The plot at the bottom toggles channels via checkboxes.
 2. In the mapping panel, set each column's role: `Ignore`, `X-axis (time)`,
    or `Signal`. Fill in the signal name and unit.
 3. Set the header row index and decimal separator if needed.
-4. **Apply (import signals)** → channels flow into the SignalStore and appear
+4. **Each Y signal has its own X source.** In the Add channel dialog,
+   either pick "from X-axis column [letter]" or "from sample rate
+   [value][unit]". Different Y channels can use different sources, including
+   different sample rates — every imported signal carries its own timeline.
+5. **Apply (import signals)** → channels flow into the SignalStore and appear
    in the Analyser.
 5. **Save profile…** → next time the same kind of file comes in, **Load
    profile…** → **Apply** is two clicks.

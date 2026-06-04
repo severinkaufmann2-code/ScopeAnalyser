@@ -2,45 +2,42 @@
 
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QRadioButton>
 #include <QVBoxLayout>
+
+#include <array>
 
 namespace scope::converter::ui {
 
 namespace {
 
-// Parse "5:100", "5-100", "5:", ":100", "all" or "" into (start, end) using
-// 1-based row numbers from the user's perspective. Output is 0-based;
-// returns -1 for an open end.
 bool parseRowRange(const QString& text, int* startOut, int* endOut, QString* errOut) {
     const QString s = text.trimmed();
     if (s.isEmpty() || s.compare("all", Qt::CaseInsensitive) == 0) {
         *startOut = -1; *endOut = -1; return true;
     }
-
-    // Accept ":" or "-" as the separator.
     int sep = s.indexOf(':');
     if (sep < 0) sep = s.indexOf('-');
     QString lhs, rhs;
-    if (sep < 0) {
-        // Single value: treat as both start AND end (one row).
-        lhs = s; rhs = s;
-    } else {
+    if (sep < 0) { lhs = s; rhs = s; }
+    else {
         lhs = s.left(sep).trimmed();
         rhs = s.mid(sep + 1).trimmed();
     }
-
     auto parseEnd = [&](const QString& t, int* out) -> bool {
         if (t.isEmpty() || t == "*") { *out = -1; return true; }
         bool ok = false;
         const int n = t.toInt(&ok);
         if (!ok || n < 1) return false;
-        *out = n - 1;  // 1-based UI → 0-based internal
+        *out = n - 1;
         return true;
     };
-
     if (!parseEnd(lhs, startOut) || !parseEnd(rhs, endOut)) {
         if (errOut) *errOut = QString("Row range '%1' is not a number, '*', 'all', or e.g. '5:100'").arg(s);
         return false;
@@ -62,16 +59,46 @@ QString formatRowRange(int start, int end) {
 int indexFromRole(ColumnMapping::Role r) {
     switch (r) {
         case ColumnMapping::Role::XTime:  return 1;
-        case ColumnMapping::Role::Signal: return 0;
-        default: return 0;
+        default: return 0;  // signal (default)
     }
 }
 ColumnMapping::Role roleFromIndex(int i) {
-    switch (i) {
-        case 0: return ColumnMapping::Role::Signal;
-        case 1: return ColumnMapping::Role::XTime;
-        default: return ColumnMapping::Role::Signal;
-    }
+    return (i == 1) ? ColumnMapping::Role::XTime : ColumnMapping::Role::Signal;
+}
+
+struct RateUnit { const char* label; double m; };
+const std::array<RateUnit, 7> kRateUnits = {{
+    {"s",  -1.0},
+    {"ms", -1e-3},   // default
+    {"µs", -1e-6},
+    {"ns", -1e-9},
+    {"Hz",  1.0},
+    {"kHz", 1e3},
+    {"MHz", 1e6},
+}};
+constexpr int kDefaultRateUnitIndex = 1;
+
+double rateValueToHz(double value, int unitIndex) {
+    if (unitIndex < 0 || unitIndex >= (int)kRateUnits.size() || value == 0) return 0;
+    const auto& u = kRateUnits[unitIndex];
+    if (u.m > 0) return value * u.m;
+    return 1.0 / (value * -u.m);
+}
+
+int unitIndexFromName(const QString& name) {
+    for (int i = 0; i < (int)kRateUnits.size(); ++i)
+        if (name == QString::fromUtf8(kRateUnits[i].label)) return i;
+    return kDefaultRateUnitIndex;
+}
+
+void setRateFromHz(double hz, const QString& displayUnit,
+                   QDoubleSpinBox* valueBox, QComboBox* unitBox) {
+    if (hz <= 0) return;
+    const int idx = unitIndexFromName(displayUnit);
+    unitBox->setCurrentIndex(idx);
+    const auto& u = kRateUnits[idx];
+    const double v = (u.m > 0) ? hz / u.m : 1.0 / (hz * -u.m);
+    valueBox->setValue(v);
 }
 
 }  // namespace
@@ -90,6 +117,8 @@ ChannelEditDialog::ChannelEditDialog(QWidget* parent) : QDialog(parent) {
     roleCombo_ = new QComboBox(this);
     roleCombo_->addItem("Y signal");
     roleCombo_->addItem("X-axis (time)");
+    connect(roleCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int){ onRoleChanged(); });
 
     nameEdit_ = new QLineEdit(this);
     nameEdit_->setPlaceholderText("Signal name (Y only)");
@@ -104,6 +133,39 @@ ChannelEditDialog::ChannelEditDialog(QWidget* parent) : QDialog(parent) {
     form->addRow("Name:",   nameEdit_);
     form->addRow("Unit:",   unitEdit_);
 
+    // X-source group: only shown for Y signals.
+    xSourceGroup_   = new QGroupBox("X-axis source (for this Y signal)", this);
+    useColumnRadio_ = new QRadioButton("From X-axis column:", xSourceGroup_);
+    useColumnRadio_->setChecked(true);
+    xColumnCombo_   = new QComboBox(xSourceGroup_);
+    xColumnCombo_->setMinimumWidth(120);
+    useRateRadio_   = new QRadioButton("From sample rate / time:", xSourceGroup_);
+    rateValue_      = new QDoubleSpinBox(xSourceGroup_);
+    rateValue_->setRange(0.0, 1e12);
+    rateValue_->setDecimals(6);
+    rateValue_->setValue(1.0);
+    rateUnit_       = new QComboBox(xSourceGroup_);
+    for (const auto& u : kRateUnits) rateUnit_->addItem(QString::fromUtf8(u.label));
+    rateUnit_->setCurrentIndex(kDefaultRateUnitIndex);
+
+    auto* xColRow = new QHBoxLayout();
+    xColRow->addWidget(useColumnRadio_);
+    xColRow->addWidget(xColumnCombo_);
+    xColRow->addStretch();
+    auto* xRateRow = new QHBoxLayout();
+    xRateRow->addWidget(useRateRadio_);
+    xRateRow->addWidget(rateValue_);
+    xRateRow->addWidget(rateUnit_);
+    xRateRow->addStretch();
+    auto* xLayout = new QVBoxLayout(xSourceGroup_);
+    xLayout->addLayout(xColRow);
+    xLayout->addLayout(xRateRow);
+
+    connect(useColumnRadio_, &QRadioButton::toggled,
+            this, [this](bool){ onXSourceModeChanged(); });
+    connect(useRateRadio_, &QRadioButton::toggled,
+            this, [this](bool){ onXSourceModeChanged(); });
+
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
@@ -111,7 +173,47 @@ ChannelEditDialog::ChannelEditDialog(QWidget* parent) : QDialog(parent) {
 
     auto* layout = new QVBoxLayout(this);
     layout->addLayout(form);
+    layout->addWidget(xSourceGroup_);
     layout->addWidget(buttons);
+
+    onRoleChanged();
+    onXSourceModeChanged();
+}
+
+void ChannelEditDialog::setAvailableXColumns(const QStringList& labels) {
+    availableXColumns_ = labels;
+    rebuildXSourceCombo();
+}
+
+void ChannelEditDialog::rebuildXSourceCombo() {
+    const QString prev = xColumnCombo_->currentText();
+    xColumnCombo_->clear();
+    if (availableXColumns_.isEmpty()) {
+        xColumnCombo_->addItem("(no X column defined yet)");
+        xColumnCombo_->setEnabled(false);
+        useColumnRadio_->setEnabled(false);
+        useRateRadio_->setChecked(true);
+    } else {
+        for (const auto& l : availableXColumns_) xColumnCombo_->addItem(l);
+        xColumnCombo_->setEnabled(true);
+        useColumnRadio_->setEnabled(true);
+        const int idx = availableXColumns_.indexOf(prev);
+        if (idx >= 0) xColumnCombo_->setCurrentIndex(idx);
+    }
+}
+
+void ChannelEditDialog::onRoleChanged() {
+    const bool isSignal = (roleCombo_->currentIndex() == 0);
+    nameEdit_->setEnabled(isSignal);
+    xSourceGroup_->setVisible(isSignal);
+    adjustSize();
+}
+
+void ChannelEditDialog::onXSourceModeChanged() {
+    const bool col = useColumnRadio_->isChecked();
+    xColumnCombo_->setEnabled(col && !availableXColumns_.isEmpty());
+    rateValue_->setEnabled(!col);
+    rateUnit_->setEnabled(!col);
 }
 
 void ChannelEditDialog::setMapping(const ColumnMapping& m) {
@@ -121,6 +223,17 @@ void ChannelEditDialog::setMapping(const ColumnMapping& m) {
     roleCombo_->setCurrentIndex(indexFromRole(m.role));
     nameEdit_->setText(m.signalName);
     unitEdit_->setText(m.unit);
+
+    if (m.useSampleRate || (m.xSourceColumn.isEmpty() && m.sampleRateHz > 0)) {
+        useRateRadio_->setChecked(true);
+        setRateFromHz(m.sampleRateHz, m.sampleRateDisplayUnit, rateValue_, rateUnit_);
+    } else {
+        useColumnRadio_->setChecked(true);
+        const int idx = availableXColumns_.indexOf(m.xSourceColumn);
+        if (idx >= 0) xColumnCombo_->setCurrentIndex(idx);
+    }
+    onRoleChanged();
+    onXSourceModeChanged();
 }
 
 bool ChannelEditDialog::getMapping(ColumnMapping* out, QString* errorOut) const {
@@ -145,6 +258,25 @@ bool ChannelEditDialog::getMapping(ColumnMapping* out, QString* errorOut) const 
     out->unit       = unitEdit_->text().trimmed();
     out->rowStart   = startRow;
     out->rowEnd     = endRow;
+
+    if (out->role == ColumnMapping::Role::Signal) {
+        if (useRateRadio_->isChecked()) {
+            out->useSampleRate         = true;
+            out->sampleRateHz          = rateValueToHz(rateValue_->value(),
+                                                       rateUnit_->currentIndex());
+            out->sampleRateDisplayUnit = rateUnit_->currentText();
+            out->xSourceColumn.clear();
+        } else {
+            out->useSampleRate = false;
+            out->xSourceColumn = xColumnCombo_->isEnabled()
+                                 ? xColumnCombo_->currentText() : QString();
+        }
+    } else {
+        // X-axis channel: not a Y, no X-source needed.
+        out->useSampleRate = false;
+        out->xSourceColumn.clear();
+        out->sampleRateHz  = 0;
+    }
     return true;
 }
 

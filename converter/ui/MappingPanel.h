@@ -57,10 +57,6 @@ private:
     QSpinBox*     headerSpin_;
     QLineEdit*    decimalEdit_;
 
-    QCheckBox*      useSampleRateCheck_;
-    QDoubleSpinBox* sampleRateValue_;
-    QComboBox*      sampleRateUnit_;
-
     QPushButton*  applyBtn_;
     QPushButton*  saveBtn_;
     QPushButton*  loadBtn_;

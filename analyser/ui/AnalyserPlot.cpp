@@ -116,6 +116,17 @@ void AnalyserPlot::redrawForActiveChannels() {
     double yMin = std::numeric_limits<double>::infinity();
     double yMax = -std::numeric_limits<double>::infinity();
 
+    // Single shared X anchor across all active channels so channels with
+    // different start times stay time-aligned on the plot.
+    double base = std::numeric_limits<double>::infinity();
+    for (const auto& name : active) {
+        auto sig = store_.get(name);
+        if (!sig) continue;
+        auto view = sig->snapshotForRead();
+        if (view.count > 0) base = std::min(base, view.timestamps[0] / 1e9);
+    }
+    if (base == std::numeric_limits<double>::infinity()) base = 0;
+
     int colorIdx = 0;
     for (const auto& name : active) {
         auto sig = store_.get(name);
@@ -136,8 +147,6 @@ void AnalyserPlot::redrawForActiveChannels() {
         xs.reserve(static_cast<int>(view.count));
         ys.reserve(static_cast<int>(view.count));
 
-        // Anchor X at first sample to keep the axis values small.
-        const double base = view.count > 0 ? view.timestamps[0] / 1e9 : 0.0;
         for (std::size_t i = 0; i < view.count; ++i) {
             const double x = view.timestamps[i] / 1e9 - base;
             xs.push_back(x);

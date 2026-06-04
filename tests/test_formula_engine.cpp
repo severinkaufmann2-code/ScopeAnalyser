@@ -138,6 +138,90 @@ TEST(FormulaEngine, NestedFunctionAndArithmetic) {
     EXPECT_EQ(out->sampleCount(), 100u);
 }
 
+// Helper: makes a constant-value signal of length n at rate hz.
+namespace {
+std::shared_ptr<Signal> makeConstAtRate(QString name, std::size_t n, double hz, double value) {
+    Signal::Meta m;
+    m.name = std::move(name);
+    m.dataType = DataType::Float64;
+    m.sampleRateHz = hz;
+    auto sig = std::make_shared<Signal>(m);
+    std::vector<TimestampNs> ts(n);
+    std::vector<double> vs(n, value);
+    const auto dt = static_cast<TimestampNs>(1e9 / hz);
+    for (std::size_t i = 0; i < n; ++i) ts[i] = static_cast<TimestampNs>(i) * dt;
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), n);
+    return sig;
+}
+}
+
+TEST(FormulaEngine, AddChannelsAtDifferentRates) {
+    SignalStore store;
+    // Both 1 second long; A at 1 kHz (1000 samples), B at 100 Hz (100 samples).
+    // Both constant: A=10, B=1. Result should be ~11 everywhere.
+    store.add(makeConstAtRate("Hi",  1000, 1000.0, 10.0));
+    store.add(makeConstAtRate("Lo",   100,  100.0,  1.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("Sum = Hi + Lo", &err)) << err.toStdString();
+    auto sum = store.get("Sum");
+    ASSERT_TRUE(sum);
+    auto vs = sum->readAsDouble();
+    ASSERT_GT(vs.size(), 100u);   // resampled to Hi's grid → ~1000 samples
+    for (double v : vs) EXPECT_NEAR(v, 11.0, 1e-9);
+}
+
+TEST(FormulaEngine, ResampleExplicitToHz) {
+    SignalStore store;
+    store.add(makeConstAtRate("Hi", 1000, 1000.0, 7.0));   // 1 kHz, 1 s
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("Lo = Resample(Hi, 100)", &err)) << err.toStdString();
+    auto out = store.get("Lo");
+    ASSERT_TRUE(out);
+    // 1 s span at 100 Hz → ~100 samples (101 including both endpoints).
+    EXPECT_GT(out->sampleCount(),  90u);
+    EXPECT_LT(out->sampleCount(), 120u);
+    auto vs = out->readAsDouble();
+    for (double v : vs) EXPECT_NEAR(v, 7.0, 1e-9);
+}
+
+TEST(FormulaEngine, ResampleToReferenceSignal) {
+    SignalStore store;
+    store.add(makeConstAtRate("Hi",  1000, 1000.0, 3.0));
+    store.add(makeConstAtRate("Ref",   50,   50.0, 0.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("Down = Resample(Hi, Ref)", &err)) << err.toStdString();
+    auto out = store.get("Down");
+    ASSERT_TRUE(out);
+    EXPECT_EQ(out->sampleCount(), 50u);  // same timestamps as Ref (all in range)
+    auto vs = out->readAsDouble();
+    for (double v : vs) EXPECT_NEAR(v, 3.0, 1e-9);
+}
+
+TEST(FormulaEngine, NoOverlapRangeError) {
+    SignalStore store;
+    Signal::Meta ma; ma.name = "A"; ma.dataType = DataType::Float64;
+    auto a = std::make_shared<Signal>(ma);
+    TimestampNs aTs[3] = {0, 1'000'000, 2'000'000};
+    double      aVs[3] = {1, 2, 3};
+    a->append(aTs, reinterpret_cast<const std::byte*>(aVs), 3);
+    store.add(a);
+
+    Signal::Meta mb; mb.name = "B"; mb.dataType = DataType::Float64;
+    auto b = std::make_shared<Signal>(mb);
+    TimestampNs bTs[3] = {10'000'000, 11'000'000, 12'000'000};
+    double      bVs[3] = {4, 5, 6};
+    b->append(bTs, reinterpret_cast<const std::byte*>(bVs), 3);
+    store.add(b);
+
+    FormulaEngine engine(store);
+    QString err;
+    EXPECT_FALSE(engine.evaluate("Bad = A + B", &err));
+    EXPECT_TRUE(err.contains("overlap")) << err.toStdString();
+}
+
 TEST(FunctionRegistryBuiltins, AllRegistered) {
     auto& reg = FunctionRegistry::instance();
     EXPECT_NE(reg.find("Filter"),     nullptr);
@@ -153,4 +237,5 @@ TEST(FunctionRegistryBuiltins, AllRegistered) {
     EXPECT_NE(reg.find("Log"),        nullptr);
     EXPECT_NE(reg.find("Sin"),        nullptr);
     EXPECT_NE(reg.find("Cos"),        nullptr);
+    EXPECT_NE(reg.find("Resample"),   nullptr);
 }

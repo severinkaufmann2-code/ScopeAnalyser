@@ -3,9 +3,11 @@
 
 #include <QAbstractTableModel>
 #include <QFile>
+#include <QHash>
 #include <QTextStream>
 
 #include <chrono>
+#include <unordered_map>
 
 namespace scope::converter {
 
@@ -156,25 +158,21 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
         return out;
     }
 
-    // Identify the (optional) X-axis column and Y-signal columns.
-    int xCol = -1;
-    QString xUnit;
-    ColumnMapping xMap;
+    // Index X-axis columns by letter. There can be multiple.
+    std::unordered_map<QString, ColumnMapping> xByLabel;
+    QString firstXLabel;
     std::vector<std::pair<int, ColumnMapping>> ySpecs;
     for (const auto& c : profile.columns) {
         const int col = labelToCol(c.columnId);
         if (col < 0) continue;
         if (c.role == ColumnMapping::Role::XTime) {
-            xCol = col; xUnit = c.unit; xMap = c;
+            xByLabel[c.columnId] = c;
+            if (firstXLabel.isEmpty()) firstXLabel = c.columnId;
         }
         if (c.role == ColumnMapping::Role::Signal) ySpecs.emplace_back(col, c);
     }
     if (ySpecs.empty()) {
         if (errorOut) *errorOut = "Profile has no Y-signal channels";
-        return out;
-    }
-    if (!profile.useSampleRate && xCol < 0) {
-        if (errorOut) *errorOut = "Profile has neither an X-time channel nor a sample rate";
         return out;
     }
 
@@ -203,19 +201,69 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
         return std::pair{std::max(lo, 0), std::min(hi, rowCount() - 1)};
     };
 
+    // Decide an X strategy per Y channel:
+    //   per-channel useSampleRate → rate path
+    //   per-channel xSourceColumn → use that X column
+    //   else profile.useSampleRate → profile rate (legacy)
+    //   else firstXLabel != ""    → use first X column found (legacy)
+    //   else error
+    auto resolveXStrategy = [&](const ColumnMapping& y, bool* useRateOut,
+                                double* rateHzOut,
+                                ColumnMapping* xMapOut, int* xColOut,
+                                QString* errOut) -> bool {
+        if (y.useSampleRate) {
+            *useRateOut = true;
+            *rateHzOut  = y.sampleRateHz;
+            return true;
+        }
+        const QString xLabel = !y.xSourceColumn.isEmpty()
+                                ? y.xSourceColumn
+                                : firstXLabel;
+        if (!xLabel.isEmpty()) {
+            auto it = xByLabel.find(xLabel);
+            if (it == xByLabel.end()) {
+                if (errOut) *errOut = QString("Y signal references X column '%1' "
+                                              "that is not in the profile").arg(xLabel);
+                return false;
+            }
+            *useRateOut = false;
+            *xMapOut    = it->second;
+            *xColOut    = labelToCol(it->second.columnId);
+            return true;
+        }
+        if (profile.useSampleRate) {
+            *useRateOut = true;
+            *rateHzOut  = profile.sampleRateHz;
+            return true;
+        }
+        if (errOut) *errOut = "No X-time channel and no sample rate set "
+                              "for this Y signal";
+        return false;
+    };
+
     for (std::size_t k = 0; k < ySpecs.size(); ++k) {
-        const auto [yLo, yHi] = resolveRange(ySpecs[k].second);
+        const auto& ySpec = ySpecs[k].second;
+        const auto [yLo, yHi] = resolveRange(ySpec);
         const int yCol = ySpecs[k].first;
         if (yLo > yHi) continue;
+
+        bool useRate = false;
+        double rateHz = 0;
+        ColumnMapping xMap;
+        int xCol = -1;
+        QString xErr;
+        if (!resolveXStrategy(ySpec, &useRate, &rateHz, &xMap, &xCol, &xErr)) {
+            if (errorOut) *errorOut = xErr;
+            return {};
+        }
 
         std::vector<TimestampNs> ts;
         std::vector<double> vs;
         ts.reserve(yHi - yLo + 1);
         vs.reserve(yHi - yLo + 1);
 
-        if (profile.useSampleRate) {
-            const double dtNs = (profile.sampleRateHz > 0)
-                                  ? 1e9 / profile.sampleRateHz : 0;
+        if (useRate) {
+            const double dtNs = (rateHz > 0) ? 1e9 / rateHz : 0;
             for (int row = yLo; row <= yHi; ++row) {
                 const auto& r = rows_[row];
                 if (yCol >= r.size()) continue;
@@ -231,20 +279,20 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
             for (int row = lo; row <= hi; ++row) {
                 const auto& r = rows_[row];
                 if (yCol >= r.size() || xCol >= r.size()) continue;
-                ts.push_back(toNs(r[xCol], xUnit));
+                ts.push_back(toNs(r[xCol], xMap.unit));
                 vs.push_back(toVal(r[yCol]));
             }
         }
 
         Signal::Meta m;
-        m.name = ySpecs[k].second.signalName.isEmpty()
+        m.name = ySpec.signalName.isEmpty()
                  ? QString("Col%1").arg(colLabel(yCol))
-                 : ySpecs[k].second.signalName;
-        m.unit = ySpecs[k].second.unit;
+                 : ySpec.signalName;
+        m.unit = ySpec.unit;
         m.dataType = DataType::Float64;
         m.sourceSymbol = QString::fromStdString(path_.filename().string())
                        + ":" + colLabel(yCol);
-        if (profile.useSampleRate) m.sampleRateHz = profile.sampleRateHz;
+        if (useRate) m.sampleRateHz = rateHz;
         auto sig = std::make_shared<Signal>(m);
         sig->append(ts.data(),
                     reinterpret_cast<const std::byte*>(vs.data()),

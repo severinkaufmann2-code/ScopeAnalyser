@@ -107,8 +107,28 @@ bool isConstant(const std::shared_ptr<Signal>& s) {
         && s->meta().sourceSymbol.isEmpty();
 }
 
-// Elementwise binary op on two signals. If either is a constant (size 1),
-// broadcast it across the other.
+// Linear-interpolate `vals` at time `t`, advancing `cursor` (monotone search
+// for sorted query times). Returns value at the nearest endpoint if `t` is
+// outside the range; callers should clip to [first, last] beforehand.
+double interpAt(const TimestampNs* ts, const std::vector<double>& vals,
+                std::size_t n, TimestampNs t, std::size_t& cursor) {
+    if (n == 0) return 0.0;
+    if (t <= ts[0]) return vals[0];
+    if (t >= ts[n - 1]) return vals[n - 1];
+    while (cursor + 1 < n && ts[cursor + 1] < t) ++cursor;
+    const std::size_t hi = std::min(cursor + 1, n - 1);
+    if (cursor == hi) return vals[cursor];
+    const double dt = static_cast<double>(ts[hi] - ts[cursor]);
+    if (dt == 0) return vals[cursor];
+    const double frac = static_cast<double>(t - ts[cursor]) / dt;
+    return vals[cursor] + frac * (vals[hi] - vals[cursor]);
+}
+
+// Elementwise binary op on two signals. Three paths:
+//   * One operand is a constant → broadcast across the other.
+//   * Same length AND first/last timestamps match → assume same grid (fast path).
+//   * Otherwise → intersection-of-time-ranges, sample on the operand with more
+//     samples in that range, linear-interpolate the other.
 template <typename Op>
 std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
                                           const std::shared_ptr<Signal>& b,
@@ -122,28 +142,88 @@ std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
     auto avView = a->snapshotForRead();
     auto bvView = b->snapshotForRead();
 
-    if (!aConst && !bConst) {
-        if (avView.count != bvView.count) {
-            setErr(ctx, QString("'%1': operands must have the same length (%2 vs %3)")
-                            .arg(opName).arg(avView.count).arg(bvView.count));
-            return nullptr;
+    auto makeSig = [&](const std::vector<TimestampNs>& ts,
+                       const std::vector<double>& vs) {
+        Signal::Meta m;
+        m.dataType = DataType::Float64;
+        m.name = opName;
+        auto s = std::make_shared<Signal>(m);
+        s->append(ts.data(),
+                  reinterpret_cast<const std::byte*>(vs.data()),
+                  vs.size());
+        return s;
+    };
+
+    // ---- Path 1: constant broadcast ----
+    if (aConst || bConst) {
+        const std::size_t n = aConst ? bvView.count : avView.count;
+        std::vector<double> out(n);
+        const TimestampNs* ts = aConst ? bvView.timestamps : avView.timestamps;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double va = aConst ? av[0] : av[i];
+            const double vb = bConst ? bv[0] : bv[i];
+            out[i] = op(va, vb);
         }
-    }
-    const std::size_t n = aConst ? bvView.count : avView.count;
-    std::vector<double> out(n);
-    const TimestampNs* ts = aConst ? bvView.timestamps : avView.timestamps;
-    for (std::size_t i = 0; i < n; ++i) {
-        const double va = aConst ? av[0] : av[i];
-        const double vb = bConst ? bv[0] : bv[i];
-        out[i] = op(va, vb);
+        std::vector<TimestampNs> outTs(ts, ts + n);
+        return makeSig(outTs, out);
     }
 
-    Signal::Meta m;
-    m.dataType = DataType::Float64;
-    m.name = opName;
-    auto sig = std::make_shared<Signal>(m);
-    sig->append(ts, reinterpret_cast<const std::byte*>(out.data()), n);
-    return sig;
+    if (avView.count == 0 || bvView.count == 0) {
+        setErr(ctx, QString("'%1': empty operand").arg(opName));
+        return nullptr;
+    }
+
+    // ---- Path 2: same grid (fast path) ----
+    if (avView.count == bvView.count &&
+        avView.timestamps[0] == bvView.timestamps[0] &&
+        avView.timestamps[avView.count - 1] == bvView.timestamps[bvView.count - 1]) {
+        const std::size_t n = avView.count;
+        std::vector<double> out(n);
+        for (std::size_t i = 0; i < n; ++i) out[i] = op(av[i], bv[i]);
+        std::vector<TimestampNs> outTs(avView.timestamps, avView.timestamps + n);
+        return makeSig(outTs, out);
+    }
+
+    // ---- Path 3: different grids → resample on intersection ----
+    const TimestampNs tLo = std::max(avView.timestamps[0], bvView.timestamps[0]);
+    const TimestampNs tHi = std::min(avView.timestamps[avView.count - 1],
+                                     bvView.timestamps[bvView.count - 1]);
+    if (tLo > tHi) {
+        setErr(ctx, QString("'%1': signals don't overlap in time").arg(opName));
+        return nullptr;
+    }
+    auto countInRange = [&](const Signal::ReadView& v) {
+        std::size_t c = 0;
+        for (std::size_t i = 0; i < v.count; ++i)
+            if (v.timestamps[i] >= tLo && v.timestamps[i] <= tHi) ++c;
+        return c;
+    };
+    const std::size_t aN = countInRange(avView);
+    const std::size_t bN = countInRange(bvView);
+    const bool useA = aN >= bN;
+    const auto& gridView = useA ? avView : bvView;
+    const auto& gridVals = useA ? av     : bv;
+    const auto& otherView = useA ? bvView : avView;
+    const auto& otherVals = useA ? bv     : av;
+
+    std::vector<TimestampNs> outTs;
+    std::vector<double>      outVals;
+    outTs.reserve(useA ? aN : bN);
+    outVals.reserve(useA ? aN : bN);
+
+    std::size_t cursor = 0;
+    for (std::size_t i = 0; i < gridView.count; ++i) {
+        const TimestampNs t = gridView.timestamps[i];
+        if (t < tLo || t > tHi) continue;
+        const double here  = gridVals[i];
+        const double there = interpAt(otherView.timestamps, otherVals,
+                                      otherView.count, t, cursor);
+        const double va = useA ? here  : there;
+        const double vb = useA ? there : here;
+        outTs.push_back(t);
+        outVals.push_back(op(va, vb));
+    }
+    return makeSig(outTs, outVals);
 }
 
 // ---- Parser -------------------------------------------------------------
