@@ -156,27 +156,36 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
         return out;
     }
 
-    // Identify X-axis column (if any) and Y-signal columns.
+    const int dataStartRow = std::max(0, profile.headerRow);
+
+    // Identify columns
     int xCol = -1;
     QString xUnit;
-    ColumnMapping xMap;
     std::vector<std::pair<int, ColumnMapping>> ySpecs;
     for (const auto& c : profile.columns) {
         const int col = labelToCol(c.columnId);
         if (col < 0) continue;
-        if (c.role == ColumnMapping::Role::XTime) {
-            xCol = col; xUnit = c.unit; xMap = c;
-        }
+        if (c.role == ColumnMapping::Role::XTime) { xCol = col; xUnit = c.unit; }
         if (c.role == ColumnMapping::Role::Signal) ySpecs.emplace_back(col, c);
     }
-    if (ySpecs.empty()) {
-        if (errorOut) *errorOut = "Profile has no Y signal columns";
+    if (xCol < 0) {
+        if (errorOut) *errorOut = "Profile has no X-time column mapping";
         return out;
     }
-    if (!profile.useSampleRate && xCol < 0) {
-        if (errorOut) *errorOut = "Profile has neither an X-time column nor a sample rate";
-        return out;
-    }
+
+    auto toNs = [&](const QString& s) -> TimestampNs {
+        QString t = s;
+        if (profile.decimalSeparator != ".") t.replace(profile.decimalSeparator, ".");
+        bool ok = false;
+        const double v = t.toDouble(&ok);
+        if (!ok) return 0;
+        if (xUnit.compare("ms", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v * 1e6);
+        if (xUnit.compare("us", Qt::CaseInsensitive) == 0
+            || xUnit == QString::fromUtf8("µs")) return static_cast<TimestampNs>(v * 1e3);
+        if (xUnit.compare("ns", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v);
+        // default: seconds
+        return static_cast<TimestampNs>(v * 1e9);
+    };
 
     auto toVal = [&](const QString& s) -> double {
         QString t = s;
@@ -186,75 +195,34 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
         return ok ? v : 0.0;
     };
 
-    auto toNs = [&](const QString& s, const QString& unit) -> TimestampNs {
-        const double v = toVal(s);
-        if (unit.compare("ms", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v * 1e6);
-        if (unit.compare("us", Qt::CaseInsensitive) == 0
-            || unit == QString::fromUtf8("µs")) return static_cast<TimestampNs>(v * 1e3);
-        if (unit.compare("ns", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v);
-        return static_cast<TimestampNs>(v * 1e9);  // default seconds
-    };
+    std::vector<TimestampNs> ts;
+    ts.reserve(rows_.size());
+    std::vector<std::vector<double>> ys(ySpecs.size());
+    for (auto& y : ys) y.reserve(rows_.size());
 
-    // Resolve row ranges per Y-signal — a per-column rowStart/rowEnd, falling
-    // back to header+1 .. EOF. We compute one combined range for the X-axis
-    // (the union of all Y ranges) when X comes from sample rate, and emit one
-    // signal per Y at its own range.
-    const int defaultStart = std::max(0, profile.headerRow);
-    const int defaultEnd   = rowCount() - 1;
-    auto resolveRange = [&](const ColumnMapping& m) {
-        const int lo = (m.rowStart < 0) ? defaultStart : m.rowStart;
-        const int hi = (m.rowEnd   < 0) ? defaultEnd   : m.rowEnd;
-        return std::pair{std::max(lo, 0), std::min(hi, rowCount() - 1)};
-    };
+    for (int row = dataStartRow; row < rowCount(); ++row) {
+        const auto& r = rows_[row];
+        if (xCol >= r.size()) continue;
+        ts.push_back(toNs(r[xCol]));
+        for (std::size_t k = 0; k < ySpecs.size(); ++k) {
+            const int col = ySpecs[k].first;
+            ys[k].push_back(col < r.size() ? toVal(r[col]) : 0.0);
+        }
+    }
 
     for (std::size_t k = 0; k < ySpecs.size(); ++k) {
-        const auto [yLo, yHi] = resolveRange(ySpecs[k].second);
-        const int yCol = ySpecs[k].first;
-        if (yLo > yHi) continue;
-
-        std::vector<TimestampNs> ts;
-        std::vector<double> vs;
-        ts.reserve(yHi - yLo + 1);
-        vs.reserve(yHi - yLo + 1);
-
-        if (profile.useSampleRate) {
-            const double dtNs = (profile.sampleRateHz > 0)
-                                  ? 1e9 / profile.sampleRateHz : 0;
-            for (int row = yLo; row <= yHi; ++row) {
-                const auto& r = rows_[row];
-                if (yCol >= r.size()) continue;
-                ts.push_back(static_cast<TimestampNs>((row - yLo) * dtNs));
-                vs.push_back(toVal(r[yCol]));
-            }
-        } else {
-            // Use the X column. If the X column has its own range, it takes
-            // precedence; otherwise it follows the Y range.
-            const auto [xLo, xHi] = (xMap.rowStart >= 0 || xMap.rowEnd >= 0)
-                                    ? resolveRange(xMap)
-                                    : std::pair{yLo, yHi};
-            const int lo = std::max(xLo, yLo);
-            const int hi = std::min(xHi, yHi);
-            for (int row = lo; row <= hi; ++row) {
-                const auto& r = rows_[row];
-                if (yCol >= r.size() || xCol >= r.size()) continue;
-                ts.push_back(toNs(r[xCol], xUnit));
-                vs.push_back(toVal(r[yCol]));
-            }
-        }
-
         Signal::Meta m;
         m.name = ySpecs[k].second.signalName.isEmpty()
-                 ? QString("Col%1").arg(colLabel(yCol))
+                 ? QString("Col%1").arg(colLabel(ySpecs[k].first))
                  : ySpecs[k].second.signalName;
         m.unit = ySpecs[k].second.unit;
         m.dataType = DataType::Float64;
         m.sourceSymbol = QString::fromStdString(path_.filename().string())
-                       + ":" + colLabel(yCol);
-        if (profile.useSampleRate) m.sampleRateHz = profile.sampleRateHz;
+                       + ":" + colLabel(ySpecs[k].first);
         auto sig = std::make_shared<Signal>(m);
         sig->append(ts.data(),
-                    reinterpret_cast<const std::byte*>(vs.data()),
-                    vs.size());
+                    reinterpret_cast<const std::byte*>(ys[k].data()),
+                    ys[k].size());
         out.push_back(std::move(sig));
     }
 
