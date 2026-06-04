@@ -5,14 +5,13 @@
 #include <QHash>
 #include <QWidget>
 
-class QCustomPlot;
 class QCPGraph;
 class QListWidget;
 
+namespace scope::plot { class ScopePlot; }
+
 namespace scope::analyser::ui {
 
-// Multi-channel plot showing any subset of channels in the SignalStore. The
-// user toggles channels via a checkable list to the left of the plot.
 class AnalyserPlot : public QWidget {
     Q_OBJECT
 public:
@@ -29,8 +28,8 @@ private:
     QSet<QString> activeChannels() const;
 
     scope::core::SignalStore& store_;
-    QListWidget* list_;
-    QCustomPlot* plot_;
+    QListWidget*              list_{nullptr};
+    scope::plot::ScopePlot*   scope_{nullptr};
     QHash<QString, QCPGraph*> graphs_;
 };
 

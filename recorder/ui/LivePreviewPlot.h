@@ -7,14 +7,12 @@
 
 #include <unordered_map>
 
-class QCustomPlot;
 class QCPGraph;
+
+namespace scope::plot { class ScopePlot; }
 
 namespace scope::recorder::ui {
 
-// Rolling preview of recorded channels. Subscribes to SignalStore::channelAdded
-// and re-renders on a 20 Hz timer using the most recent `windowSeconds_` of
-// each channel's samples.
 class LivePreviewPlot : public QWidget {
     Q_OBJECT
 public:
@@ -28,9 +26,9 @@ private slots:
     void onTick();
 
 private:
-    scope::core::SignalStore& store_;
-    QCustomPlot* plot_;
-    double windowSeconds_{5.0};
+    scope::core::SignalStore&    store_;
+    scope::plot::ScopePlot*      scope_{nullptr};
+    double                       windowSeconds_{5.0};
     std::unordered_map<QString, QCPGraph*> graphs_;
 };
 

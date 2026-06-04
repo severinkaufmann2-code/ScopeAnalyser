@@ -1,9 +1,14 @@
 #include "LivePreviewPlot.h"
 
+#include "scope/plot/ScopePlot.h"
+
 #include <qcustomplot.h>
 
-#include <QVBoxLayout>
 #include <QTimer>
+#include <QVBoxLayout>
+
+#include <array>
+#include <limits>
 
 namespace scope::recorder::ui {
 
@@ -18,14 +23,13 @@ const std::array<QColor, 8> kPalette = {
 
 LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* parent)
     : QWidget(parent), store_(store) {
-    plot_ = new QCustomPlot(this);
-    plot_->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
-    plot_->xAxis->setLabel("seconds before now");
-    plot_->legend->setVisible(true);
+    scope_ = new scope::plot::ScopePlot(this);
+    scope_->plot()->xAxis->setLabel("seconds before now");
+    scope_->setPauseSupported(true);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0,0,0,0);
-    layout->addWidget(plot_);
+    layout->addWidget(scope_);
 
     connect(&store_, &scope::core::SignalStore::channelAdded,
             this, &LivePreviewPlot::onChannelAdded);
@@ -41,7 +45,7 @@ void LivePreviewPlot::setWindowSeconds(double seconds) { windowSeconds_ = second
 
 void LivePreviewPlot::onChannelAdded(QString name) {
     if (graphs_.contains(name)) return;
-    auto* g = plot_->addGraph();
+    auto* g = scope_->plot()->addGraph();
     const auto color = kPalette[graphs_.size() % kPalette.size()];
     g->setPen(QPen(color));
     g->setName(name);
@@ -51,11 +55,12 @@ void LivePreviewPlot::onChannelAdded(QString name) {
 void LivePreviewPlot::onChannelRemoved(QString name) {
     auto it = graphs_.find(name);
     if (it == graphs_.end()) return;
-    plot_->removeGraph(it->second);
+    scope_->plot()->removeGraph(it->second);
     graphs_.erase(it);
 }
 
 void LivePreviewPlot::onTick() {
+    if (scope_->isPaused()) return;
     if (graphs_.empty()) return;
 
     const auto nowNs    = scope::core::nowNs();
@@ -70,14 +75,13 @@ void LivePreviewPlot::onTick() {
         auto sig = store_.get(name);
         if (!sig) continue;
         auto view = sig->snapshotForRead();
-        auto values = sig->readAsDouble();  // simple v1; optimize later
+        auto values = sig->readAsDouble();
 
         QVector<double> xs, ys;
         xs.reserve(static_cast<int>(view.count));
         ys.reserve(static_cast<int>(view.count));
         for (std::size_t i = 0; i < view.count; ++i) {
             if (view.timestamps[i] < cutoffNs) continue;
-            // X = seconds before now, i.e., always within [-windowSeconds_, 0].
             xs.push_back((view.timestamps[i] - nowNs) / 1e9);
             const double v = (i < values.size()) ? values[i] : 0.0;
             ys.push_back(v);
@@ -88,12 +92,13 @@ void LivePreviewPlot::onTick() {
         graph->setData(xs, ys, /*alreadySorted=*/true);
     }
 
-    plot_->xAxis->setRange(-windowSeconds_, 0.0);
+    auto* plot = scope_->plot();
+    plot->xAxis->setRange(-windowSeconds_, 0.0);
     if (!any) { yMin = -1; yMax = 1; }
-    if (yMin == yMax) { yMin -= 0.5; yMax += 0.5; }  // BOOLs and constants
+    if (yMin == yMax) { yMin -= 0.5; yMax += 0.5; }
     const double margin = 0.05 * (yMax - yMin);
-    plot_->yAxis->setRange(yMin - margin, yMax + margin);
-    plot_->replot(QCustomPlot::rpQueuedReplot);
+    plot->yAxis->setRange(yMin - margin, yMax + margin);
+    plot->replot(QCustomPlot::rpQueuedReplot);
 }
 
 }  // namespace scope::recorder::ui

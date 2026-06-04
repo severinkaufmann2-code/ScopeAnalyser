@@ -21,6 +21,7 @@ scope_add_library(scope_analyser
         ${CMAKE_CURRENT_SOURCE_DIR}/ui
     PUBLIC_LIBS
         scope::scope_core
+        scope::scope_plot
         Qt6::Widgets
         Qt6::Gui
         Qt6::PrintSupport

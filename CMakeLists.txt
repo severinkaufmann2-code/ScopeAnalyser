@@ -91,6 +91,7 @@ FetchContent_MakeAvailable(beckhoff_ads)
 include(cmake/scope_helpers.cmake)
 
 add_subdirectory(core)
+add_subdirectory(plot)
 add_subdirectory(ads)
 add_subdirectory(recorder)
 add_subdirectory(analyser)

@@ -1,5 +1,7 @@
 #include "AnalyserPlot.h"
 
+#include "scope/plot/ScopePlot.h"
+
 #include <qcustomplot.h>
 
 #include <QHBoxLayout>
@@ -7,6 +9,9 @@
 #include <QListWidgetItem>
 #include <QPushButton>
 #include <QVBoxLayout>
+
+#include <array>
+#include <limits>
 
 namespace scope::analyser::ui {
 
@@ -21,10 +26,8 @@ const std::array<QColor, 10> kPalette = {
 
 AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
     : QWidget(parent), store_(store) {
-    plot_ = new QCustomPlot(this);
-    plot_->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
-    plot_->xAxis->setLabel("t [s]");
-    plot_->legend->setVisible(true);
+    scope_ = new scope::plot::ScopePlot(this);
+    scope_->plot()->xAxis->setLabel("t [s]");
 
     list_ = new QListWidget(this);
     list_->setMaximumWidth(260);
@@ -36,7 +39,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
 
     auto* root = new QHBoxLayout(this);
     root->addLayout(leftLayout);
-    root->addWidget(plot_, /*stretch=*/1);
+    root->addWidget(scope_, /*stretch=*/1);
 
     connect(redraw, &QPushButton::clicked, this, &AnalyserPlot::redrawAll);
     connect(list_,  &QListWidget::itemChanged,
@@ -56,7 +59,6 @@ void AnalyserPlot::rebuildList() {
     for (const auto& name : store_.channelNames()) {
         auto* item = new QListWidgetItem(name);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        // First time we see a channel, show it; otherwise preserve user toggle.
         const bool show = firstTime || active.contains(name);
         item->setCheckState(show ? Qt::Checked : Qt::Unchecked);
         list_->addItem(item);
@@ -80,7 +82,7 @@ void AnalyserPlot::onChannelAdded(QString name) {
     if (exists) return;
     auto* item = new QListWidgetItem(name);
     item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-    item->setCheckState(Qt::Checked);  // newly added → show by default
+    item->setCheckState(Qt::Checked);
     list_->addItem(item);
     redrawForActiveChannels();
 }
@@ -90,23 +92,21 @@ void AnalyserPlot::onChannelRemoved(QString name) {
         if (list_->item(i)->text() == name) { delete list_->takeItem(i); break; }
     }
     if (graphs_.contains(name)) {
-        plot_->removeGraph(graphs_[name]);
+        scope_->plot()->removeGraph(graphs_[name]);
         graphs_.remove(name);
     }
     redrawForActiveChannels();
 }
 
-void AnalyserPlot::redrawAll() {
-    redrawForActiveChannels();
-}
+void AnalyserPlot::redrawAll() { redrawForActiveChannels(); }
 
 void AnalyserPlot::redrawForActiveChannels() {
     const auto active = activeChannels();
+    auto* plot = scope_->plot();
 
-    // Remove graphs no longer active
     for (auto it = graphs_.begin(); it != graphs_.end(); ) {
         if (!active.contains(it.key())) {
-            plot_->removeGraph(it.value());
+            plot->removeGraph(it.value());
             it = graphs_.erase(it);
         } else { ++it; }
     }
@@ -116,8 +116,6 @@ void AnalyserPlot::redrawForActiveChannels() {
     double yMin = std::numeric_limits<double>::infinity();
     double yMax = -std::numeric_limits<double>::infinity();
 
-    // Single shared X anchor across all active channels so channels with
-    // different start times stay time-aligned on the plot.
     double base = std::numeric_limits<double>::infinity();
     for (const auto& name : active) {
         auto sig = store_.get(name);
@@ -134,7 +132,7 @@ void AnalyserPlot::redrawForActiveChannels() {
 
         QCPGraph* graph = graphs_.value(name, nullptr);
         if (!graph) {
-            graph = plot_->addGraph();
+            graph = plot->addGraph();
             graph->setPen(QPen(kPalette[colorIdx % kPalette.size()]));
             graph->setName(name);
             graphs_[name] = graph;
@@ -166,9 +164,9 @@ void AnalyserPlot::redrawForActiveChannels() {
     }
     if (yMin == yMax) { yMin -= 0.5; yMax += 0.5; }
     const double yMargin = 0.05 * (yMax - yMin);
-    plot_->xAxis->setRange(xMin, xMax);
-    plot_->yAxis->setRange(yMin - yMargin, yMax + yMargin);
-    plot_->replot(QCustomPlot::rpQueuedReplot);
+    plot->xAxis->setRange(xMin, xMax);
+    plot->yAxis->setRange(yMin - yMargin, yMax + yMargin);
+    plot->replot(QCustomPlot::rpQueuedReplot);
 }
 
 }  // namespace scope::analyser::ui

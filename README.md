@@ -66,6 +66,28 @@ Standalone tools:
 
 ## Quick tour
 
+### Scope plot controls (Recorder + Analyser)
+
+Both plots share the same `ScopePlot` widget with these conventions
+(matches TwinCAT Scope / LabVIEW / Audacity):
+
+| Action | What it does |
+|---|---|
+| Scroll | Zoom both axes, centred on mouse |
+| **Ctrl+Scroll** | **Zoom X axis only** |
+| **Shift+Scroll** | **Zoom Y axis only** |
+| Left-drag | Pan |
+| **Ctrl+Left-drag** | **Zoom to drawn rectangle** |
+| `Home` | Fit all data |
+| `+` / `-` | Zoom in / out |
+| Arrow keys | Pan |
+| Mouse hover | Crosshair + X / Y readout per channel |
+
+A toolbar above each plot exposes the same actions as buttons:
+`⤢ Fit`, `↔ +` / `↔ −`, `↕ +` / `↕ −`, `PNG…` (save image).
+The Recorder's plot also has `⏸ Pause` / `▶ Resume` to freeze the
+display while recording continues in the background.
+
 ### Recorder
 
 1. Pick a **Source**: `Demo (Mock)` to develop without a PLC, or
@@ -128,12 +150,13 @@ The plot at the bottom toggles channels via checkboxes.
 
 ```
 core/        shared data model, SignalStore, HDF5 sessions, IAdsClient
+plot/        ScopePlot widget (toolbar, modifier zoom, crosshair, pause)
 ads/         BeckhoffOpenAdsClient (ADS over TCP) + MockAdsClient (synthetic)
 recorder/    Recorder library + UI + standalone exe
 analyser/    FormulaEngine + FunctionRegistry + UI + standalone exe
 converter/   CsvSource + ConverterProfile + UI + standalone exe
 app/         integrated shell with three tabs
-tests/       18 GoogleTest cases
+tests/       33 GoogleTest cases
 ```
 
 ## Status
