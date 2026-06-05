@@ -10,7 +10,6 @@ class QComboBox;
 class QRadioButton;
 class QDoubleSpinBox;
 class QGroupBox;
-class QCheckBox;
 class QWidget;
 
 namespace scope::converter::ui {
@@ -46,7 +45,6 @@ private:
     QRadioButton* useRateRadio_;
     QDoubleSpinBox* rateValue_;
     QComboBox*    rateUnit_;
-    QCheckBox*    resetToZeroCheck_;
 
     QStringList availableXColumns_;
 };

@@ -96,22 +96,6 @@ A toolbar above each plot exposes the same actions as buttons:
 (save image). The Recorder's plot also has `⏸ Pause` / `▶ Resume` to
 freeze the display while recording continues in the background.
 
-**Mixing recordings with mismatched time domains.** If you import
-signals from two CSVs where one uses a sample rate (timestamps `0, 1
-ms, 2 ms, …`) and the other uses an X column with absolute times (`0,
-0.1, 0.2 s …`), they end up on the same plot at very different scales
-— one collapses to the left edge while the other fills the rest. Two
-ways to fix:
-
-- **At import time**: in the Converter, tick *Reset timestamps to
-  start at 0* in the Add channel dialog. The signal is shifted so its
-  first sample is at `t = 0`. Persisted in the data — `Save .h5` /
-  `Save CSV` will export the aligned timestamps.
-- **At display time**: in the Analyser, tick the **Align channel
-  starts at t = 0** checkbox in the channels sidebar. Each channel is
-  drawn with its own first sample at `x = 0`. Doesn't modify the data
-  — just changes how the plot renders.
-
 **Multiple Y axes** — both plots support an arbitrary number of Y
 axes, alternating between the left and right side. To use them:
 

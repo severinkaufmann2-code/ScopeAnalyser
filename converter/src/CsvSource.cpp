@@ -284,14 +284,6 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
             }
         }
 
-        // Optional per-channel time-origin reset: shift every sample so
-        // ts[0] == 0. Useful when mixing rate-based and column-based
-        // imports — both end up anchored at t=0.
-        if (ySpec.resetTimeToZero && !ts.empty()) {
-            const TimestampNs origin = ts.front();
-            for (auto& t : ts) t -= origin;
-        }
-
         Signal::Meta m;
         m.name = ySpec.signalName.isEmpty()
                  ? QString("Col%1").arg(colLabel(yCol))

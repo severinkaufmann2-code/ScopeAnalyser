@@ -56,7 +56,6 @@ ConverterProfile ConverterProfile::loadFromFile(const std::filesystem::path& pat
                 c.sampleRateHz          = jc.value("sampleRateHz", 0.0);
                 c.sampleRateDisplayUnit = QString::fromStdString(
                     jc.value("sampleRateUnit", std::string{"ms"}));
-                c.resetTimeToZero       = jc.value("resetTimeToZero", false);
                 p.columns.push_back(std::move(c));
             }
         }
@@ -90,11 +89,10 @@ bool ConverterProfile::saveToFile(const std::filesystem::path& path,
             jc["unit"] = c.unit.toStdString();
             jc["rowStart"] = c.rowStart;
             jc["rowEnd"]   = c.rowEnd;
-            jc["xSourceColumn"]   = c.xSourceColumn.toStdString();
-            jc["useSampleRate"]   = c.useSampleRate;
-            jc["sampleRateHz"]    = c.sampleRateHz;
-            jc["sampleRateUnit"]  = c.sampleRateDisplayUnit.toStdString();
-            jc["resetTimeToZero"] = c.resetTimeToZero;
+            jc["xSourceColumn"]  = c.xSourceColumn.toStdString();
+            jc["useSampleRate"]  = c.useSampleRate;
+            jc["sampleRateHz"]   = c.sampleRateHz;
+            jc["sampleRateUnit"] = c.sampleRateDisplayUnit.toStdString();
             j["columns"].push_back(std::move(jc));
         }
         std::ofstream f(path);

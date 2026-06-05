@@ -1,6 +1,5 @@
 #include "ChannelEditDialog.h"
 
-#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -149,15 +148,6 @@ ChannelEditDialog::ChannelEditDialog(QWidget* parent) : QDialog(parent) {
     for (const auto& u : kRateUnits) rateUnit_->addItem(QString::fromUtf8(u.label));
     rateUnit_->setCurrentIndex(kDefaultRateUnitIndex);
 
-    resetToZeroCheck_ = new QCheckBox(
-        "Reset timestamps to start at 0 (after applying the X source)",
-        xSourceGroup_);
-    resetToZeroCheck_->setToolTip(
-        "Subtract the first sample's timestamp from every sample on import\n"
-        "so the resulting Signal starts at t = 0. Useful when one CSV starts\n"
-        "mid-recording (X column begins at e.g. 5.0 s) and you want it to\n"
-        "align with other signals that start at 0.");
-
     auto* xColRow = new QHBoxLayout();
     xColRow->addWidget(useColumnRadio_);
     xColRow->addWidget(xColumnCombo_);
@@ -170,7 +160,6 @@ ChannelEditDialog::ChannelEditDialog(QWidget* parent) : QDialog(parent) {
     auto* xLayout = new QVBoxLayout(xSourceGroup_);
     xLayout->addLayout(xColRow);
     xLayout->addLayout(xRateRow);
-    xLayout->addWidget(resetToZeroCheck_);
 
     connect(useColumnRadio_, &QRadioButton::toggled,
             this, [this](bool){ onXSourceModeChanged(); });
@@ -243,7 +232,6 @@ void ChannelEditDialog::setMapping(const ColumnMapping& m) {
         const int idx = availableXColumns_.indexOf(m.xSourceColumn);
         if (idx >= 0) xColumnCombo_->setCurrentIndex(idx);
     }
-    resetToZeroCheck_->setChecked(m.resetTimeToZero);
     onRoleChanged();
     onXSourceModeChanged();
 }
@@ -283,13 +271,11 @@ bool ChannelEditDialog::getMapping(ColumnMapping* out, QString* errorOut) const 
             out->xSourceColumn = xColumnCombo_->isEnabled()
                                  ? xColumnCombo_->currentText() : QString();
         }
-        out->resetTimeToZero = resetToZeroCheck_->isChecked();
     } else {
-        // X-axis channel: not a Y, no X-source / no reset needed.
+        // X-axis channel: not a Y, no X-source needed.
         out->useSampleRate = false;
         out->xSourceColumn.clear();
         out->sampleRateHz  = 0;
-        out->resetTimeToZero = false;
     }
     return true;
 }
