@@ -258,3 +258,99 @@ TEST(CsvConverter, HandlesEuropeanDecimals) {
 
     std::filesystem::remove(path);
 }
+
+// Reset-to-zero subtracts the first sample's timestamp.
+TEST(CsvConverter, ResetTimeToZeroShiftsFirstSampleToZero) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_reset.csv";
+    {
+        std::ofstream f(path);
+        f << "t,v\n";
+        f << "5.0,1\n";
+        f << "5.1,2\n";
+        f << "5.2,3\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.headerRow = 1;
+    p.decimalSeparator = ".";
+    ColumnMapping x{"A", ColumnMapping::Role::XTime,  "",  "s"};
+    ColumnMapping y{"B", ColumnMapping::Role::Signal, "V", "V"};
+    y.xSourceColumn   = "A";
+    y.resetTimeToZero = true;
+    p.columns = { x, y };
+
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto view = sigs[0]->snapshotForRead();
+    ASSERT_EQ(view.count, 3u);
+    EXPECT_EQ(view.timestamps[0], 0);
+    EXPECT_NEAR(view.timestamps[1] / 1e9, 0.1, 1e-9);
+    EXPECT_NEAR(view.timestamps[2] / 1e9, 0.2, 1e-9);
+    std::filesystem::remove(path);
+}
+
+// Offset shifts every timestamp by a constant amount of seconds.
+TEST(CsvConverter, TimeOffsetSecAddsConstantShift) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_offset.csv";
+    {
+        std::ofstream f(path);
+        f << "t,v\n";
+        f << "0.0,1\n";
+        f << "0.1,2\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.headerRow = 1;
+    p.decimalSeparator = ".";
+    ColumnMapping x{"A", ColumnMapping::Role::XTime,  "",  "s"};
+    ColumnMapping y{"B", ColumnMapping::Role::Signal, "V", "V"};
+    y.xSourceColumn = "A";
+    y.timeOffsetSec = 10.0;
+    p.columns = { x, y };
+
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto view = sigs[0]->snapshotForRead();
+    ASSERT_EQ(view.count, 2u);
+    EXPECT_NEAR(view.timestamps[0] / 1e9, 10.0, 1e-9);
+    EXPECT_NEAR(view.timestamps[1] / 1e9, 10.1, 1e-9);
+    std::filesystem::remove(path);
+}
+
+// Reset + offset combine: reset first, then offset, so reset + offset = K
+// puts the first sample at exactly t = K seconds.
+TEST(CsvConverter, ResetThenOffsetFirstSampleAtOffset) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_both.csv";
+    {
+        std::ofstream f(path);
+        f << "t,v\n";
+        f << "5.0,1\n";
+        f << "5.5,2\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.headerRow = 1;
+    p.decimalSeparator = ".";
+    ColumnMapping x{"A", ColumnMapping::Role::XTime,  "",  "s"};
+    ColumnMapping y{"B", ColumnMapping::Role::Signal, "V", "V"};
+    y.xSourceColumn   = "A";
+    y.resetTimeToZero = true;
+    y.timeOffsetSec   = 3.0;
+    p.columns = { x, y };
+
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto view = sigs[0]->snapshotForRead();
+    ASSERT_EQ(view.count, 2u);
+    // 5.0 → reset to 0 → +3 = 3
+    EXPECT_NEAR(view.timestamps[0] / 1e9, 3.0, 1e-9);
+    // 5.5 → reset to 0.5 → +3 = 3.5
+    EXPECT_NEAR(view.timestamps[1] / 1e9, 3.5, 1e-9);
+    std::filesystem::remove(path);
+}

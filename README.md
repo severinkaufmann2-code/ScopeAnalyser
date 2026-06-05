@@ -213,6 +213,25 @@ name, the second one is automatically uniquified to `name (2)`,
 `name (3)`, etc. Removing one file doesn't affect signals owned by
 others.
 
+**Per-channel time controls**. Both panels expose two import-time
+knobs per channel:
+
+- **Relative** — subtract the channel's first timestamp on import,
+  so it starts at `t = 0`. For CSV this only applies when X comes
+  from a column (sample-rate mode is already relative-from-0).
+- **Time offset [s]** — a constant shift added to every timestamp
+  after the reset step. `Relative + offset = 5` puts the first
+  sample at exactly `t = 5 s`.
+
+Both knobs are per-channel by default. Above the channel table each
+panel has a small *Apply to all* row — a Relative checkbox, an
+Offset spinbox, and a button — that bulk-sets the same values onto
+every channel in one click. Per-channel edits afterwards still
+stick.
+
+CSV values live inside the saved `.scaconv` profile. H5 values live
+inside the workspace `.scaws`. Both round-trip cleanly.
+
 ### Export and multi-source import (Converter)
 
 The Converter top bar has four buttons:

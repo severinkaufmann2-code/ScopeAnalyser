@@ -7,6 +7,7 @@
 #include <QTextStream>
 
 #include <chrono>
+#include <cmath>
 #include <unordered_map>
 
 namespace scope::converter {
@@ -282,6 +283,21 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
                 ts.push_back(toNs(r[xCol], xMap.unit));
                 vs.push_back(toVal(r[yCol]));
             }
+        }
+
+        // Per-channel time-axis post-processing:
+        //   1. resetTimeToZero  — subtract this channel's first timestamp
+        //   2. timeOffsetSec    — add a fixed shift (seconds → ns)
+        // Order matters: reset first, then offset. So reset+offset=5 puts
+        // the first sample at exactly t = 5 s.
+        if (ySpec.resetTimeToZero && !ts.empty()) {
+            const TimestampNs t0 = ts.front();
+            for (auto& t : ts) t -= t0;
+        }
+        if (ySpec.timeOffsetSec != 0.0 && !ts.empty()) {
+            const TimestampNs off = static_cast<TimestampNs>(
+                std::llround(ySpec.timeOffsetSec * 1e9));
+            for (auto& t : ts) t += off;
         }
 
         Signal::Meta m;

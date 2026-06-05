@@ -29,6 +29,13 @@ struct ColumnMapping {
     bool    useSampleRate{false};
     double  sampleRateHz{0.0};
     QString sampleRateDisplayUnit{"ms"};
+
+    // Time-axis post-processing applied to this Y signal at import:
+    //   1. if resetTimeToZero: subtract this channel's first timestamp
+    //      (no-op in sample-rate mode — it already starts at 0)
+    //   2. add timeOffsetSec * 1e9 to every timestamp
+    bool    resetTimeToZero{false};
+    double  timeOffsetSec{0.0};
 };
 
 struct ConverterProfile {

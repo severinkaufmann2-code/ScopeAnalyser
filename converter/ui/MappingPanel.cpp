@@ -28,11 +28,14 @@ constexpr int kRoleXSourceColumn       = Qt::UserRole;       // QString
 constexpr int kRoleUseSampleRate       = Qt::UserRole + 1;   // bool
 constexpr int kRoleSampleRateHz        = Qt::UserRole + 2;   // double
 constexpr int kRoleSampleRateUnit      = Qt::UserRole + 3;   // QString
+constexpr int kRoleResetTimeToZero     = Qt::UserRole + 4;   // bool
+constexpr int kRoleTimeOffsetSec       = Qt::UserRole + 5;   // double
 
 QString xSourceLabel(const ColumnMapping& m) {
     if (m.role != ColumnMapping::Role::Signal) return "—";
+    QString base;
     if (m.useSampleRate) {
-        return QString("rate: %1 %2")
+        base = QString("rate: %1 %2")
             .arg(QString::number(
                 (m.sampleRateDisplayUnit == "Hz" || m.sampleRateDisplayUnit == "kHz"
                  || m.sampleRateDisplayUnit == "MHz")
@@ -45,8 +48,16 @@ QString xSourceLabel(const ColumnMapping& m) {
                   : m.sampleRateDisplayUnit == "ns" ? 1e9 / m.sampleRateHz
                   : m.sampleRateHz), 'g', 4))
             .arg(m.sampleRateDisplayUnit);
+    } else {
+        base = m.xSourceColumn.isEmpty() ? "(auto)" : ("col " + m.xSourceColumn);
     }
-    return m.xSourceColumn.isEmpty() ? "(auto)" : ("col " + m.xSourceColumn);
+    QStringList badges;
+    if (m.resetTimeToZero)        badges << "rel";
+    if (m.timeOffsetSec != 0.0)   badges << QString("%1%2s")
+                                              .arg(m.timeOffsetSec >= 0 ? "+" : "")
+                                              .arg(m.timeOffsetSec, 0, 'g', 4);
+    if (badges.isEmpty()) return base;
+    return base + "  [" + badges.join(", ") + "]";
 }
 
 const char* roleName(ColumnMapping::Role r) {
@@ -177,6 +188,40 @@ MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
     chBtnRow->addWidget(removeBtn_);
     chBtnRow->addStretch();
 
+    // "Apply to all" row: bulk-set Relative + Offset for every Y signal.
+    bulkRelativeCheck_ = new QCheckBox("Relative", this);
+    bulkOffsetSpin_    = new QDoubleSpinBox(this);
+    bulkOffsetSpin_->setRange(-1e9, 1e9);
+    bulkOffsetSpin_->setDecimals(6);
+    bulkOffsetSpin_->setSuffix(" s");
+    bulkOffsetSpin_->setValue(0.0);
+    bulkApplyBtn_      = new QPushButton("Apply to all", this);
+    bulkApplyBtn_->setToolTip(
+        "Bulk-set the Relative + Offset on every Y signal in the table.\n"
+        "Per-channel values can still be edited individually afterwards.");
+    auto* bulkRow = new QHBoxLayout();
+    bulkRow->addWidget(new QLabel("All channels:", this));
+    bulkRow->addWidget(bulkRelativeCheck_);
+    bulkRow->addWidget(new QLabel("Offset:", this));
+    bulkRow->addWidget(bulkOffsetSpin_);
+    bulkRow->addWidget(bulkApplyBtn_);
+    bulkRow->addStretch();
+    connect(bulkApplyBtn_, &QPushButton::clicked, this, [this]{
+        const bool rel = bulkRelativeCheck_->isChecked();
+        const double off = bulkOffsetSpin_->value();
+        for (int r = 0; r < channelTable_->rowCount(); ++r) {
+            auto m = rowToMapping(r);
+            if (m.role != ColumnMapping::Role::Signal) continue;
+            m.resetTimeToZero = rel;
+            m.timeOffsetSec   = off;
+            auto* xs = channelTable_->item(r, ColXSource);
+            if (!xs) continue;
+            xs->setText(xSourceLabel(m));
+            xs->setData(kRoleResetTimeToZero, m.resetTimeToZero);
+            xs->setData(kRoleTimeOffsetSec,   m.timeOffsetSec);
+        }
+    });
+
     auto* btnRow = new QHBoxLayout();
     btnRow->addWidget(applyBtn_);
     btnRow->addWidget(saveBtn_);
@@ -187,6 +232,7 @@ MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
     root->addWidget(new QLabel("Channels:", this));
     root->addWidget(channelTable_, /*stretch=*/1);
     root->addLayout(chBtnRow);
+    root->addLayout(bulkRow);
     root->addLayout(btnRow);
 
     auto syncCustomVisibility = [this]{
@@ -235,6 +281,8 @@ void MappingPanel::appendChannelRow(const ColumnMapping& m) {
     xSrcItem->setData(kRoleUseSampleRate,   m.useSampleRate);
     xSrcItem->setData(kRoleSampleRateHz,    m.sampleRateHz);
     xSrcItem->setData(kRoleSampleRateUnit,  m.sampleRateDisplayUnit);
+    xSrcItem->setData(kRoleResetTimeToZero, m.resetTimeToZero);
+    xSrcItem->setData(kRoleTimeOffsetSec,   m.timeOffsetSec);
     channelTable_->setItem(row, ColCol,    colItem);
     channelTable_->setItem(row, ColRows,   rowsItem);
     channelTable_->setItem(row, ColRole,   roleItem);
@@ -259,6 +307,8 @@ ColumnMapping MappingPanel::rowToMapping(int row) const {
         m.sampleRateHz          = xs->data(kRoleSampleRateHz).toDouble();
         m.sampleRateDisplayUnit = xs->data(kRoleSampleRateUnit).toString();
         if (m.sampleRateDisplayUnit.isEmpty()) m.sampleRateDisplayUnit = "ms";
+        m.resetTimeToZero       = xs->data(kRoleResetTimeToZero).toBool();
+        m.timeOffsetSec         = xs->data(kRoleTimeOffsetSec).toDouble();
     }
     return m;
 }
@@ -317,6 +367,8 @@ void MappingPanel::onEditChannel() {
         xs->setData(kRoleUseSampleRate,   m.useSampleRate);
         xs->setData(kRoleSampleRateHz,    m.sampleRateHz);
         xs->setData(kRoleSampleRateUnit,  m.sampleRateDisplayUnit);
+        xs->setData(kRoleResetTimeToZero, m.resetTimeToZero);
+        xs->setData(kRoleTimeOffsetSec,   m.timeOffsetSec);
         return;
     }
 }

@@ -11,9 +11,11 @@
 
 #include <QAbstractItemModel>
 #include <QCheckBox>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QHeaderView>
 #include <QLabel>
 #include <QListWidget>
@@ -24,6 +26,8 @@
 #include <QTableView>
 #include <QTableWidget>
 #include <QVBoxLayout>
+
+#include <cmath>
 
 #include <filesystem>
 #include <fstream>
@@ -48,9 +52,12 @@ struct OpenedFile {
 
     // H5-specific. Signals are loaded once on Open and kept in memory; the
     // user picks which subset to push to the store via the channel-selector
-    // panel. selectedChannels mirrors the checkbox state per channel name.
+    // panel. selectedChannels / relativeChannels / offsetSec mirror the per-
+    // channel state shown in the selector.
     std::vector<std::shared_ptr<core::Signal>> h5Signals;
     QStringList h5SelectedChannels;
+    QStringList h5RelativeChannels;
+    QHash<QString, double> h5OffsetSec;
 
     // Signals (by store-resolved name) that have been pushed to the store
     // from this file. Used by Remove to clean up the store and by workspace
@@ -63,14 +70,25 @@ struct OpenedFile {
 // signals because it's reused across forms; this panel only ever has one
 // consumer.
 struct H5SelectorPanel : public QWidget {
+    static constexpr int kColVis      = 0;
+    static constexpr int kColName     = 1;
+    static constexpr int kColUnit     = 2;
+    static constexpr int kColSamples  = 3;
+    static constexpr int kColDuration = 4;
+    static constexpr int kColRelative = 5;
+    static constexpr int kColOffset   = 6;
+    static constexpr int kColCount    = 7;
+
     QTableWidget* table{nullptr};
+    QCheckBox*    bulkRelative{nullptr};
+    QDoubleSpinBox* bulkOffset{nullptr};
     std::function<void()> onApply;
 
     explicit H5SelectorPanel(QWidget* parent = nullptr) : QWidget(parent) {
-        table = new QTableWidget(0, 5, this);
+        table = new QTableWidget(0, kColCount, this);
         table->setHorizontalHeaderLabels(
-            {"", "Channel", "Unit", "Samples", "Duration"});
-        table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+            {"", "Channel", "Unit", "Samples", "Duration", "Relative", "Offset [s]"});
+        table->horizontalHeader()->setSectionResizeMode(kColName, QHeaderView::Stretch);
         table->verticalHeader()->setVisible(false);
         table->setSelectionMode(QAbstractItemView::NoSelection);
         table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -85,20 +103,53 @@ struct H5SelectorPanel : public QWidget {
             if (onApply) onApply();
         });
 
+        // Bulk-set row: set Relative + Offset on every channel at once.
+        bulkRelative = new QCheckBox("Relative", this);
+        bulkOffset   = new QDoubleSpinBox(this);
+        bulkOffset->setRange(-1e9, 1e9);
+        bulkOffset->setDecimals(6);
+        bulkOffset->setSuffix(" s");
+        bulkOffset->setValue(0.0);
+        auto* bulkBtn = new QPushButton("Apply to all", this);
+        bulkBtn->setToolTip(
+            "Bulk-set the Relative + Offset on every channel in the table.\n"
+            "Per-channel values can still be edited individually afterwards.");
+        connect(bulkBtn, &QPushButton::clicked, this, [this]{
+            const bool rel = bulkRelative->isChecked();
+            const double off = bulkOffset->value();
+            for (int r = 0; r < table->rowCount(); ++r) {
+                if (auto* cb = qobject_cast<QCheckBox*>(table->cellWidget(r, kColRelative)))
+                    cb->setChecked(rel);
+                if (auto* sb = qobject_cast<QDoubleSpinBox*>(table->cellWidget(r, kColOffset)))
+                    sb->setValue(off);
+            }
+        });
+
         auto* btnRow = new QHBoxLayout();
         btnRow->addWidget(allBtn);
         btnRow->addWidget(noneBtn);
         btnRow->addStretch();
 
+        auto* bulkRow = new QHBoxLayout();
+        bulkRow->addWidget(new QLabel("All channels:", this));
+        bulkRow->addWidget(bulkRelative);
+        bulkRow->addWidget(new QLabel("Offset:", this));
+        bulkRow->addWidget(bulkOffset);
+        bulkRow->addWidget(bulkBtn);
+        bulkRow->addStretch();
+
         auto* root = new QVBoxLayout(this);
         root->addWidget(new QLabel("HDF5 channels (tick to import):", this));
         root->addWidget(table, /*stretch=*/1);
         root->addLayout(btnRow);
+        root->addLayout(bulkRow);
         root->addWidget(applyBtn);
     }
 
     void setSignals(const std::vector<std::shared_ptr<core::Signal>>& sigs,
-                    const QStringList& preChecked) {
+                    const QStringList& preChecked,
+                    const QStringList& preRelative,
+                    const QHash<QString, double>& preOffsets) {
         table->setRowCount(0);
         for (const auto& s : sigs) {
             if (!s) continue;
@@ -108,27 +159,62 @@ struct H5SelectorPanel : public QWidget {
             table->insertRow(r);
             auto* cb = new QCheckBox();
             cb->setChecked(preChecked.isEmpty() || preChecked.contains(meta.name));
-            table->setCellWidget(r, 0, cb);
-            table->setItem(r, 1, new QTableWidgetItem(meta.name));
-            table->setItem(r, 2, new QTableWidgetItem(meta.unit));
-            table->setItem(r, 3, new QTableWidgetItem(QString::number(view.count)));
+            table->setCellWidget(r, kColVis, cb);
+            table->setItem(r, kColName, new QTableWidgetItem(meta.name));
+            table->setItem(r, kColUnit, new QTableWidgetItem(meta.unit));
+            table->setItem(r, kColSamples, new QTableWidgetItem(QString::number(view.count)));
             QString dur = "—";
             if (view.count >= 2) {
                 const double secs =
                     (view.timestamps[view.count - 1] - view.timestamps[0]) / 1e9;
                 dur = QString("%1 s").arg(secs, 0, 'g', 4);
             }
-            table->setItem(r, 4, new QTableWidgetItem(dur));
+            table->setItem(r, kColDuration, new QTableWidgetItem(dur));
+
+            auto* relCb = new QCheckBox();
+            relCb->setChecked(preRelative.contains(meta.name));
+            table->setCellWidget(r, kColRelative, relCb);
+
+            auto* offSb = new QDoubleSpinBox();
+            offSb->setRange(-1e9, 1e9);
+            offSb->setDecimals(6);
+            offSb->setValue(preOffsets.value(meta.name, 0.0));
+            table->setCellWidget(r, kColOffset, offSb);
         }
     }
 
     QStringList checkedNames() const {
         QStringList out;
         for (int r = 0; r < table->rowCount(); ++r) {
-            if (auto* cb = qobject_cast<QCheckBox*>(table->cellWidget(r, 0))) {
+            if (auto* cb = qobject_cast<QCheckBox*>(table->cellWidget(r, kColVis))) {
                 if (cb->isChecked()) {
-                    if (auto* item = table->item(r, 1)) out << item->text();
+                    if (auto* item = table->item(r, kColName)) out << item->text();
                 }
+            }
+        }
+        return out;
+    }
+
+    QStringList relativeNames() const {
+        QStringList out;
+        for (int r = 0; r < table->rowCount(); ++r) {
+            if (auto* cb = qobject_cast<QCheckBox*>(table->cellWidget(r, kColRelative))) {
+                if (cb->isChecked()) {
+                    if (auto* item = table->item(r, kColName)) out << item->text();
+                }
+            }
+        }
+        return out;
+    }
+
+    QHash<QString, double> offsetMap() const {
+        QHash<QString, double> out;
+        for (int r = 0; r < table->rowCount(); ++r) {
+            const auto* item = table->item(r, kColName);
+            if (!item) continue;
+            if (auto* sb = qobject_cast<QDoubleSpinBox*>(table->cellWidget(r, kColOffset))) {
+                const double v = sb->value();
+                if (v != 0.0) out.insert(item->text(), v);
             }
         }
         return out;
@@ -137,7 +223,7 @@ struct H5SelectorPanel : public QWidget {
 private:
     void setAllChecked(bool on) {
         for (int r = 0; r < table->rowCount(); ++r) {
-            if (auto* cb = qobject_cast<QCheckBox*>(table->cellWidget(r, 0)))
+            if (auto* cb = qobject_cast<QCheckBox*>(table->cellWidget(r, kColVis)))
                 cb->setChecked(on);
         }
     }
@@ -255,6 +341,8 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             f.profile = impl_->mapping->buildProfile("csv");
         } else {
             f.h5SelectedChannels = impl_->h5Selector->checkedNames();
+            f.h5RelativeChannels = impl_->h5Selector->relativeNames();
+            f.h5OffsetSec        = impl_->h5Selector->offsetMap();
         }
     };
 
@@ -279,7 +367,10 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                     .arg(f.csv ? f.csv->rowCount()    : 0)
                     .arg(f.csv ? f.csv->columnCount() : 0));
         } else {
-            impl_->h5Selector->setSignals(f.h5Signals, f.h5SelectedChannels);
+            impl_->h5Selector->setSignals(f.h5Signals,
+                                          f.h5SelectedChannels,
+                                          f.h5RelativeChannels,
+                                          f.h5OffsetSec);
             impl_->preview->setModel(nullptr);
             impl_->rightStack->setCurrentIndex(1);
             impl_->statusLabel->setText(
@@ -432,8 +523,12 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     };
 
     auto applyH5 = [this](OpenedFile& f) {
-        const auto checked = impl_->h5Selector->checkedNames();
+        const auto checked  = impl_->h5Selector->checkedNames();
+        const auto relative = impl_->h5Selector->relativeNames();
+        const auto offsets  = impl_->h5Selector->offsetMap();
         f.h5SelectedChannels = checked;
+        f.h5RelativeChannels = relative;
+        f.h5OffsetSec        = offsets;
         for (const auto& n : f.importedNames) store_.remove(n);
         f.importedNames.clear();
         int n = 0;
@@ -441,14 +536,39 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             if (!s) continue;
             const auto meta0 = s->meta();
             if (!checked.contains(meta0.name)) continue;
+
+            const bool isRel  = relative.contains(meta0.name);
+            const double offS = offsets.value(meta0.name, 0.0);
+            const auto view   = s->snapshotForRead();
+            const auto values = s->readAsDouble();
+
             auto meta = meta0;
             const QString unique = uniqueStoreName(store_, meta.name);
-            if (unique != meta.name) {
-                meta.name = unique;
-                s->setMeta(meta);
+            meta.name = unique;
+
+            std::shared_ptr<core::Signal> toAdd;
+            if ((isRel || offS != 0.0) && view.count > 0) {
+                // Build a fresh shifted Signal so the in-memory cache stays
+                // bit-identical to the file.
+                const core::TimestampNs t0  = isRel ? view.timestamps[0] : 0;
+                const core::TimestampNs off =
+                    static_cast<core::TimestampNs>(std::llround(offS * 1e9));
+                std::vector<core::TimestampNs> ts(view.count);
+                for (std::size_t i = 0; i < view.count; ++i) {
+                    ts[i] = view.timestamps[i] - t0 + off;
+                }
+                toAdd = std::make_shared<core::Signal>(meta);
+                toAdd->append(
+                    ts.data(),
+                    reinterpret_cast<const std::byte*>(values.data()),
+                    view.count);
+            } else {
+                // No shift requested — reuse the cached Signal directly.
+                if (unique != meta0.name) s->setMeta(meta);
+                toAdd = s;
             }
             f.importedNames << unique;
-            store_.add(s);
+            store_.add(toAdd);
             ++n;
         }
         impl_->statusLabel->setText(
@@ -637,6 +757,15 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                 jf["selectedChannels"] = nlohmann::json::array();
                 for (const auto& n : f.h5SelectedChannels)
                     jf["selectedChannels"].push_back(n.toStdString());
+                jf["relativeChannels"] = nlohmann::json::array();
+                for (const auto& n : f.h5RelativeChannels)
+                    jf["relativeChannels"].push_back(n.toStdString());
+                nlohmann::json jOff = nlohmann::json::object();
+                for (auto it = f.h5OffsetSec.constBegin();
+                     it != f.h5OffsetSec.constEnd(); ++it) {
+                    jOff[it.key().toStdString()] = it.value();
+                }
+                jf["offsets"] = jOff;
             }
             j["files"].push_back(std::move(jf));
         }
@@ -731,6 +860,17 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                                                nlohmann::json::array()))
                     f->h5SelectedChannels << QString::fromStdString(
                         jn.get<std::string>());
+                for (const auto& jn : jf.value("relativeChannels",
+                                               nlohmann::json::array()))
+                    f->h5RelativeChannels << QString::fromStdString(
+                        jn.get<std::string>());
+                if (jf.contains("offsets") && jf["offsets"].is_object()) {
+                    for (const auto& kv : jf["offsets"].items()) {
+                        f->h5OffsetSec.insert(
+                            QString::fromStdString(kv.key()),
+                            kv.value().get<double>());
+                    }
+                }
             } else {
                 continue;
             }

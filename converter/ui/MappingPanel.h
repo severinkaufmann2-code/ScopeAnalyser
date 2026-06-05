@@ -61,6 +61,12 @@ private:
     QPushButton*  saveBtn_;
     QPushButton*  loadBtn_;
 
+    // Bulk-set row (above the Apply button): set Relative + Offset on
+    // every Y signal in one click.
+    QCheckBox*      bulkRelativeCheck_{nullptr};
+    QDoubleSpinBox* bulkOffsetSpin_{nullptr};
+    QPushButton*    bulkApplyBtn_{nullptr};
+
     void appendChannelRow(const ColumnMapping& m);
     ColumnMapping rowToMapping(int row) const;
 };

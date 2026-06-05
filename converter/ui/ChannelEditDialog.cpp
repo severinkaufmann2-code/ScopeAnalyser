@@ -1,5 +1,6 @@
 #include "ChannelEditDialog.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -148,6 +149,21 @@ ChannelEditDialog::ChannelEditDialog(QWidget* parent) : QDialog(parent) {
     for (const auto& u : kRateUnits) rateUnit_->addItem(QString::fromUtf8(u.label));
     rateUnit_->setCurrentIndex(kDefaultRateUnitIndex);
 
+    resetToZeroCheck_ = new QCheckBox(
+        "Reset timestamps so signal starts at 0", xSourceGroup_);
+    resetToZeroCheck_->setToolTip(
+        "Subtract this channel's first timestamp on import. Only meaningful\n"
+        "when X comes from a column (sample-rate mode already starts at 0).");
+
+    offsetSpin_ = new QDoubleSpinBox(xSourceGroup_);
+    offsetSpin_->setRange(-1e9, 1e9);
+    offsetSpin_->setDecimals(6);
+    offsetSpin_->setSuffix(" s");
+    offsetSpin_->setValue(0.0);
+    offsetSpin_->setToolTip(
+        "Constant offset added to every timestamp after the reset step.\n"
+        "Reset + offset = 5 puts the first sample at exactly t = 5 s.");
+
     auto* xColRow = new QHBoxLayout();
     xColRow->addWidget(useColumnRadio_);
     xColRow->addWidget(xColumnCombo_);
@@ -157,9 +173,15 @@ ChannelEditDialog::ChannelEditDialog(QWidget* parent) : QDialog(parent) {
     xRateRow->addWidget(rateValue_);
     xRateRow->addWidget(rateUnit_);
     xRateRow->addStretch();
+    auto* offsetRow = new QHBoxLayout();
+    offsetRow->addWidget(new QLabel("Time offset:", xSourceGroup_));
+    offsetRow->addWidget(offsetSpin_);
+    offsetRow->addStretch();
     auto* xLayout = new QVBoxLayout(xSourceGroup_);
     xLayout->addLayout(xColRow);
     xLayout->addLayout(xRateRow);
+    xLayout->addWidget(resetToZeroCheck_);
+    xLayout->addLayout(offsetRow);
 
     connect(useColumnRadio_, &QRadioButton::toggled,
             this, [this](bool){ onXSourceModeChanged(); });
@@ -214,6 +236,8 @@ void ChannelEditDialog::onXSourceModeChanged() {
     xColumnCombo_->setEnabled(col && !availableXColumns_.isEmpty());
     rateValue_->setEnabled(!col);
     rateUnit_->setEnabled(!col);
+    // Reset is only meaningful in column-X mode (rate mode already starts at 0).
+    if (resetToZeroCheck_) resetToZeroCheck_->setEnabled(col);
 }
 
 void ChannelEditDialog::setMapping(const ColumnMapping& m) {
@@ -232,6 +256,8 @@ void ChannelEditDialog::setMapping(const ColumnMapping& m) {
         const int idx = availableXColumns_.indexOf(m.xSourceColumn);
         if (idx >= 0) xColumnCombo_->setCurrentIndex(idx);
     }
+    if (resetToZeroCheck_) resetToZeroCheck_->setChecked(m.resetTimeToZero);
+    if (offsetSpin_)       offsetSpin_->setValue(m.timeOffsetSec);
     onRoleChanged();
     onXSourceModeChanged();
 }
@@ -271,11 +297,17 @@ bool ChannelEditDialog::getMapping(ColumnMapping* out, QString* errorOut) const 
             out->xSourceColumn = xColumnCombo_->isEnabled()
                                  ? xColumnCombo_->currentText() : QString();
         }
+        out->resetTimeToZero = resetToZeroCheck_
+            ? (resetToZeroCheck_->isEnabled() && resetToZeroCheck_->isChecked())
+            : false;
+        out->timeOffsetSec = offsetSpin_ ? offsetSpin_->value() : 0.0;
     } else {
         // X-axis channel: not a Y, no X-source needed.
         out->useSampleRate = false;
         out->xSourceColumn.clear();
         out->sampleRateHz  = 0;
+        out->resetTimeToZero = false;
+        out->timeOffsetSec   = 0.0;
     }
     return true;
 }
