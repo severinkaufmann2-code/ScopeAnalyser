@@ -166,38 +166,73 @@ The plot at the bottom toggles channels via checkboxes.
 
 ### Converter
 
-1. **Open CSV** → preview appears with letter column headers.
-2. In the mapping panel, set each column's role: `Ignore`, `X-axis (time)`,
-   or `Signal`. Fill in the signal name and unit.
+The Converter is a multi-file workspace. Every file you open (CSV or
+.h5) stays in the workspace until you remove it, and each file keeps
+its own per-file state — mappings for CSVs, channel selection for
+.h5 — so you can switch back and forth and edit each one
+independently.
+
+**Layout**: a file list on the left, a preview in the middle, and the
+right panel which switches between the CSV mapping panel and the H5
+channel selector based on which file is active.
+
+**Workflow:**
+
+1. **Open CSV…** → adds the file to the list and makes it active. The
+   preview appears in the middle.
+2. In the mapping panel (right), set each column's role: `Ignore`,
+   `X-axis (time)`, or `Signal`. Fill in the signal name and unit.
 3. Set the header row index and decimal separator if needed.
 4. **Each Y signal has its own X source.** In the Add channel dialog,
    either pick "from X-axis column [letter]" or "from sample rate
-   [value][unit]". Different Y channels can use different sources, including
-   different sample rates — every imported signal carries its own timeline.
-5. **Apply (import signals)** → channels flow into the SignalStore and appear
-   in the Analyser.
+   [value][unit]". Different Y channels can use different sources,
+   including different sample rates — every imported signal carries
+   its own timeline.
+5. Click **Apply (import signals)** → the channels flow into the
+   SignalStore and appear in the Analyser. Re-applying replaces this
+   file's previous import (so re-editing mappings doesn't pile up
+   duplicates).
+6. **Open .h5…** → adds the recording to the list and switches the
+   right panel to a channel selector with checkboxes per signal,
+   plus *Select all* / *Select none* and the per-channel sample
+   count / duration. Tick what you want and click *Apply (import
+   selected)*.
+7. **Click a file in the list** to switch active. Its mappings (or
+   selection) are restored exactly as you left them.
+8. **Remove file** drops the file from the list *and* removes the
+   signals it imported from the SignalStore (after a confirmation).
+
+**Workspace save / load**. *Save workspace…* writes the file list +
+each CSV's mapping profile + each .h5's checked-channel list into a
+single `.scaws` JSON file. *Load workspace…* re-opens every file
+from disk and restores the per-file state. Missing source files are
+reported in the status bar but don't block loading the rest.
+
+**Name collisions**. If two files produce a signal with the same
+name, the second one is automatically uniquified to `name (2)`,
+`name (3)`, etc. Removing one file doesn't affect signals owned by
+others.
 
 ### Export and multi-source import (Converter)
 
 The Converter top bar has four buttons:
 
-- **Open CSV…** / **Load .h5…** — pull signals in from a CSV (after the
-  per-channel mapping is configured + Apply) or directly from an existing
-  HDF5 recording. Names colliding with existing signals are uniquified
-  with ` (2)`, ` (3)`, …
-- **Save .h5…** — write every channel currently in the SignalStore to a
-  recording file (same format the Recorder writes).
+- **Open CSV…** / **Open .h5…** — add a file to the workspace (see the
+  Converter workflow above for the per-file editing).
+- **Save workspace… / Load workspace…** — `.scaws` JSON of the full
+  file list + per-file state.
+- **Save .h5…** — write every channel currently in the SignalStore to
+  a recording file (same format the Recorder writes).
 - **Save CSV…** — write every channel to CSV. A small Options dialog
-  appears first; all fields have defaults so clicking OK twice (Options
-  then Save) produces a sensible standard CSV (`,` columns, `\n` rows,
-  `.` decimal, single time column resampled to the union of all
-  signals' timestamps).
+  appears first; all fields have defaults so clicking OK twice
+  (Options then Save) produces a sensible standard CSV (`,` columns,
+  `\n` rows, `.` decimal, single time column resampled to the union
+  of all signals' timestamps).
 
-The multi-source flow is just: open / configure / Apply (or Load .h5)
-for each input file, then Save once. Every signal in the store ends up
-in the output file regardless of which input it came from.
-5. **Save profile…** → next time the same kind of file comes in, **Load
-   profile…** → **Apply** is two clicks.
+Per-file *Save profile…* / *Load profile…* (`.scaconv`) is still there
+in the CSV mapping panel for when you want to apply the same mapping
+to many similarly-shaped CSV files without saving the whole
+workspace.
 
 ## Repository layout
 
