@@ -155,6 +155,18 @@ Functions: `Filter`, `Integral`, `Derivative`, `Mean`, `RMS`, `Min`, `Max`,
 `Shift`, `Abs`, `Sqrt`, `Log`, `Sin`, `Cos`, `Resample`. See the side panel
 for the full reference.
 
+`Derivative` has two forms:
+- `Derivative(signal)` — central-difference, point-wise. Best on
+  smooth signals.
+- `Derivative(signal, window_seconds)` — least-squares slope over a
+  centred time window. Use this on recorded signals with corners,
+  staircase quantisation, or sample-to-sample noise: it fits a line
+  through every sample within ±window/2 of the current time and
+  reports that line's slope, which is what you typically want
+  rather than the raw spike-y sample-to-sample slope. A good rule
+  of thumb is a window that spans a few sample periods, or matches
+  the timescale of the underlying motion you care about.
+
 **Different sample rates per channel work out of the box.** When two channels
 of different rates appear in the same expression (e.g. `Hi + Lo` where `Hi`
 is 1 kHz and `Lo` is 100 Hz), the engine linear-interpolates onto the

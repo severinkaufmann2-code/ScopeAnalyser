@@ -116,19 +116,77 @@ std::shared_ptr<Signal> impl_Integral(const FunctionArgs& a, QString* err) {
 }
 
 // ---- Derivative(signal) — central difference ----
-// Standard textbook derivative. For smooth signals this gives the best
-// accuracy; for signals with corners (triangle, sawtooth) or sample-to-
-// sample noise it can show artifacts (alternating-zero pattern on
-// triangles; spikes at discontinuities). For noisy / quantised data
-// pre-filter: e.g. `D = Derivative(Filter(signal, 0.1))`.
+// ---- Derivative(signal, window_seconds) — least-squares slope ----
+//
+// One-arg form is the textbook central-difference derivative. For smooth
+// signals this gives the best point-wise accuracy.
+//
+// Two-arg form: at each sample, fit a line through every sample within
+// ±window_seconds/2 of the current time and report that line's slope.
+// This is robust against sample-to-sample quantisation, corners, and
+// noise — it's what you want for real recorded signals where the raw
+// central or forward differences end up alternating wildly between
+// adjacent samples. Pick the window roughly to match the timescale of
+// the trend you care about (a few sample periods, or the timescale of
+// the smoothest underlying motion).
 std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
-    if (!ensureN(a, 1, err, "Derivative")) return nullptr;
+    if (a.size() != 1 && a.size() != 2) {
+        if (err) *err = QString("Derivative expects 1 or 2 arg(s), got %1")
+                            .arg(a.size());
+        return nullptr;
+    }
     auto signal = a[0];
     auto view = signal->snapshotForRead();
     auto src  = signal->readAsDouble();
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(view.count, 0.0);
     if (view.count < 2) return makeDoubleSignal("Derivative", ts, dst);
+
+    // Two-arg form: least-squares slope over a centred time window.
+    if (a.size() == 2) {
+        double windowSec = 0;
+        if (!asScalar(a[1], windowSec) || windowSec <= 0) {
+            if (err) *err = "Derivative: window must be a positive scalar (seconds)";
+            return nullptr;
+        }
+        const TimestampNs halfNs =
+            static_cast<TimestampNs>(windowSec * 1e9 / 2.0);
+        std::size_t lo = 0, hi = 0;
+        for (std::size_t i = 0; i < view.count; ++i) {
+            const TimestampNs tCenter = ts[i];
+            while (lo < view.count && tCenter - ts[lo] > halfNs) ++lo;
+            while (hi + 1 < view.count && ts[hi + 1] - tCenter <= halfNs) ++hi;
+            // Need ≥2 distinct timestamps to fit a slope; fall back to
+            // central-difference if the window is tighter than the sample
+            // spacing.
+            if (hi <= lo) {
+                if (i > 0 && i + 1 < view.count) {
+                    const double dt = (ts[i + 1] - ts[i - 1]) * 1e-9;
+                    dst[i] = (src[i + 1] - src[i - 1]) / (dt != 0 ? dt : 1e-12);
+                }
+                continue;
+            }
+            // Least-squares slope: m = Σ((x-x̄)(y-ȳ)) / Σ((x-x̄)²)
+            const std::size_t n = hi - lo + 1;
+            double sumX = 0, sumY = 0;
+            for (std::size_t k = lo; k <= hi; ++k) {
+                sumX += ts[k] * 1e-9;
+                sumY += src[k];
+            }
+            const double meanX = sumX / static_cast<double>(n);
+            const double meanY = sumY / static_cast<double>(n);
+            double num = 0, den = 0;
+            for (std::size_t k = lo; k <= hi; ++k) {
+                const double dx = ts[k] * 1e-9 - meanX;
+                num += dx * (src[k] - meanY);
+                den += dx * dx;
+            }
+            dst[i] = (den != 0) ? num / den : 0.0;
+        }
+        return makeDoubleSignal("Derivative", ts, dst);
+    }
+
+    // One-arg form: central difference (default).
     for (std::size_t i = 1; i + 1 < view.count; ++i) {
         const double dt = (ts[i + 1] - ts[i - 1]) * 1e-9;
         dst[i] = (src[i + 1] - src[i - 1]) / (dt != 0 ? dt : 1e-12);
@@ -343,8 +401,11 @@ void FunctionRegistry::registerBuiltins() {
         "1st-order low-pass IIR with time constant tau.", 2, 2, &impl_Filter);
     add("Integral",   "Integral(signal)",
         "Trapezoidal cumulative integration.", 1, 1, &impl_Integral);
-    add("Derivative", "Derivative(signal)",
-        "Central-difference time derivative.", 1, 1, &impl_Derivative);
+    add("Derivative", "Derivative(signal[, window_seconds])",
+        "Time derivative. With one arg: central difference (point-wise). "
+        "With a window: least-squares slope over a centred time window — "
+        "robust against quantisation, corners, and noise.",
+        1, 2, &impl_Derivative);
     add("Mean",       "Mean(signal, window_seconds)",
         "Rolling arithmetic mean over the last window_seconds.", 2, 2, &impl_Mean);
     add("RMS",        "RMS(signal, window_seconds)",
