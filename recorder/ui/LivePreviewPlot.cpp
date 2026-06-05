@@ -229,6 +229,7 @@ void LivePreviewPlot::onChannelAdded(QString name) {
 
     auto* g = plot->addGraph(plot->xAxis, scope_->yAxis(axisIdx));
     g->setName(name);
+    g->setAdaptiveSampling(false);
     graphs_[name] = g;
     rebuildTable();
     recolorChannels();

@@ -267,6 +267,11 @@ void AnalyserPlot::redrawForActiveChannels() {
         if (!graph) {
             graph = plot->addGraph(plot->xAxis, scope_->yAxis(axisIndex));
             graph->setName(name);
+            // QCustomPlot's adaptive sampling draws min/max-per-pixel-column
+            // for dense data, which renders signals with occasional spikes
+            // (e.g. Derivative output) as vertical bars from 0 to the spike
+            // — looks like a histogram. Disable so each segment is drawn.
+            graph->setAdaptiveSampling(false);
             graphs_[name] = graph;
         } else if (graph->valueAxis() != scope_->yAxis(axisIndex)) {
             scope_->setGraphYAxis(graph, axisIndex);
