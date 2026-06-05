@@ -50,6 +50,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     table_->setMaximumWidth(320);
 
     auto* addChBtn    = new QPushButton("+ Add channel…", this);
+    auto* editChBtn   = new QPushButton("Edit channel…", this);
     auto* removeChBtn = new QPushButton("− Remove channel", this);
     auto* addAxisBtn  = new QPushButton("+ Y axis", this);
     auto* delAxisBtn  = new QPushButton("− Y axis", this);
@@ -60,6 +61,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
 
     auto* chBtnRow = new QHBoxLayout();
     chBtnRow->addWidget(addChBtn);
+    chBtnRow->addWidget(editChBtn);
     chBtnRow->addWidget(removeChBtn);
     auto* axisBtnRow = new QHBoxLayout();
     axisBtnRow->addWidget(addAxisBtn);
@@ -85,7 +87,10 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     connect(saveBtn,      &QPushButton::clicked, this, &AnalyserPlot::saveLayoutDialog);
     connect(loadBtn,      &QPushButton::clicked, this, &AnalyserPlot::loadLayoutDialog);
     connect(addChBtn,     &QPushButton::clicked, this, &AnalyserPlot::addChannelDialog);
+    connect(editChBtn,    &QPushButton::clicked, this, &AnalyserPlot::editChannelDialog);
     connect(saveChartBtn, &QPushButton::clicked, this, &AnalyserPlot::saveChartDialog);
+    connect(table_, &QTableWidget::cellDoubleClicked, this,
+            [this](int, int){ editChannelDialog(); });
     connect(removeChBtn,  &QPushButton::clicked, this, [this]{
         const int r = table_->currentRow();
         if (r < 0) return;
@@ -425,6 +430,40 @@ void AnalyserPlot::loadLayoutDialog() {
 void AnalyserPlot::addChannelDialog() {
     AddChannelDialog dlg(store_, engine_, this);
     dlg.exec();   // engine emits store changes which arrive via the slot
+}
+
+void AnalyserPlot::editChannelDialog() {
+    const int row = table_->currentRow();
+    if (row < 0) {
+        QMessageBox::information(this, "Edit channel",
+            "Select a channel in the table first.");
+        return;
+    }
+    const QString name = table_->item(row, ColName)->text();
+    auto sig = store_.get(name);
+    if (!sig) return;
+
+    // Formula-derived channels have sourceSymbol set to "<name> = <expr>"
+    // by FormulaEngine::evaluate. Anything else (recorded / imported)
+    // doesn't have an editable formula.
+    const QString src = sig->meta().sourceSymbol;
+    const int eq = src.indexOf('=');
+    QString origName, expr;
+    if (eq > 0) {
+        origName = src.left(eq).trimmed();
+        expr     = src.mid(eq + 1).trimmed();
+    }
+    if (origName.isEmpty() || expr.isEmpty() || origName != name) {
+        QMessageBox::information(this, "Not a formula channel",
+            QString("'%1' wasn't created with a formula, so there's "
+                    "nothing to edit here. Use Remove + Add to replace "
+                    "it with a derived channel.").arg(name));
+        return;
+    }
+
+    AddChannelDialog dlg(store_, engine_, this);
+    dlg.setEditMode(origName, expr);
+    dlg.exec();
 }
 
 void AnalyserPlot::saveChartDialog() {

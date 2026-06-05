@@ -190,9 +190,12 @@ table writes every channel in the store to disk. The dialog asks for:
   the Converter's *Save CSV…*.
 Each signal is trimmed to the chosen range before being written.
 
-`+ Add channel… / − Remove channel` in the channels sidebar add a
-derived channel via the formula dialog or remove the selected one
-from the store.
+`+ Add channel… / Edit channel… / − Remove channel` in the channels
+sidebar add a derived channel via the formula dialog, edit an
+existing formula channel (also via double-click on its row), or
+remove the selected one from the store. Only formula-derived
+channels are editable — recorded / imported channels have no
+formula to change.
 
 ### Converter
 

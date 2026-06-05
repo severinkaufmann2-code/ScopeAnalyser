@@ -167,6 +167,14 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
 QString AddChannelDialog::channelName() const { return nameEdit_->text().trimmed(); }
 QString AddChannelDialog::formula()     const { return formulaEdit_->toPlainText().trimmed(); }
 
+void AddChannelDialog::setEditMode(const QString& originalName, const QString& formula) {
+    originalName_ = originalName;
+    setWindowTitle("Edit channel");
+    nameEdit_->setText(originalName);
+    formulaEdit_->setPlainText(formula);
+    formulaEdit_->setFocus();
+}
+
 void AddChannelDialog::refreshCompletions() {
     completions_.clear();
     for (const auto& n : store_.channelNames()) completions_ << n;
@@ -207,6 +215,11 @@ void AddChannelDialog::onAccept() {
         QMessageBox::critical(this, "Formula error",
             err.isEmpty() ? QString("Unknown error.") : err);
         return;
+    }
+    // Edit mode + rename: drop the old entry so we don't leave a stale
+    // copy under the previous name.
+    if (!originalName_.isEmpty() && originalName_ != name) {
+        store_.remove(originalName_);
     }
     accept();
 }

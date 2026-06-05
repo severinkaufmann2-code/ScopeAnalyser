@@ -30,6 +30,7 @@ public slots:
     void saveLayoutDialog();
     void loadLayoutDialog();
     void addChannelDialog();
+    void editChannelDialog();
     void saveChartDialog();
 
 private:
