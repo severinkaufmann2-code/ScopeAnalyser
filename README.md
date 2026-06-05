@@ -136,11 +136,15 @@ axes, alternating between the left and right side. To use them:
 
 ### Analyser
 
-1. The channel list (left) shows every signal currently in the store —
-   recorded channels and derived ones.
-2. Type a formula in the editor. Press **Ctrl+Space** for autocomplete on
-   channel names and function names.
-3. Click **Evaluate**.
+The Analyser is the multi-Y plot plus its Channels sidebar. There is
+no separate formula window — derived channels are added from the
+sidebar via the **`+ Add channel…`** button.
+
+In the Add-channel dialog:
+- **Name**: the channel's name in the store.
+- **Formula**: any expression — channel names, functions, arithmetic.
+  Press **Tab** to autocomplete channel names and function
+  signatures. The right pane lists every available function.
 
 Examples:
 
@@ -176,7 +180,19 @@ intersection of their time ranges using the higher-rate signal's grid. For
 explicit control use `Resample(signal, 1000)` (to 1 kHz) or
 `Resample(signal, OtherChannel)` (to another signal's timestamps).
 
-The plot at the bottom toggles channels via checkboxes.
+**Saving the chart** — the **`Save chart…`** button below the channel
+table writes every channel in the store to disk. The dialog asks for:
+- *Format* — `.h5` (lossless) or `.csv`.
+- *Time range* — *All data* or a *Custom* range in seconds (defaults
+  to whatever you have visible on the X axis).
+- *CSV options* — header on/off, column / row / decimal separators,
+  and time mode (shared column vs per-signal pairs). Same controls as
+  the Converter's *Save CSV…*.
+Each signal is trimmed to the chosen range before being written.
+
+`+ Add channel… / − Remove channel` in the channels sidebar add a
+derived channel via the formula dialog or remove the selected one
+from the store.
 
 ### Converter
 

@@ -3,6 +3,8 @@ set(ANALYSER_HEADERS
     include/scope/analyser/FunctionRegistry.h
     include/scope/analyser/AnalyserWidget.h
     ui/AnalyserPlot.h
+    ui/AddChannelDialog.h
+    ui/SaveChartDialog.h
 )
 
 set(ANALYSER_SOURCES
@@ -10,6 +12,8 @@ set(ANALYSER_SOURCES
     src/FunctionRegistry.cpp
     ui/AnalyserWidget.cpp
     ui/AnalyserPlot.cpp
+    ui/AddChannelDialog.cpp
+    ui/SaveChartDialog.cpp
 )
 
 scope_add_library(scope_analyser
@@ -22,6 +26,7 @@ scope_add_library(scope_analyser
     PUBLIC_LIBS
         scope::scope_core
         scope::scope_plot
+        scope::scope_converter
         Qt6::Widgets
         Qt6::Gui
         Qt6::PrintSupport

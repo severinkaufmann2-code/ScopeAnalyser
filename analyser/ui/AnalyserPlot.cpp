@@ -1,7 +1,12 @@
 #include "AnalyserPlot.h"
 
+#include "AddChannelDialog.h"
+#include "SaveChartDialog.h"
+
 #include "scope/plot/ScopePlot.h"
 #include "scope/plot/PlotLayout.h"
+#include "scope/converter/CsvWriter.h"
+#include "scope/core/Hdf5Session.h"
 
 #include <qcustomplot.h>
 
@@ -27,8 +32,10 @@ namespace {
 enum Col { ColVis = 0, ColName, ColAxis, ColCount };
 }
 
-AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
-    : QWidget(parent), store_(store) {
+AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
+                           FormulaEngine&            engine,
+                           QWidget*                  parent)
+    : QWidget(parent), store_(store), engine_(engine) {
     scope_ = new scope::plot::ScopePlot(this);
     scope_->plot()->xAxis->setLabel("t [s]");
 
@@ -42,12 +49,18 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table_->setMaximumWidth(320);
 
-    auto* addAxisBtn = new QPushButton("+ Y axis", this);
-    auto* delAxisBtn = new QPushButton("− Y axis", this);
-    auto* saveBtn    = new QPushButton("Save layout…", this);
-    auto* loadBtn    = new QPushButton("Load layout…", this);
-    auto* redrawBtn  = new QPushButton("Redraw",   this);
+    auto* addChBtn    = new QPushButton("+ Add channel…", this);
+    auto* removeChBtn = new QPushButton("− Remove channel", this);
+    auto* addAxisBtn  = new QPushButton("+ Y axis", this);
+    auto* delAxisBtn  = new QPushButton("− Y axis", this);
+    auto* saveBtn     = new QPushButton("Save layout…", this);
+    auto* loadBtn     = new QPushButton("Load layout…", this);
+    auto* saveChartBtn= new QPushButton("Save chart…", this);
+    auto* redrawBtn   = new QPushButton("Redraw",   this);
 
+    auto* chBtnRow = new QHBoxLayout();
+    chBtnRow->addWidget(addChBtn);
+    chBtnRow->addWidget(removeChBtn);
     auto* axisBtnRow = new QHBoxLayout();
     axisBtnRow->addWidget(addAxisBtn);
     axisBtnRow->addWidget(delAxisBtn);
@@ -58,17 +71,31 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
     auto* leftLayout = new QVBoxLayout();
     leftLayout->addWidget(new QLabel("Channels", this));
     leftLayout->addWidget(table_, /*stretch=*/1);
+    leftLayout->addLayout(chBtnRow);
     leftLayout->addLayout(axisBtnRow);
     leftLayout->addLayout(layoutBtnRow);
+    leftLayout->addWidget(saveChartBtn);
     leftLayout->addWidget(redrawBtn);
 
     auto* root = new QHBoxLayout(this);
     root->addLayout(leftLayout);
     root->addWidget(scope_, /*stretch=*/1);
 
-    connect(redrawBtn,  &QPushButton::clicked, this, &AnalyserPlot::redrawAll);
-    connect(saveBtn,    &QPushButton::clicked, this, &AnalyserPlot::saveLayoutDialog);
-    connect(loadBtn,    &QPushButton::clicked, this, &AnalyserPlot::loadLayoutDialog);
+    connect(redrawBtn,    &QPushButton::clicked, this, &AnalyserPlot::redrawAll);
+    connect(saveBtn,      &QPushButton::clicked, this, &AnalyserPlot::saveLayoutDialog);
+    connect(loadBtn,      &QPushButton::clicked, this, &AnalyserPlot::loadLayoutDialog);
+    connect(addChBtn,     &QPushButton::clicked, this, &AnalyserPlot::addChannelDialog);
+    connect(saveChartBtn, &QPushButton::clicked, this, &AnalyserPlot::saveChartDialog);
+    connect(removeChBtn,  &QPushButton::clicked, this, [this]{
+        const int r = table_->currentRow();
+        if (r < 0) return;
+        const QString name = table_->item(r, /*ColName=*/1)->text();
+        const auto resp = QMessageBox::question(
+            this, "Remove channel?",
+            QString("Remove channel '%1' from the store?").arg(name),
+            QMessageBox::Yes | QMessageBox::Cancel);
+        if (resp == QMessageBox::Yes) store_.remove(name);
+    });
     connect(addAxisBtn, &QPushButton::clicked, this, [this]{
         scope_->addYAxis();
         rebuildAxisCombos();
@@ -393,6 +420,109 @@ void AnalyserPlot::loadLayoutDialog() {
         if (!found) pendingAssignments_.insert(c.name, c.axisIndex);
     }
     redrawForActiveChannels();
+}
+
+void AnalyserPlot::addChannelDialog() {
+    AddChannelDialog dlg(store_, engine_, this);
+    dlg.exec();   // engine emits store changes which arrive via the slot
+}
+
+void AnalyserPlot::saveChartDialog() {
+    if (store_.size() == 0) {
+        QMessageBox::information(this, "Nothing to save",
+            "The store is empty — add channels first.");
+        return;
+    }
+    // Default the custom range to the current plot view.
+    const auto xr = scope_->plot()->xAxis->range();
+    SaveChartDialog dlg(xr.lower, xr.upper, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const bool csv = (dlg.format() == SaveChartDialog::Format::Csv);
+    const bool customRange = dlg.useCustomRange();
+    const core::TimestampNs fromNs = customRange
+        ? static_cast<core::TimestampNs>(dlg.fromSec() * 1e9)
+        : std::numeric_limits<core::TimestampNs>::min();
+    const core::TimestampNs toNs = customRange
+        ? static_cast<core::TimestampNs>(dlg.toSec()   * 1e9)
+        : std::numeric_limits<core::TimestampNs>::max();
+
+    // Build trimmed Signal copies of every channel in the store.
+    std::vector<std::shared_ptr<core::Signal>> outChans;
+    for (const auto& n : store_.channelNames()) {
+        auto src = store_.get(n);
+        if (!src) continue;
+        auto view = src->snapshotForRead();
+        auto vs   = src->readAsDouble();
+        if (view.count == 0) continue;
+        std::vector<core::TimestampNs> tsBuf;
+        std::vector<double>            vsBuf;
+        tsBuf.reserve(view.count);
+        vsBuf.reserve(view.count);
+        for (std::size_t i = 0; i < view.count; ++i) {
+            const core::TimestampNs t = view.timestamps[i];
+            if (t < fromNs || t > toNs) continue;
+            tsBuf.push_back(t);
+            vsBuf.push_back(i < vs.size() ? vs[i] : 0.0);
+        }
+        if (tsBuf.empty()) continue;
+        core::Signal::Meta meta = src->meta();
+        // Always export as Float64 — values were already widened on read.
+        meta.dataType = core::DataType::Float64;
+        auto trimmed = std::make_shared<core::Signal>(meta);
+        trimmed->append(tsBuf.data(),
+                        reinterpret_cast<const std::byte*>(vsBuf.data()),
+                        tsBuf.size());
+        outChans.push_back(std::move(trimmed));
+    }
+    if (outChans.empty()) {
+        QMessageBox::warning(this, "Nothing to save",
+            "No samples fell inside the selected time range.");
+        return;
+    }
+
+    QFileDialog fileDlg(this, csv ? "Save chart (.csv)" : "Save chart (.h5)");
+    fileDlg.setAcceptMode(QFileDialog::AcceptSave);
+    if (csv) {
+        fileDlg.setNameFilters({"CSV (*.csv)", "Text (*.txt)", "All files (*)"});
+        fileDlg.setDefaultSuffix("csv");
+    } else {
+        fileDlg.setNameFilters({"Scope sessions (*.h5)", "All files (*)"});
+        fileDlg.setDefaultSuffix("h5");
+    }
+    if (fileDlg.exec() != QDialog::Accepted) return;
+    const auto sel = fileDlg.selectedFiles();
+    if (sel.isEmpty()) return;
+    QString path = sel.first();
+
+    QString err;
+    if (csv) {
+        if (!converter::writeCsv(
+                std::filesystem::path(path.toStdString()),
+                outChans, dlg.csvOptions(), &err)) {
+            QMessageBox::critical(this, "Save failed", err);
+            return;
+        }
+    } else {
+        auto session = core::Hdf5Session::create(
+            std::filesystem::path(path.toStdString()), &err);
+        if (!session) {
+            QMessageBox::critical(this, "Save failed", err);
+            return;
+        }
+        for (const auto& s : outChans) {
+            if (!session->addChannel(s->meta(), &err)) continue;
+            auto v = s->snapshotForRead();
+            if (v.count > 0) {
+                session->appendSamples(s->meta().name,
+                                       v.timestamps, v.values, v.count, &err);
+            }
+        }
+        session->flush();
+    }
+    QMessageBox::information(this, "Saved",
+        QString("Wrote %1 channel(s) to %2")
+            .arg(outChans.size()).arg(QFileInfo(path).fileName()));
 }
 
 }  // namespace scope::analyser::ui
