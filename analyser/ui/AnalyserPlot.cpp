@@ -268,13 +268,16 @@ void AnalyserPlot::redrawForActiveChannels() {
         if (!graph) {
             graph = plot->addGraph(plot->xAxis, scope_->yAxis(axisIndex));
             graph->setName(name);
-            graph->setLineStyle(QCPGraph::lsLine);
-            graph->setScatterStyle(QCPScatterStyle::ssNone);
-            graph->setAdaptiveSampling(false);
             graphs_[name] = graph;
         } else if (graph->valueAxis() != scope_->yAxis(axisIndex)) {
             scope_->setGraphYAxis(graph, axisIndex);
         }
+        // Re-apply every redraw so nothing can resurrect impulse/step
+        // line style or adaptive sampling behind our back.
+        graph->setLineStyle(QCPGraph::lsLine);
+        graph->setScatterStyle(QCPScatterStyle::ssNone);
+        graph->setAdaptiveSampling(false);
+        graph->setBrush(Qt::NoBrush);
 
         auto view = sig->snapshotForRead();
         auto values = sig->readAsDouble();

@@ -229,7 +229,10 @@ void LivePreviewPlot::onChannelAdded(QString name) {
 
     auto* g = plot->addGraph(plot->xAxis, scope_->yAxis(axisIdx));
     g->setName(name);
+    g->setLineStyle(QCPGraph::lsLine);
+    g->setScatterStyle(QCPScatterStyle::ssNone);
     g->setAdaptiveSampling(false);
+    g->setBrush(Qt::NoBrush);
     graphs_[name] = g;
     rebuildTable();
     recolorChannels();
