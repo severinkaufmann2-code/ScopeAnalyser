@@ -4,7 +4,6 @@
 #include "scope/plot/PlotLayout.h"
 
 #include <qcustomplot.h>
-#include <spdlog/spdlog.h>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -293,21 +292,6 @@ void AnalyserPlot::redrawForActiveChannels() {
             xMax = std::max(xMax, x);
         }
         graph->setData(xs, ys, /*alreadySorted=*/true);
-
-        // Diagnostic: dump the first/last few samples so we can tell whether
-        // a "bars to 0" rendering comes from the *data* (alternating
-        // value/0 pattern) or from the plot style. Logged via spdlog at
-        // info level — remove once the speed-derivative bug is closed.
-        if (view.count > 0) {
-            const std::size_t n = std::min<std::size_t>(view.count, 8);
-            QString first;
-            for (std::size_t i = 0; i < n; ++i) {
-                first += QString("(%1, %2) ").arg(xs[i], 0, 'g', 6)
-                                              .arg(ys[i], 0, 'g', 6);
-            }
-            spdlog::info("AnalyserPlot draw '{}' count={} first={}",
-                         name.toStdString(), view.count, first.toStdString());
-        }
     }
 
     recolorChannels();

@@ -115,20 +115,24 @@ std::shared_ptr<Signal> impl_Integral(const FunctionArgs& a, QString* err) {
     return makeDoubleSignal("Integral", ts, dst);
 }
 
-// ---- Derivative(signal) — central difference ----
+// ---- Derivative(signal) — run-based forward difference ----
 // ---- Derivative(signal, window_seconds) — least-squares slope ----
 //
-// One-arg form is the textbook central-difference derivative. For smooth
-// signals this gives the best point-wise accuracy.
+// One-arg form: slope across each "run" of constant value. For each
+// sample i, find the next sample j > i where v[j] differs from v[i],
+// and assign dst[k] = (v[j] - v[i]) / (t[j] - t[i]) to every sample
+// k in [i, j). After the last change, samples carry the most recent
+// slope forward. For a signal where every sample is distinct (any
+// truly continuous signal), this is identical to plain forward
+// difference. For a quantised signal that only updates every few
+// samples — common in PLC data where REAL/LREAL values come from
+// integer-tick sensors — this returns the true underlying rate
+// instead of the comb pattern a naïve adjacent-sample difference
+// produces.
 //
-// Two-arg form: at each sample, fit a line through every sample within
-// ±window_seconds/2 of the current time and report that line's slope.
-// This is robust against sample-to-sample quantisation, corners, and
-// noise — it's what you want for real recorded signals where the raw
-// central or forward differences end up alternating wildly between
-// adjacent samples. Pick the window roughly to match the timescale of
-// the trend you care about (a few sample periods, or the timescale of
-// the smoothest underlying motion).
+// Two-arg form: at each sample, fit a line through every sample
+// within ±window_seconds/2 and report that line's slope. Robust
+// against noise as well as quantisation.
 std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
     if (a.size() != 1 && a.size() != 2) {
         if (err) *err = QString("Derivative expects 1 or 2 arg(s), got %1")
@@ -156,9 +160,6 @@ std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
             const TimestampNs tCenter = ts[i];
             while (lo < view.count && tCenter - ts[lo] > halfNs) ++lo;
             while (hi + 1 < view.count && ts[hi + 1] - tCenter <= halfNs) ++hi;
-            // Need ≥2 distinct timestamps to fit a slope; fall back to
-            // central-difference if the window is tighter than the sample
-            // spacing.
             if (hi <= lo) {
                 if (i > 0 && i + 1 < view.count) {
                     const double dt = (ts[i + 1] - ts[i - 1]) * 1e-9;
@@ -166,7 +167,6 @@ std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
                 }
                 continue;
             }
-            // Least-squares slope: m = Σ((x-x̄)(y-ȳ)) / Σ((x-x̄)²)
             const std::size_t n = hi - lo + 1;
             double sumX = 0, sumY = 0;
             for (std::size_t k = lo; k <= hi; ++k) {
@@ -186,16 +186,25 @@ std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
         return makeDoubleSignal("Derivative", ts, dst);
     }
 
-    // One-arg form: central difference (default).
-    for (std::size_t i = 1; i + 1 < view.count; ++i) {
-        const double dt = (ts[i + 1] - ts[i - 1]) * 1e-9;
-        dst[i] = (src[i + 1] - src[i - 1]) / (dt != 0 ? dt : 1e-12);
-    }
-    if (view.count >= 2) {
-        double dtF = (ts[1] - ts[0]) * 1e-9;
-        if (dtF != 0) dst[0] = (src[1] - src[0]) / dtF;
-        double dtB = (ts.back() - ts[ts.size() - 2]) * 1e-9;
-        if (dtB != 0) dst.back() = (src.back() - src[src.size() - 2]) / dtB;
+    // One-arg form: run-based forward difference.
+    double lastSlope = 0.0;
+    std::size_t i = 0;
+    while (i < view.count) {
+        std::size_t j = i + 1;
+        while (j < view.count && src[j] == src[i]) ++j;
+        if (j >= view.count) {
+            // No further change — every remaining sample carries the
+            // most recent slope. (If there was never a change at all,
+            // lastSlope is still 0, which matches "constant signal,
+            // zero derivative".)
+            for (std::size_t k = i; k < view.count; ++k) dst[k] = lastSlope;
+            break;
+        }
+        const double dt = (ts[j] - ts[i]) * 1e-9;
+        const double slope = (dt != 0) ? (src[j] - src[i]) / dt : 0.0;
+        for (std::size_t k = i; k < j; ++k) dst[k] = slope;
+        lastSlope = slope;
+        i = j;
     }
     return makeDoubleSignal("Derivative", ts, dst);
 }
