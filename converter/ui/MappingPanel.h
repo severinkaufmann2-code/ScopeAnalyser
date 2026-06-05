@@ -33,6 +33,11 @@ public:
     double  sampleRateHz()    const;
     QString sampleRateDisplayUnit() const;
 
+    // Number of rows in the channel-mapping table. Used by the host so it
+    // can detect "user configured mappings but didn't apply yet" before
+    // switching to a different source file.
+    int channelRowCount() const;
+
 signals:
     void applyRequested();
     void saveProfileRequested();
