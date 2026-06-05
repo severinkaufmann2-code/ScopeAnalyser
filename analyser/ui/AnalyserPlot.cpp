@@ -47,13 +47,29 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
     auto* saveBtn    = new QPushButton("Save layout…", this);
     auto* loadBtn    = new QPushButton("Load layout…", this);
     auto* redrawBtn  = new QPushButton("Redraw",   this);
-    auto* alignChk   = new QCheckBox("Align channel starts at t = 0", this);
-    alignChk->setToolTip(
-        "When ON, each channel renders with its own first sample at x = 0\n"
-        "instead of using a shared time origin. Useful when comparing\n"
-        "recordings whose absolute timestamps don't match up (e.g. one\n"
-        "imported with a sample rate, another imported with an X column).\n"
-        "This is view-only — it doesn't modify the stored signals.");
+
+    auto* viewLabel = new QLabel("X-axis view:", this);
+    auto* viewCombo = new QComboBox(this);
+    viewCombo->addItem("Absolute time");
+    viewCombo->addItem("Aligned starts (each channel at x = 0)");
+    viewCombo->addItem("Normalized durations (each channel 0…1)");
+    viewCombo->setCurrentIndex(0);
+    viewCombo->setToolTip(
+        "Absolute time:\n"
+        "  Shared time origin. Channels with the same absolute timestamps\n"
+        "  line up; channels with different durations show at their natural\n"
+        "  scale (a short signal next to a long one looks squashed).\n"
+        "\n"
+        "Aligned starts:\n"
+        "  Each channel's first sample is drawn at x = 0; durations are\n"
+        "  preserved. Use when channels were recorded separately but should\n"
+        "  share a t = 0.\n"
+        "\n"
+        "Normalized durations:\n"
+        "  Each channel is stretched to span x = 0 to x = 1. Use when you\n"
+        "  want to compare the *shape* of channels whose durations differ\n"
+        "  by orders of magnitude (e.g. one CSV at 1 ms rate, another with\n"
+        "  an X column going 0…100 s). The X axis loses its time meaning.");
 
     auto* axisBtnRow = new QHBoxLayout();
     axisBtnRow->addWidget(addAxisBtn);
@@ -67,7 +83,8 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
     leftLayout->addWidget(table_, /*stretch=*/1);
     leftLayout->addLayout(axisBtnRow);
     leftLayout->addLayout(layoutBtnRow);
-    leftLayout->addWidget(alignChk);
+    leftLayout->addWidget(viewLabel);
+    leftLayout->addWidget(viewCombo);
     leftLayout->addWidget(redrawBtn);
 
     auto* root = new QHBoxLayout(this);
@@ -77,8 +94,17 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store, QWidget* parent)
     connect(redrawBtn,  &QPushButton::clicked, this, &AnalyserPlot::redrawAll);
     connect(saveBtn,    &QPushButton::clicked, this, &AnalyserPlot::saveLayoutDialog);
     connect(loadBtn,    &QPushButton::clicked, this, &AnalyserPlot::loadLayoutDialog);
-    connect(alignChk,   &QCheckBox::toggled, this, [this](bool on){
-        alignStarts_ = on;
+    connect(viewCombo,  QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int idx){
+        switch (idx) {
+            case 1:  viewMode_ = ViewMode::AlignedStarts; break;
+            case 2:  viewMode_ = ViewMode::NormalizedDurations; break;
+            default: viewMode_ = ViewMode::Absolute; break;
+        }
+        scope_->plot()->xAxis->setLabel(
+            viewMode_ == ViewMode::NormalizedDurations
+                ? "fraction of duration (0…1)"
+                : "t [s]");
         redrawForActiveChannels();
     });
     connect(addAxisBtn, &QPushButton::clicked, this, [this]{
@@ -258,10 +284,10 @@ void AnalyserPlot::redrawForActiveChannels() {
     double xMin = std::numeric_limits<double>::infinity();
     double xMax = -std::numeric_limits<double>::infinity();
 
-    // Shared base (used unless alignStarts_ is on, in which case each channel
-    // gets its own base = its first timestamp).
+    // Shared base: only used in Absolute mode. Per-channel first / last
+    // are used in AlignedStarts / NormalizedDurations.
     double sharedBase = std::numeric_limits<double>::infinity();
-    if (!alignStarts_) {
+    if (viewMode_ == ViewMode::Absolute) {
         for (const auto& name : active) {
             auto sig = store_.get(name);
             if (!sig) continue;
@@ -291,14 +317,30 @@ void AnalyserPlot::redrawForActiveChannels() {
 
         auto view = sig->snapshotForRead();
         auto values = sig->readAsDouble();
-        const double channelBase = alignStarts_
-            ? (view.count > 0 ? view.timestamps[0] / 1e9 : 0.0)
-            : sharedBase;
+
+        const double firstSec = (view.count > 0) ? view.timestamps[0] / 1e9 : 0.0;
+        const double lastSec  = (view.count > 0) ? view.timestamps[view.count - 1] / 1e9 : 0.0;
+        // Avoid divide-by-zero for single-sample or constant-time signals.
+        const double durationSec = std::max(lastSec - firstSec, 1e-12);
+
         QVector<double> xs, ys;
         xs.reserve(static_cast<int>(view.count));
         ys.reserve(static_cast<int>(view.count));
         for (std::size_t i = 0; i < view.count; ++i) {
-            const double x = view.timestamps[i] / 1e9 - channelBase;
+            const double tSec = view.timestamps[i] / 1e9;
+            double x;
+            switch (viewMode_) {
+                case ViewMode::AlignedStarts:
+                    x = tSec - firstSec;
+                    break;
+                case ViewMode::NormalizedDurations:
+                    x = (tSec - firstSec) / durationSec;
+                    break;
+                case ViewMode::Absolute:
+                default:
+                    x = tSec - sharedBase;
+                    break;
+            }
             xs.push_back(x);
             const double v = (i < values.size()) ? values[i] : 0.0;
             ys.push_back(v);

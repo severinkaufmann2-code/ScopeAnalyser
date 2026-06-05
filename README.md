@@ -96,21 +96,30 @@ A toolbar above each plot exposes the same actions as buttons:
 (save image). The Recorder's plot also has `⏸ Pause` / `▶ Resume` to
 freeze the display while recording continues in the background.
 
-**Mixing recordings with mismatched time domains.** If you import
-signals from two CSVs where one uses a sample rate (timestamps `0, 1
-ms, 2 ms, …`) and the other uses an X column with absolute times (`0,
-0.1, 0.2 s …`), they end up on the same plot at very different scales
-— one collapses to the left edge while the other fills the rest. Two
-ways to fix:
+**Mixing recordings with mismatched time domains.** When you select
+multiple channels with very different durations or absolute timestamps
+(e.g. one CSV imported with a 1 ms sample rate spans `0…1 s`, another
+imported with an X column spans `0…100 s`), the shared X axis ends up
+covering the union — and the shorter signal looks squashed against
+one edge. Two ways to fix:
 
 - **At import time**: in the Converter, tick *Reset timestamps to
   start at 0* in the Add channel dialog. The signal is shifted so its
   first sample is at `t = 0`. Persisted in the data — `Save .h5` /
   `Save CSV` will export the aligned timestamps.
-- **At display time**: in the Analyser, tick the **Align channel
-  starts at t = 0** checkbox in the channels sidebar. Each channel is
-  drawn with its own first sample at `x = 0`. Doesn't modify the data
-  — just changes how the plot renders.
+- **At display time**: in the Analyser, use the **X-axis view**
+  combo in the channels sidebar. Three modes:
+  - *Absolute time* (default) — shared time origin, channels at
+    their natural scale.
+  - *Aligned starts* — each channel's first sample drawn at `x = 0`,
+    durations preserved. Use when channels were recorded separately
+    but should share a `t = 0`.
+  - *Normalized durations* — each channel stretched to span
+    `x = 0…1`. Use when you want to compare the *shape* of channels
+    whose durations differ by orders of magnitude. The X axis label
+    changes to `fraction of duration (0…1)` and loses its time
+    meaning.
+  All three are view-only — the stored signal data is unchanged.
 
 **Multiple Y axes** — both plots support an arbitrary number of Y
 axes, alternating between the left and right side. To use them:
