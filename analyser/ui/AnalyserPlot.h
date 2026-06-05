@@ -46,12 +46,10 @@ private:
     // axis assignment instead of the unit-match default.
     QHash<QString, int> pendingAssignments_;
 
-    enum class ViewMode {
-        Absolute = 0,       // shared time origin (default — current behaviour)
-        AlignedStarts,      // each channel's first sample at x = 0
-        NormalizedDurations // each channel from x = 0 to x = 1 (equal width)
-    };
-    ViewMode viewMode_{ViewMode::Absolute};
+    // When true, each channel renders with its own first sample at x = 0
+    // instead of using the shared min-first-sample base. Useful when
+    // comparing recordings with very different absolute timestamps.
+    bool alignStarts_{false};
 };
 
 }  // namespace scope::analyser::ui
