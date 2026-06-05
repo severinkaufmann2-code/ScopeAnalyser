@@ -114,8 +114,46 @@ TEST(FormulaEngine, DerivativeOfLinearIsConstant) {
     ASSERT_TRUE(engine.evaluate("D = Derivative(L)", &err)) << err.toStdString();
     auto out = store.get("D");
     auto ovs = out->readAsDouble();
-    for (std::size_t i = 1; i + 1 < ovs.size(); ++i) {
-        EXPECT_NEAR(ovs[i], 10.0, 1e-9);
+    // Forward difference: every sample should equal the constant slope.
+    for (std::size_t i = 0; i < ovs.size(); ++i) {
+        EXPECT_NEAR(ovs[i], 10.0, 1e-9) << "at i=" << i;
+    }
+}
+
+// Regression: central difference produces alternating non-zero/zero on
+// triangular and sawtooth signals (every other sample collapses to 0
+// because v[i+1] == v[i-1] across a corner). Forward difference avoids
+// that. Build a triangular wave and verify no sample reports a slope of
+// 0 mid-segment.
+TEST(FormulaEngine, DerivativeOfTriangleHasNoZeroAlternation) {
+    SignalStore store;
+    // Triangle: 0, 1, 2, 1, 0, 1, 2, 1, 0, ...  (period = 4 samples)
+    Signal::Meta m;
+    m.name = "T";
+    m.dataType = DataType::Float64;
+    m.sampleRateHz = 10.0;
+    auto sig = std::make_shared<Signal>(m);
+    const std::size_t N = 21;  // odd so we cover several full periods
+    const double pattern[4] = {0.0, 1.0, 2.0, 1.0};
+    std::vector<TimestampNs> ts(N);
+    std::vector<double> vs(N);
+    for (std::size_t i = 0; i < N; ++i) {
+        ts[i] = static_cast<TimestampNs>(i * 0.1 * 1e9);
+        vs[i] = pattern[i % 4];
+    }
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), N);
+    store.add(sig);
+
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("D = Derivative(T)", &err)) << err.toStdString();
+    auto ovs = store.get("D")->readAsDouble();
+    ASSERT_EQ(ovs.size(), N);
+    // Every segment between corners has slope ±10 (dy=±1, dt=0.1). Forward
+    // difference should report exactly that for every sample (the last one
+    // reuses the previous slope). None should be 0.
+    for (std::size_t i = 0; i < ovs.size(); ++i) {
+        EXPECT_NEAR(std::abs(ovs[i]), 10.0, 1e-9) << "at i=" << i;
     }
 }
 

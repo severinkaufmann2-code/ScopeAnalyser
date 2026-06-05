@@ -116,6 +116,17 @@ std::shared_ptr<Signal> impl_Integral(const FunctionArgs& a, QString* err) {
 }
 
 // ---- Derivative(signal) ----
+// Forward difference: dst[i] is the slope of the segment going from
+// sample i to sample i+1. The last sample reuses the slope of the
+// preceding segment so the output length matches the input.
+//
+// We previously used central difference (dst[i] = (v[i+1]-v[i-1]) /
+// (t[i+1]-t[i-1])), which is "smooth-friendly" but produces a known
+// artifact on signals with corners or alternating values: every other
+// sample collapses to 0 because v[i+1] == v[i-1]. The result looks
+// like a histogram with bars going to 0. Forward difference avoids
+// that — each derivative value represents the actual slope of a real
+// segment in the signal.
 std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
     if (!ensureN(a, 1, err, "Derivative")) return nullptr;
     auto signal = a[0];
@@ -124,17 +135,13 @@ std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(view.count, 0.0);
     if (view.count < 2) return makeDoubleSignal("Derivative", ts, dst);
-    for (std::size_t i = 1; i + 1 < view.count; ++i) {
-        const double dt = (ts[i + 1] - ts[i - 1]) * 1e-9;
-        dst[i] = (src[i + 1] - src[i - 1]) / (dt != 0 ? dt : 1e-12);
+    for (std::size_t i = 0; i + 1 < view.count; ++i) {
+        const double dt = (ts[i + 1] - ts[i]) * 1e-9;
+        dst[i] = (src[i + 1] - src[i]) / (dt != 0 ? dt : 1e-12);
     }
-    // Edges: forward/backward difference
-    if (view.count >= 2) {
-        double dtF = (ts[1] - ts[0]) * 1e-9;
-        if (dtF != 0) dst[0] = (src[1] - src[0]) / dtF;
-        double dtB = (ts.back() - ts[ts.size() - 2]) * 1e-9;
-        if (dtB != 0) dst.back() = (src.back() - src[src.size() - 2]) / dtB;
-    }
+    // Last sample has no forward neighbour — reuse the previous slope so
+    // a flat region stays flat instead of dropping to 0.
+    dst.back() = dst[dst.size() - 2];
     return makeDoubleSignal("Derivative", ts, dst);
 }
 
