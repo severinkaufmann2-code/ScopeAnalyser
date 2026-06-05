@@ -4,6 +4,7 @@
 #include "scope/plot/PlotLayout.h"
 
 #include <qcustomplot.h>
+#include <spdlog/spdlog.h>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -267,10 +268,8 @@ void AnalyserPlot::redrawForActiveChannels() {
         if (!graph) {
             graph = plot->addGraph(plot->xAxis, scope_->yAxis(axisIndex));
             graph->setName(name);
-            // QCustomPlot's adaptive sampling draws min/max-per-pixel-column
-            // for dense data, which renders signals with occasional spikes
-            // (e.g. Derivative output) as vertical bars from 0 to the spike
-            // — looks like a histogram. Disable so each segment is drawn.
+            graph->setLineStyle(QCPGraph::lsLine);
+            graph->setScatterStyle(QCPScatterStyle::ssNone);
             graph->setAdaptiveSampling(false);
             graphs_[name] = graph;
         } else if (graph->valueAxis() != scope_->yAxis(axisIndex)) {
@@ -291,6 +290,21 @@ void AnalyserPlot::redrawForActiveChannels() {
             xMax = std::max(xMax, x);
         }
         graph->setData(xs, ys, /*alreadySorted=*/true);
+
+        // Diagnostic: dump the first/last few samples so we can tell whether
+        // a "bars to 0" rendering comes from the *data* (alternating
+        // value/0 pattern) or from the plot style. Logged via spdlog at
+        // info level — remove once the speed-derivative bug is closed.
+        if (view.count > 0) {
+            const std::size_t n = std::min<std::size_t>(view.count, 8);
+            QString first;
+            for (std::size_t i = 0; i < n; ++i) {
+                first += QString("(%1, %2) ").arg(xs[i], 0, 'g', 6)
+                                              .arg(ys[i], 0, 'g', 6);
+            }
+            spdlog::info("AnalyserPlot draw '{}' count={} first={}",
+                         name.toStdString(), view.count, first.toStdString());
+        }
     }
 
     recolorChannels();
