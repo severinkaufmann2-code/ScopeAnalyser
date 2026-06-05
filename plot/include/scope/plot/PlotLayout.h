@@ -18,6 +18,13 @@ struct PlotLayoutAxis {
 struct PlotLayoutChannel {
     QString name;
     int     axisIndex{0};
+    // For formula-derived channels (Analyser): the right-hand-side
+    // expression that produced the channel, e.g. "Filter(speed, 0.05)".
+    // Empty for recorded / imported channels — they re-appear in the
+    // store on their own when the source file is reloaded. When a layout
+    // is loaded and the channel name isn't in the store yet but `formula`
+    // is non-empty, the host re-evaluates it through the FormulaEngine.
+    QString formula;
 };
 
 // Persistable plot configuration: the set of Y axes (label / side / optional

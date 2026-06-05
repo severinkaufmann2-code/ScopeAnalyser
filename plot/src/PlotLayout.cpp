@@ -31,8 +31,9 @@ PlotLayout PlotLayout::loadFromFile(const std::filesystem::path& path,
         if (j.contains("channels")) {
             for (const auto& jc : j["channels"]) {
                 PlotLayoutChannel c;
-                c.name      = QString::fromStdString(jc.value("name", std::string{}));
+                c.name      = QString::fromStdString(jc.value("name",    std::string{}));
                 c.axisIndex = jc.value("axis", 0);
+                c.formula   = QString::fromStdString(jc.value("formula", std::string{}));
                 p.channels.append(std::move(c));
             }
         }
@@ -63,6 +64,7 @@ bool PlotLayout::saveToFile(const std::filesystem::path& path,
             json jc;
             jc["name"] = c.name.toStdString();
             jc["axis"] = c.axisIndex;
+            if (!c.formula.isEmpty()) jc["formula"] = c.formula.toStdString();
             j["channels"].push_back(std::move(jc));
         }
         std::ofstream f(path);

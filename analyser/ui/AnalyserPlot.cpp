@@ -3,6 +3,7 @@
 #include "AddChannelDialog.h"
 #include "SaveChartDialog.h"
 
+#include "scope/analyser/FormulaEngine.h"
 #include "scope/plot/ScopePlot.h"
 #include "scope/plot/PlotLayout.h"
 #include "scope/converter/CsvWriter.h"
@@ -362,6 +363,17 @@ void AnalyserPlot::saveLayoutDialog() {
         scope::plot::PlotLayoutChannel c;
         c.name = table_->item(r, ColName)->text();
         c.axisIndex = axisIndexForRow(r);
+        // For formula-derived channels, FormulaEngine::evaluate stamps
+        // "<name> = <expr>" into sourceSymbol. Extract just the
+        // right-hand side so reload can re-evaluate it.
+        if (auto sig = store_.get(c.name)) {
+            const QString src = sig->meta().sourceSymbol;
+            const int eq = src.indexOf('=');
+            if (eq > 0) {
+                const QString lhs = src.left(eq).trimmed();
+                if (lhs == c.name) c.formula = src.mid(eq + 1).trimmed();
+            }
+        }
         layout.channels.append(c);
     }
     QString err;
@@ -410,6 +422,24 @@ void AnalyserPlot::loadLayoutDialog() {
         }
     }
     rebuildAxisCombos();
+
+    // First pass: re-evaluate any formula-derived channels that aren't
+    // already in the store. Doing this before the assignment loop means
+    // the channel rows already exist (via the store's channelAdded
+    // signal → rebuildTable) when we look them up below.
+    QStringList formulaErrors;
+    for (const auto& c : layout.channels) {
+        if (c.formula.isEmpty()) continue;
+        if (store_.contains(c.name)) continue;
+        QString err;
+        if (!engine_.evaluate(c.name + " = " + c.formula, &err)) {
+            formulaErrors << QString("%1: %2").arg(c.name, err);
+        }
+    }
+    if (!formulaErrors.isEmpty()) {
+        QMessageBox::warning(this, "Some formulas failed",
+            "Couldn't re-evaluate:\n" + formulaErrors.join("\n"));
+    }
 
     // Apply channel assignments; remember pending for unknown channels.
     pendingAssignments_.clear();
