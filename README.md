@@ -221,15 +221,6 @@ The Converter top bar has four buttons:
 The multi-source flow is just: open / configure / Apply (or Load .h5)
 for each input file, then Save once. Every signal in the store ends up
 in the output file regardless of which input it came from.
-
-**Auto-apply on file switch.** If you open a new CSV while there are
-already mapping rows configured for the current file, the Converter
-auto-applies those mappings to the *current* file before loading the
-new one — otherwise the previous file's signals would silently
-disappear (the old `CsvSource` is closed when the new file opens).
-The status bar tells you how many channels were imported and from
-which file. If the mappings can't be applied (typo, invalid X column,
-etc.) the Converter asks before discarding them.
 5. **Save profile…** → next time the same kind of file comes in, **Load
    profile…** → **Apply** is two clicks.
 

@@ -389,6 +389,5 @@ QString MappingPanel::decimal()         const { return decimalEdit_->text(); }
 bool    MappingPanel::useSampleRate()   const { return false; }
 double  MappingPanel::sampleRateHz()    const { return 0.0; }
 QString MappingPanel::sampleRateDisplayUnit() const { return QString("ms"); }
-int     MappingPanel::channelRowCount() const { return channelTable_->rowCount(); }
 
 }  // namespace scope::converter::ui

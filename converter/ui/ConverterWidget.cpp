@@ -82,65 +82,11 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                                         .arg(impl_->csv->columnCount()));
     };
 
-    // Apply the current mappings to the currently-loaded CsvSource and push
-    // the imported signals into the store. Returns the number of signals
-    // produced. On error, writes the message to *errOut (if provided) and
-    // returns 0. Shared by the Apply button and the auto-apply step when
-    // switching CSV files.
-    auto applyCurrentMappings = [this](QString* errOut) -> std::size_t {
-        if (!impl_->csv) {
-            if (errOut) *errOut = "No CSV file loaded.";
-            return 0;
-        }
-        const auto profile = impl_->mapping->buildProfile("csv");
-        QString err;
-        auto sigs = impl_->csv->apply(profile, &err);
-        if (sigs.empty()) {
-            if (errOut) *errOut = err.isEmpty() ? "No signals produced." : err;
-            return 0;
-        }
-        for (auto& s : sigs) store_.add(s);
-        return sigs.size();
-    };
-
-    connect(openBtn, &QPushButton::clicked, this,
-            [this, reparseCurrentFile, applyCurrentMappings]{
+    connect(openBtn, &QPushButton::clicked, this, [this, reparseCurrentFile]{
         const QString path = QFileDialog::getOpenFileName(
             this, "Open CSV file", QString(),
             "CSV / text files (*.csv *.tsv *.txt);;All files (*)");
         if (path.isEmpty()) return;
-
-        // Opening a *different* file with mappings in the table would
-        // silently drop the previous file's data — there's no way to
-        // re-apply mappings to a file that has already been closed.
-        // Auto-apply the current mappings to the current file before
-        // switching, so the previous file's signals land in the store.
-        const bool isDifferentFile = !impl_->currentFile.isEmpty()
-                                  && impl_->currentFile != path;
-        if (isDifferentFile && impl_->csv
-            && impl_->mapping->channelRowCount() > 0) {
-            QString err;
-            const QString prevName = QFileInfo(impl_->currentFile).fileName();
-            const std::size_t n = applyCurrentMappings(&err);
-            if (n > 0) {
-                impl_->statusLabel->setText(
-                    QString("Imported %1 signal(s) from %2 before opening %3")
-                        .arg(n).arg(prevName)
-                        .arg(QFileInfo(path).fileName()));
-            } else {
-                const auto resp = QMessageBox::warning(
-                    this, "Previous mappings couldn't be applied",
-                    QString("Couldn't apply the current mappings to %1:\n%2"
-                            "\n\nOpening %3 will discard the unapplied "
-                            "mappings. Continue?")
-                        .arg(prevName)
-                        .arg(err.isEmpty() ? "no signals produced" : err)
-                        .arg(QFileInfo(path).fileName()),
-                    QMessageBox::Yes | QMessageBox::Cancel);
-                if (resp != QMessageBox::Yes) return;
-            }
-        }
-
         impl_->currentFile = path;
         reparseCurrentFile();
     });
@@ -148,19 +94,18 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     connect(impl_->mapping, &ui::MappingPanel::parseOptionsChanged,
             this, [this, reparseCurrentFile]{ reparseCurrentFile(); });
 
-    connect(impl_->mapping, &ui::MappingPanel::applyRequested, this,
-            [this, applyCurrentMappings]{
-        if (!impl_->csv) {
-            QMessageBox::information(this, "No file", "Open a CSV first.");
-            return;
-        }
+    connect(impl_->mapping, &ui::MappingPanel::applyRequested, this, [this]{
+        if (!impl_->csv) { QMessageBox::information(this, "No file", "Open a CSV first."); return; }
+        const auto profile = impl_->mapping->buildProfile("csv");
         QString err;
-        const std::size_t n = applyCurrentMappings(&err);
-        if (n == 0) {
-            QMessageBox::critical(this, "Import failed", err);
+        auto sigs = impl_->csv->apply(profile, &err);
+        if (sigs.empty()) {
+            QMessageBox::critical(this, "Import failed",
+                                  err.isEmpty() ? "No signals produced." : err);
             return;
         }
-        impl_->statusLabel->setText(QString("Imported %1 signal(s)").arg(n));
+        for (auto& s : sigs) store_.add(s);
+        impl_->statusLabel->setText(QString("Imported %1 signal(s)").arg(sigs.size()));
     });
 
     connect(impl_->mapping, &ui::MappingPanel::saveProfileRequested, this, [this]{
