@@ -32,6 +32,7 @@ public slots:
     void addChannelDialog();
     void editChannelDialog();
     void saveChartDialog();
+    void openChartDialog();
 
 private:
     void rebuildTable();
