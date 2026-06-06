@@ -92,8 +92,11 @@ either use **`Alt+Scroll`** or simply **hover over the axis label area
 and scroll** — both produce the same axis-specific zoom.
 
 A toolbar above each plot exposes the same actions as buttons:
-`⤢ Fit`, `↔ +` / `↔ −`, `↕ +` / `↕ −`, `Y+` (add a Y axis), `PNG…`
-(save image). The Recorder's plot also has `⏸ Pause` / `▶ Resume` to
+`⤢ Fit`, `↔ +` / `↔ −`, `↕ +` / `↕ −`, **`↕ → Y`** (fit each Y axis
+to the data inside the current X window — X is left alone),
+**`Δ Measure`** (checkable: click two points to get Δx / Δy /
+1/|Δx|, right-click to clear), `Y+` (add a Y axis), `PNG…` (save
+image). The Recorder's plot also has `⏸ Pause` / `▶ Resume` to
 freeze the display while recording continues in the background.
 
 **Multiple Y axes** — both plots support an arbitrary number of Y
@@ -203,25 +206,13 @@ sample — visually shows the sample rate), and *Line + points*
 (both). Useful for double-checking that you imported a 4 kHz
 signal as 4 kHz and not something else.
 
-**Measure (Δx / Δy)** — toggle button in the sidebar. While on,
-left-click two points on the plot to mark them; an orange dashed
-line connects them and a label shows `Δx`, `Δy`, and `1/|Δx|` so
-you can read frequency in Hz directly. Right-click clears the
-markers; click the button again to leave measurement mode.
-
 **Stable view on visibility toggles** — checking/unchecking a
 channel in the sidebar table no longer refits the X axis. The
 chart stays where you have it zoomed; only the data on the
 graphs updates. Same goes for adding / removing channels and
-switching a channel between Y axes.
-
-**Fit buttons** — two in the sidebar:
-- *Fit Y to view* keeps the current X window and rescales every
-  Y axis to fit only the samples that fall inside that window.
-  Use this when you've zoomed into a section of time and want
-  the Y axes to centre on what's actually visible there.
-- *Fit X + Y (all)* fits X to the full data range and rescales
-  every Y axis to match — i.e. shows everything.
+switching a channel between Y axes. Use the toolbar `↕ → Y` to
+re-centre the Y axes around what's in the current X window, or
+`⤢ Fit` to fit everything.
 
 ### Converter
 

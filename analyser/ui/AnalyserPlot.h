@@ -36,7 +36,6 @@ public slots:
 
 public:
     enum class DisplayMode { Line, Points, Both };
-    void fitToActiveChannels();
 
 private:
     void applyDisplayMode();

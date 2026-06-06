@@ -177,6 +177,32 @@ ScopePlot::ScopePlot(QWidget* parent)
                   "Zoom all Y out  (Shift+Scroll down)",
                   [this]{ zoomYBy(1.0 / kZoomStep); });
     tb->addSpacing(8);
+    makeBtnLambda(QString::fromUtf8("↕ → Y"),
+                  "Fit each Y axis to the data inside the current X "
+                  "window. X range stays the same.",
+                  [this]{
+                      const auto xr = impl_->plot->xAxis->range();
+                      rescaleYAxesToWindow(xr.lower, xr.upper);
+                  });
+    tb->addSpacing(8);
+    {
+        auto* mb = new QToolButton(impl_->toolbar);
+        mb->setText(QString::fromUtf8("Δ Measure"));
+        mb->setToolTip(
+            "Click two points to mark Δx / Δy / 1/|Δx|.  Right-click "
+            "clears.  Click again to leave measurement mode.");
+        mb->setCheckable(true);
+        mb->setAutoRaise(false);
+        connect(mb, &QToolButton::toggled, this,
+                [this](bool on){ setMeasureMode(on); });
+        connect(this, &ScopePlot::measureModeChanged, mb,
+                [mb](bool on){
+                    QSignalBlocker b(mb);
+                    mb->setChecked(on);
+                });
+        tb->addWidget(mb);
+    }
+    tb->addSpacing(8);
     makeBtnLambda(QString::fromUtf8("Y+"),
                   "Add a new Y axis (alternates left / right)",
                   [this]{ addYAxis(); });
