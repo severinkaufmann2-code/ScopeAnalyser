@@ -124,6 +124,9 @@ bool Hdf5Session::addChannel(const Signal::Meta& meta, QString* errorOut) {
         valDataset.createAttribute<double>("sample_rate_hz", meta.sampleRateHz);
         valDataset.createAttribute<std::uint32_t>("parent_task_cycle_us", meta.parentTaskCycleUs);
         valDataset.createAttribute<std::string>("data_type", std::string(toString(meta.dataType)));
+        valDataset.createAttribute<std::string>("domain",
+            std::string(meta.domain == Signal::Domain::Frequency ? "frequency"
+                                                                 : "time"));
 
         impl_->channels.emplace(meta.name, Impl::ChannelState{
             meta, std::move(tsDataset), std::move(valDataset), 0});
@@ -201,6 +204,14 @@ std::vector<std::shared_ptr<Signal>> Hdf5Session::loadAllSignals(QString* errorO
             };
             meta.dataType = DataType::Float64;
             for (const auto& [k, v] : kMap) if (dt == k) { meta.dataType = v; break; }
+
+            // Domain — older .h5 files lack this attribute, treat as Time.
+            if (valDs.hasAttribute("domain")) {
+                const std::string dom = valDs.getAttribute("domain").read<std::string>();
+                meta.domain = (dom == "frequency")
+                    ? Signal::Domain::Frequency
+                    : Signal::Domain::Time;
+            }
 
             auto sig = std::make_shared<Signal>(meta);
 

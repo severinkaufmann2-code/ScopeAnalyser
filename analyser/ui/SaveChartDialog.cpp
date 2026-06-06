@@ -120,6 +120,29 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     csvForm->addRow("Decimal separator:", decimalEdit_);
     csvForm->addRow("Time mode:", timeModeCombo_);
 
+    // ---- Channel filters ---------------------------------------------
+    auto* filtersBox = new QGroupBox("Channels to include", this);
+    includeTimeCheck_     = new QCheckBox("Time-domain channels", filtersBox);
+    includeFreqCheck_     = new QCheckBox("Frequency-domain channels", filtersBox);
+    includeDerivedCheck_  = new QCheckBox("Derived (formula) channels", filtersBox);
+    splitFilesCheck_      = new QCheckBox(
+        "Split time and frequency into separate files", filtersBox);
+    includeTimeCheck_->setChecked(true);
+    includeFreqCheck_->setChecked(true);
+    includeDerivedCheck_->setChecked(true);
+    splitFilesCheck_->setChecked(false);   // default off — single file
+    splitFilesCheck_->setToolTip(
+        "When on, time-domain channels go to <name>_time.<ext> and\n"
+        "frequency-domain to <name>_frequency.<ext>. When off, both\n"
+        "domains are written into one file. For CSV with the Shared\n"
+        "Time mode, a mixed-domain single file gets one shared 't [s]'\n"
+        "column plus one shared 'f [Hz]' column written side-by-side.");
+    auto* filtersLayout = new QVBoxLayout(filtersBox);
+    filtersLayout->addWidget(includeTimeCheck_);
+    filtersLayout->addWidget(includeFreqCheck_);
+    filtersLayout->addWidget(includeDerivedCheck_);
+    filtersLayout->addWidget(splitFilesCheck_);
+
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
@@ -128,6 +151,7 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     auto* root = new QVBoxLayout(this);
     root->addWidget(formatBox);
     root->addWidget(rangeBox);
+    root->addWidget(filtersBox);
     root->addWidget(csvGroup_);
     root->addStretch();
     root->addWidget(buttons);
@@ -163,6 +187,11 @@ SaveChartDialog::Format SaveChartDialog::format() const {
 bool   SaveChartDialog::useCustomRange() const { return customRangeRadio_->isChecked(); }
 double SaveChartDialog::fromSec()        const { return fromSpin_->value(); }
 double SaveChartDialog::toSec()          const { return toSpin_->value(); }
+
+bool SaveChartDialog::includeTimeDomain()        const { return includeTimeCheck_->isChecked(); }
+bool SaveChartDialog::includeFrequencyDomain()   const { return includeFreqCheck_->isChecked(); }
+bool SaveChartDialog::includeDerivedChannels()   const { return includeDerivedCheck_->isChecked(); }
+bool SaveChartDialog::splitDomainsIntoTwoFiles() const { return splitFilesCheck_->isChecked(); }
 
 scope::converter::CsvExportOptions SaveChartDialog::csvOptions() const {
     scope::converter::CsvExportOptions o;

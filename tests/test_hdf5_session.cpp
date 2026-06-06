@@ -51,3 +51,34 @@ TEST(Hdf5Session, RoundTripFloat64) {
 
     std::filesystem::remove(path);
 }
+
+TEST(Hdf5Session, DomainAttributeRoundTrip) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_h5_domain.h5";
+    {
+        auto session = Hdf5Session::create(path);
+        ASSERT_TRUE(session);
+        Signal::Meta meta;
+        meta.name = "spec";
+        meta.unit = "magnitude";
+        meta.dataType = DataType::Float64;
+        meta.domain = Signal::Domain::Frequency;   // <— the bit we're testing
+        ASSERT_TRUE(session->addChannel(meta));
+
+        std::vector<TimestampNs> ts{0, 1'000'000'000LL, 2'000'000'000LL};
+        std::vector<double> vs{10.0, 20.0, 30.0};
+        ASSERT_TRUE(session->appendSamples("spec",
+            ts.data(),
+            reinterpret_cast<const std::byte*>(vs.data()),
+            ts.size()));
+        session->flush();
+    }
+
+    auto session = Hdf5Session::openForRead(path);
+    ASSERT_TRUE(session);
+    auto loaded = session->loadAllSignals();
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded[0]->meta().domain, Signal::Domain::Frequency);
+    EXPECT_EQ(loaded[0]->sampleCount(), 3u);
+
+    std::filesystem::remove(path);
+}

@@ -204,15 +204,35 @@ intersection of their time ranges using the higher-rate signal's grid. For
 explicit control use `Resample(signal, 1000)` (to 1 kHz) or
 `Resample(signal, OtherChannel)` (to another signal's timestamps).
 
-**Saving the chart** — the **`Save chart…`** button below the channel
-table writes every channel in the store to disk. The dialog asks for:
+**Saving the chart** — the **`Save chart…`** button writes channels
+to disk. The dialog asks for:
 - *Format* — `.h5` (lossless) or `.csv`.
 - *Time range* — *All data* or a *Custom* range in seconds (defaults
-  to whatever you have visible on the X axis).
-- *CSV options* — header on/off, column / row / decimal separators,
-  and time mode (shared column vs per-signal pairs). Same controls as
-  the Converter's *Save CSV…*.
-Each signal is trimmed to the chosen range before being written.
+  to whatever you have visible on the X axis). Applies to
+  time-domain signals only.
+- *Channels to include* — four checkboxes, all on by default:
+  - *Time-domain channels*
+  - *Frequency-domain channels*
+  - *Derived (formula) channels*
+  - *Split time and frequency into separate files* (off by default —
+    one combined file unless ticked, in which case `<name>_time.ext`
+    and `<name>_frequency.ext` get written separately).
+- *CSV options* — header on/off, separators, decimal, time mode
+  (shared column vs per-signal pairs).
+
+The CSV writer is domain-aware:
+- Per-signal mode labels each X column `t_<name> [s]` for time-domain
+  channels and `f_<name> [Hz]` for frequency-domain channels.
+- Shared mode with a single-domain file uses one shared `t [s]` or
+  `f [Hz]` column.
+- Shared mode with a single mixed-domain file writes **two shared X
+  columns** side-by-side: one `t [s]` (over the time-domain signals'
+  union grid) and one `f [Hz]` (over the frequency-domain signals'
+  union grid). Padded with empty cells where the shorter block ends.
+
+HDF5 export is domain-aware too: each channel's `domain` attribute
+is written and round-tripped on load, so `Open chart…` puts an FFT
+output back under the *Frequency* view automatically.
 
 `+ Add channel… / Edit channel… / − Remove channel` in the channels
 sidebar add a derived channel via the formula dialog, edit an

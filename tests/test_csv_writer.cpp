@@ -145,3 +145,74 @@ TEST(CsvWriter, CustomSeparatorsRoundTrip) {
 
     std::filesystem::remove(path);
 }
+
+// Per-signal mode: a frequency-domain signal emits "f_<name> [Hz]" and
+// stays absolute (no time-origin subtraction).
+TEST(CsvWriter, PerSignalUsesFHzForFrequencyDomain) {
+    Signal::Meta m;
+    m.name = "spec";
+    m.unit = "magnitude";
+    m.dataType = DataType::Float64;
+    m.domain = Signal::Domain::Frequency;
+    auto sig = std::make_shared<Signal>(m);
+    // Three frequency bins encoded as "timestamps" = Hz × 1e9.
+    std::vector<TimestampNs> ts{0, 10LL * 1'000'000'000LL, 20LL * 1'000'000'000LL};
+    std::vector<double> vs{100.0, 50.0, 10.0};
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), ts.size());
+
+    CsvExportOptions opts;
+    opts.timeMode = CsvExportOptions::TimeMode::PerSignal;
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_fhz_persig.csv";
+    QString err;
+    ASSERT_TRUE(writeCsv(path, {sig}, opts, &err)) << err.toStdString();
+
+    std::ifstream in(path);
+    std::string header; std::getline(in, header);
+    EXPECT_NE(header.find("f_spec [Hz]"),     std::string::npos) << header;
+    EXPECT_NE(header.find("spec [magnitude]"), std::string::npos);
+    // First data row's X should be 0 (not subtracted-from-anything).
+    std::string firstRow; std::getline(in, firstRow);
+    EXPECT_EQ(firstRow.substr(0, 1), "0") << firstRow;
+    std::filesystem::remove(path);
+}
+
+// Shared mode + mixed domain: two shared X columns side-by-side, each
+// labelled correctly. Padded with empty cells for the shorter block.
+TEST(CsvWriter, SharedMixedDomainGetsTwoXColumns) {
+    Signal::Meta tm; tm.name = "speed"; tm.unit = "m/s";
+    tm.dataType = DataType::Float64; tm.domain = Signal::Domain::Time;
+    auto tsig = std::make_shared<Signal>(tm);
+    std::vector<TimestampNs> tts{0, 1'000'000'000LL, 2'000'000'000LL,
+                                 3'000'000'000LL, 4'000'000'000LL};
+    std::vector<double> tvs{10, 11, 12, 13, 14};
+    tsig->append(tts.data(),
+                 reinterpret_cast<const std::byte*>(tvs.data()), tts.size());
+
+    Signal::Meta fm; fm.name = "spec"; fm.unit = "magnitude";
+    fm.dataType = DataType::Float64; fm.domain = Signal::Domain::Frequency;
+    auto fsig = std::make_shared<Signal>(fm);
+    std::vector<TimestampNs> fts{0, 5LL * 1'000'000'000LL, 10LL * 1'000'000'000LL};
+    std::vector<double> fvs{100, 50, 10};
+    fsig->append(fts.data(),
+                 reinterpret_cast<const std::byte*>(fvs.data()), fts.size());
+
+    CsvExportOptions opts;
+    opts.timeMode = CsvExportOptions::TimeMode::Shared;
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_mixed.csv";
+    QString err;
+    ASSERT_TRUE(writeCsv(path, {tsig, fsig}, opts, &err)) << err.toStdString();
+
+    std::ifstream in(path);
+    std::string header; std::getline(in, header);
+    EXPECT_NE(header.find("t [s]"),  std::string::npos) << header;
+    EXPECT_NE(header.find("f [Hz]"), std::string::npos);
+    EXPECT_NE(header.find("speed"), std::string::npos);
+    EXPECT_NE(header.find("spec"),  std::string::npos);
+
+    // Should have max(5, 3) = 5 data rows.
+    int dataRows = 0;
+    std::string r;
+    while (std::getline(in, r)) { if (!r.empty()) ++dataRows; }
+    EXPECT_EQ(dataRows, 5);
+    std::filesystem::remove(path);
+}

@@ -51,6 +51,18 @@ QString columnHeader(const std::shared_ptr<Signal>& s) {
     return m.name;
 }
 
+bool isFreq(const std::shared_ptr<Signal>& s) {
+    return s->meta().domain == Signal::Domain::Frequency;
+}
+const char* sharedXLabel(Signal::Domain d) {
+    return d == Signal::Domain::Frequency ? "f [Hz]" : "t [s]";
+}
+QString perSigXHeader(const std::shared_ptr<Signal>& s) {
+    const char* prefix = isFreq(s) ? "f_" : "t_";
+    const char* unit   = isFreq(s) ? "Hz" : "s";
+    return QString("%1%2 [%3]").arg(prefix, s->meta().name, unit);
+}
+
 }  // namespace
 
 bool writeCsv(const std::filesystem::path& path,
@@ -75,62 +87,112 @@ bool writeCsv(const std::filesystem::path& path,
     const QString row = opts.rowDelimiter.isEmpty()    ? QString("\n") : opts.rowDelimiter;
     const QString dec = opts.decimalSeparator.isEmpty() ? QString(".") : opts.decimalSeparator;
 
-    // Pre-cache each signal's values + view for performance.
+    // Per-signal cache: view + values pulled once.
     struct Cache {
-        Signal::ReadView    view;
-        std::vector<double> vals;
+        std::shared_ptr<Signal> sig;
+        Signal::ReadView        view;
+        std::vector<double>     vals;
     };
     std::vector<Cache> caches;
     caches.reserve(channels.size());
     for (const auto& s : channels) {
-        caches.push_back({s->snapshotForRead(), s->readAsDouble()});
+        caches.push_back({s, s->snapshotForRead(), s->readAsDouble()});
     }
 
-    // Time origin = earliest first-sample across all channels.
-    TimestampNs origin = std::numeric_limits<TimestampNs>::max();
-    for (const auto& c : caches)
-        if (c.view.count > 0) origin = std::min(origin, c.view.timestamps[0]);
-    if (origin == std::numeric_limits<TimestampNs>::max()) origin = 0;
+    // Split by domain.
+    std::vector<const Cache*> timeC, freqC;
+    for (const auto& c : caches) {
+        if (isFreq(c.sig)) freqC.push_back(&c);
+        else               timeC.push_back(&c);
+    }
+
+    // Time-domain origin = earliest first-sample across time signals.
+    // Frequency bins are absolute Hz so no shift.
+    TimestampNs timeOriginNs = std::numeric_limits<TimestampNs>::max();
+    for (const auto* c : timeC)
+        if (c->view.count > 0)
+            timeOriginNs = std::min(timeOriginNs, c->view.timestamps[0]);
+    if (timeOriginNs == std::numeric_limits<TimestampNs>::max()) timeOriginNs = 0;
 
     if (opts.timeMode == CsvExportOptions::TimeMode::Shared) {
-        // ---- Build union timestamp grid ----
-        std::set<TimestampNs> uniq;
-        for (const auto& c : caches)
-            for (std::size_t i = 0; i < c.view.count; ++i)
-                uniq.insert(c.view.timestamps[i]);
-        std::vector<TimestampNs> grid(uniq.begin(), uniq.end());
+        // ----- Build per-domain shared grids -----
+        auto buildGrid = [](const std::vector<const Cache*>& cs) {
+            std::set<TimestampNs> uniq;
+            for (const auto* c : cs)
+                for (std::size_t i = 0; i < c->view.count; ++i)
+                    uniq.insert(c->view.timestamps[i]);
+            return std::vector<TimestampNs>(uniq.begin(), uniq.end());
+        };
+        const auto timeGrid = timeC.empty() ? std::vector<TimestampNs>{} : buildGrid(timeC);
+        const auto freqGrid = freqC.empty() ? std::vector<TimestampNs>{} : buildGrid(freqC);
+        const bool mixed = !timeC.empty() && !freqC.empty();
 
-        // ---- Header ----
+        // ----- Header -----
         if (opts.includeHeader) {
-            out << "t [s]";
-            for (const auto& s : channels) {
-                out << sep << columnHeader(s);
+            bool firstCol = true;
+            auto colSep = [&]{ if (!firstCol) out << sep; firstCol = false; };
+            if (!timeC.empty()) {
+                colSep(); out << sharedXLabel(Signal::Domain::Time);
+                for (const auto* c : timeC) { colSep(); out << columnHeader(c->sig); }
+            }
+            if (!freqC.empty()) {
+                colSep(); out << sharedXLabel(Signal::Domain::Frequency);
+                for (const auto* c : freqC) { colSep(); out << columnHeader(c->sig); }
             }
             out << row;
         }
 
-        // ---- Rows ----
-        for (TimestampNs t : grid) {
-            const double tSec = (t - origin) / 1e9;
-            out << fmtDouble(tSec, dec, opts.decimalDigits);
-            for (const auto& c : caches) {
-                const double v = linearInterp(c.view.timestamps, c.vals,
-                                              c.view.count, t);
-                out << sep << fmtDouble(v, dec, opts.decimalDigits);
+        // ----- Rows -----
+        const std::size_t rowCount = std::max(timeGrid.size(), freqGrid.size());
+        for (std::size_t r = 0; r < rowCount; ++r) {
+            bool firstCol = true;
+            auto colSep = [&]{ if (!firstCol) out << sep; firstCol = false; };
+
+            if (!timeC.empty()) {
+                if (r < timeGrid.size()) {
+                    const TimestampNs t = timeGrid[r];
+                    colSep();
+                    out << fmtDouble((t - timeOriginNs) / 1e9, dec, opts.decimalDigits);
+                    for (const auto* c : timeC) {
+                        colSep();
+                        out << fmtDouble(
+                            linearInterp(c->view.timestamps, c->vals, c->view.count, t),
+                            dec, opts.decimalDigits);
+                    }
+                } else if (mixed) {
+                    // Pad time block with empties so the frequency block stays aligned.
+                    colSep();                       // empty t cell
+                    for (std::size_t k = 0; k < timeC.size(); ++k) { colSep(); }
+                }
+            }
+            if (!freqC.empty()) {
+                if (r < freqGrid.size()) {
+                    const TimestampNs fns = freqGrid[r];
+                    colSep();
+                    out << fmtDouble(fns / 1e9, dec, opts.decimalDigits);
+                    for (const auto* c : freqC) {
+                        colSep();
+                        out << fmtDouble(
+                            linearInterp(c->view.timestamps, c->vals, c->view.count, fns),
+                            dec, opts.decimalDigits);
+                    }
+                } else if (mixed) {
+                    colSep();
+                    for (std::size_t k = 0; k < freqC.size(); ++k) { colSep(); }
+                }
             }
             out << row;
         }
     } else {
-        // ---- Per-signal: (t_i, v_i) columns side-by-side ----
+        // ---- Per-signal: (X_i, V_i) columns side-by-side, X label per signal ----
         std::size_t maxN = 0;
         for (const auto& c : caches) maxN = std::max(maxN, c.view.count);
 
         if (opts.includeHeader) {
             bool first = true;
-            for (const auto& s : channels) {
+            for (const auto& c : caches) {
                 if (!first) out << sep;
-                out << QString("t_%1 [s]").arg(s->meta().name)
-                    << sep << columnHeader(s);
+                out << perSigXHeader(c.sig) << sep << columnHeader(c.sig);
                 first = false;
             }
             out << row;
@@ -141,8 +203,11 @@ bool writeCsv(const std::filesystem::path& path,
             for (const auto& c : caches) {
                 if (!first) out << sep;
                 if (r < c.view.count) {
-                    const double tSec = (c.view.timestamps[r] - origin) / 1e9;
-                    out << fmtDouble(tSec, dec, opts.decimalDigits)
+                    const TimestampNs xRaw = c.view.timestamps[r];
+                    const double xVal = isFreq(c.sig)
+                        ? (xRaw / 1e9)
+                        : ((xRaw - timeOriginNs) / 1e9);
+                    out << fmtDouble(xVal, dec, opts.decimalDigits)
                         << sep
                         << fmtDouble(c.vals[r], dec, opts.decimalDigits);
                 } else {

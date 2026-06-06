@@ -33,6 +33,12 @@ public:
     double    toSec()     const;
     scope::converter::CsvExportOptions csvOptions() const;
 
+    // Domain / origin filters and split toggle.
+    bool      includeTimeDomain()        const;
+    bool      includeFrequencyDomain()   const;
+    bool      includeDerivedChannels()   const;
+    bool      splitDomainsIntoTwoFiles() const;
+
 private slots:
     void onFormatChanged();
     void onRangeModeChanged();
@@ -53,6 +59,11 @@ private:
     QLineEdit*  rowSepCustom_{nullptr};
     QLineEdit*  decimalEdit_{nullptr};
     QComboBox*  timeModeCombo_{nullptr};
+
+    QCheckBox*  includeTimeCheck_{nullptr};
+    QCheckBox*  includeFreqCheck_{nullptr};
+    QCheckBox*  includeDerivedCheck_{nullptr};
+    QCheckBox*  splitFilesCheck_{nullptr};
 };
 
 }  // namespace scope::analyser::ui
