@@ -36,12 +36,19 @@ public slots:
 
 public:
     enum class DisplayMode { Line, Points, Both };
+    void fitToActiveChannels();
 
 private:
     void applyDisplayMode();
     void applyDisplayModeTo(QCPGraph* graph) const;
 
     DisplayMode displayMode_{DisplayMode::Line};
+
+    // The very first call to redrawForActiveChannels with data does an
+    // X-range fit so the user isn't stuck on [0, 1]. Subsequent
+    // redraws (visibility toggles, axis combo changes, new channels)
+    // leave X alone so manual zoom isn't yanked back.
+    bool hasDrawnYet_{false};
 
 
     void rebuildTable();

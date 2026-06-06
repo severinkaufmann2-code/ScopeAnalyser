@@ -81,6 +81,14 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         "When on: left-click two points on the plot to mark them and\n"
         "see Δx, Δy, and 1/|Δx|. Right-click clears the markers.\n"
         "Click the button again to leave measurement mode.");
+    auto* fitYBtn = new QPushButton("Fit Y to view", this);
+    fitYBtn->setToolTip(
+        "Rescale every Y axis to fit the data inside the current X\n"
+        "window. The X range is left untouched, so you can zoom into\n"
+        "a section of time and then pull the Y axes around what's\n"
+        "actually in that section.");
+    auto* fitAllBtn = new QPushButton("Fit X + Y (all)", this);
+    fitAllBtn->setToolTip("Fit X to the full data range and Y to every channel.");
 
     auto* chBtnRow = new QHBoxLayout();
     chBtnRow->addWidget(addChBtn);
@@ -100,6 +108,9 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     displayRow->addWidget(displayCombo, /*stretch=*/1);
     auto* measureRow = new QHBoxLayout();
     measureRow->addWidget(measureBtn);
+    auto* fitRow = new QHBoxLayout();
+    fitRow->addWidget(fitYBtn);
+    fitRow->addWidget(fitAllBtn);
 
     auto* leftLayout = new QVBoxLayout();
     leftLayout->addWidget(new QLabel("Channels", this));
@@ -108,6 +119,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     leftLayout->addLayout(axisBtnRow);
     leftLayout->addLayout(displayRow);
     leftLayout->addLayout(measureRow);
+    leftLayout->addLayout(fitRow);
     leftLayout->addLayout(layoutBtnRow);
     leftLayout->addLayout(chartBtnRow);
     leftLayout->addWidget(redrawBtn);
@@ -136,6 +148,13 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     connect(measureBtn, &QPushButton::toggled, this, [this](bool on){
         scope_->setMeasureMode(on);
     });
+    connect(fitYBtn, &QPushButton::clicked, this, [this]{
+        // Fit each Y axis to the data currently inside the X window.
+        const auto xr = scope_->plot()->xAxis->range();
+        scope_->rescaleYAxesToWindow(xr.lower, xr.upper);
+    });
+    connect(fitAllBtn, &QPushButton::clicked, this,
+            &AnalyserPlot::fitToActiveChannels);
     // If something else disables measure mode (e.g. user pressed Esc),
     // pop the button back up.
     connect(scope_, &scope::plot::ScopePlot::measureModeChanged, this,
@@ -409,11 +428,45 @@ void AnalyserPlot::redrawForActiveChannels() {
 
     recolorChannels();
 
-    if (active.isEmpty() || xMin == std::numeric_limits<double>::infinity()) {
+    // The X/Y data is now on the graphs. By default we keep the user's
+    // current view — toggling a channel's visibility shouldn't yank the
+    // chart back to its full extent. Only refit when:
+    //   - This is the first time anything is being drawn (otherwise the
+    //     user would see a useless [0, 1] empty plot until they hit Fit).
+    //   - rescaleAllYAxes() still respects per-axis autoFit, so axes
+    //     the user manually zoomed stay where they are; axes that
+    //     haven't been touched track new data as usual.
+    const bool haveData = !active.isEmpty()
+                       && xMin != std::numeric_limits<double>::infinity();
+    if (!hasDrawnYet_ && haveData) {
+        // First-ever draw: set X to the data range so the user isn't
+        // stuck looking at [0, 1].
+        plot->xAxis->setRange(xMin, xMax);
+        hasDrawnYet_ = true;
+    }
+    // rescaleAllYAxes is gated on per-axis autoFit, so manually-zoomed
+    // Y axes are preserved; untouched axes track new data.
+    scope_->rescaleAllYAxes();
+    plot->replot(QCustomPlot::rpQueuedReplot);
+}
+
+void AnalyserPlot::fitToActiveChannels() {
+    auto* plot = scope_->plot();
+    double xMin =  std::numeric_limits<double>::infinity();
+    double xMax = -std::numeric_limits<double>::infinity();
+    for (auto it = graphs_.constBegin(); it != graphs_.constEnd(); ++it) {
+        auto data = it.value()->data();
+        if (data->isEmpty()) continue;
+        const double lo = (data->constBegin())->key;
+        const double hi = (data->constEnd() - 1)->key;
+        xMin = std::min(xMin, lo);
+        xMax = std::max(xMax, hi);
+    }
+    if (xMin == std::numeric_limits<double>::infinity()) {
         xMin = 0; xMax = 1;
     }
     plot->xAxis->setRange(xMin, xMax);
-    scope_->rescaleAllYAxes();
+    scope_->rescaleYAxesToWindow(xMin, xMax);
     plot->replot(QCustomPlot::rpQueuedReplot);
 }
 

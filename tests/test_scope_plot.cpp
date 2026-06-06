@@ -52,6 +52,44 @@ TEST(ScopePlot, FitAllMatchesGraphDataRange) {
     EXPECT_NEAR(plot->yAxis->range().upper,  2.15, 1e-6);
 }
 
+// rescaleYAxesToWindow: should fit Y to ONLY the samples that fall in
+// the given X window, not the whole signal's value range.
+TEST(ScopePlot, RescaleYAxesToWindowConsidersOnlySamplesInWindow) {
+    GuiAppFixture fixture;
+    scope::plot::ScopePlot sp;
+    auto* plot = sp.plot();
+    auto* g = plot->addGraph();
+    // Values jump from a small range to a big one outside the window.
+    QVector<double> xs = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    QVector<double> ys = {1, 2, 3, 4, 5, 6, 100, 200, 300, 400, 500};
+    g->setData(xs, ys, true);
+
+    // Window [2, 4] covers ys = {3, 4, 5}. Min=3, max=5, with 5% margin.
+    sp.rescaleYAxesToWindow(2.0, 4.0);
+
+    const double margin = 0.05 * (5.0 - 3.0);
+    EXPECT_NEAR(plot->yAxis->range().lower, 3.0 - margin, 1e-6);
+    EXPECT_NEAR(plot->yAxis->range().upper, 5.0 + margin, 1e-6);
+}
+
+// Toggling a graph's visibility off shouldn't move the X axis if the
+// host calls rescaleAllYAxes (i.e. AnalyserPlot's new redraw path).
+TEST(ScopePlot, RescaleAllYAxesDoesNotTouchXAxis) {
+    GuiAppFixture fixture;
+    scope::plot::ScopePlot sp;
+    auto* plot = sp.plot();
+    auto* g = plot->addGraph();
+    g->setData(QVector<double>{0, 1, 2, 3},
+               QVector<double>{0, 1, 2, 3}, true);
+
+    plot->xAxis->setRange(0.4, 0.7);  // simulate user zoom
+    const auto before = plot->xAxis->range();
+    sp.rescaleAllYAxes();
+    const auto after  = plot->xAxis->range();
+    EXPECT_NEAR(after.lower, before.lower, 1e-12);
+    EXPECT_NEAR(after.upper, before.upper, 1e-12);
+}
+
 TEST(ScopePlot, AddYAxisReturnsIncreasingIndex) {
     GuiAppFixture fixture;
 

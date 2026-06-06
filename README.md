@@ -209,6 +209,20 @@ line connects them and a label shows `Δx`, `Δy`, and `1/|Δx|` so
 you can read frequency in Hz directly. Right-click clears the
 markers; click the button again to leave measurement mode.
 
+**Stable view on visibility toggles** — checking/unchecking a
+channel in the sidebar table no longer refits the X axis. The
+chart stays where you have it zoomed; only the data on the
+graphs updates. Same goes for adding / removing channels and
+switching a channel between Y axes.
+
+**Fit buttons** — two in the sidebar:
+- *Fit Y to view* keeps the current X window and rescales every
+  Y axis to fit only the samples that fall inside that window.
+  Use this when you've zoomed into a section of time and want
+  the Y axes to centre on what's actually visible there.
+- *Fit X + Y (all)* fits X to the full data range and rescales
+  every Y axis to match — i.e. shows everything.
+
 ### Converter
 
 The Converter is a multi-file workspace. Every file you open (CSV or

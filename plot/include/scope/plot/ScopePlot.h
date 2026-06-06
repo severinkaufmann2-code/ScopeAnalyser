@@ -59,6 +59,17 @@ public:
     // Re-scale every Y axis independently to the data of its assigned graphs.
     void rescaleAllYAxes();
 
+    // Re-scale every Y axis to the data of its assigned visible graphs,
+    // but considering only samples whose X falls within [xMin, xMax].
+    // X axis is left untouched. Axes with no visible graphs (or no
+    // samples in the window) keep their current range.
+    void rescaleYAxesToWindow(double xMin, double xMax);
+
+    // Whether the X axis is still in "auto-fit" mode (no manual zoom /
+    // pan / region-zoom yet). Hosts can use this to decide whether to
+    // refit X on a redraw.
+    bool xAxisIsAutoFit() const;
+
     // Base palette colour for axis `axisIndex`.
     QColor axisBaseColor(int axisIndex) const;
     // A distinct shade of the axis colour for the Nth channel on that axis.

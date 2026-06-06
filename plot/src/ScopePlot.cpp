@@ -125,6 +125,15 @@ ScopePlot::ScopePlot(QWidget* parent)
                 if (impl_->leftButtonDown) impl_->autoFit[impl_->plot->yAxis] = false;
             });
 
+    // Same gating for the X axis: once the user pans X (iRangeDrag), the
+    // host (e.g. AnalyserPlot) shouldn't auto-refit X on every redraw.
+    impl_->autoFit[impl_->plot->xAxis] = true;
+    connect(impl_->plot->xAxis,
+            QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged), this,
+            [this](const QCPRange&){
+                if (impl_->leftButtonDown) impl_->autoFit[impl_->plot->xAxis] = false;
+            });
+
     // ---- Toolbar -------------------------------------------------------
     impl_->toolbar = new QWidget(this);
     auto* tb = new QHBoxLayout(impl_->toolbar);
@@ -451,9 +460,45 @@ void ScopePlot::rescaleAllYAxes() {
     }
 }
 
+bool ScopePlot::xAxisIsAutoFit() const {
+    return impl_->autoFit.value(impl_->plot->xAxis, true);
+}
+
+void ScopePlot::rescaleYAxesToWindow(double xMin, double xMax) {
+    if (xMin >= xMax) return;
+    for (int i = 0; i < impl_->yAxes.size(); ++i) {
+        auto* ax = impl_->yAxes[i];
+        bool found = false;
+        double mn =  std::numeric_limits<double>::infinity();
+        double mx = -std::numeric_limits<double>::infinity();
+        for (int g = 0; g < impl_->plot->graphCount(); ++g) {
+            auto* gr = impl_->plot->graph(g);
+            if (gr->valueAxis() != ax) continue;
+            if (!gr->visible()) continue;
+            auto data = gr->data();
+            auto it    = data->findBegin(xMin, /*expandedRange=*/false);
+            const auto end = data->findEnd(xMax, /*expandedRange=*/false);
+            for (; it != end; ++it) {
+                const double k = it->key;
+                if (k < xMin || k > xMax) continue;
+                const double v = it->value;
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+                found = true;
+            }
+        }
+        if (!found) continue;   // leave this axis untouched
+        if (mn == mx) { mn -= 0.5; mx += 0.5; }
+        const double margin = 0.05 * (mx - mn);
+        ax->setRange(mn - margin, mx + margin);
+    }
+    impl_->plot->replot(QCustomPlot::rpQueuedReplot);
+}
+
 void ScopePlot::fitAll() {
-    // Re-arm auto-fit on every Y axis, then rescale.
+    // Re-arm auto-fit on every axis (X + all Ys) and rescale.
     impl_->plot->xAxis->rescale();
+    impl_->autoFit[impl_->plot->xAxis] = true;
     for (auto* ax : impl_->yAxes) impl_->autoFit[ax] = true;
     rescaleAllYAxes();
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
@@ -461,6 +506,7 @@ void ScopePlot::fitAll() {
 
 void ScopePlot::zoomXBy(double factor) {
     impl_->plot->xAxis->scaleRange(factor);
+    impl_->autoFit[impl_->plot->xAxis] = false;
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
 }
 
@@ -480,6 +526,7 @@ void ScopePlot::zoomYBy(double factor, int yAxisIndex) {
 
 void ScopePlot::zoomBothBy(double factor) {
     impl_->plot->xAxis->scaleRange(factor);
+    impl_->autoFit[impl_->plot->xAxis] = false;
     for (auto* ax : impl_->yAxes) {
         ax->scaleRange(factor);
         impl_->autoFit[ax] = false;
@@ -492,6 +539,7 @@ void ScopePlot::zoomAt(QPointF mousePx, double factorX, double factorY,
     if (factorX > 0) {
         const double xCenter = impl_->plot->xAxis->pixelToCoord(mousePx.x());
         impl_->plot->xAxis->scaleRange(factorX, xCenter);
+        impl_->autoFit[impl_->plot->xAxis] = false;
     }
     if (factorY > 0) {
         if (yAxisIndex < 0) {
@@ -514,10 +562,12 @@ void ScopePlot::panBy(double fracX, double fracY) {
     const auto rx = impl_->plot->xAxis->range();
     impl_->plot->xAxis->setRange(rx.lower + fracX * rx.size(),
                                  rx.upper + fracX * rx.size());
+    impl_->autoFit[impl_->plot->xAxis] = false;
     for (auto* ax : impl_->yAxes) {
         const auto ry = ax->range();
         ax->setRange(ry.lower + fracY * ry.size(),
                      ry.upper + fracY * ry.size());
+        impl_->autoFit[ax] = false;
     }
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
 }
@@ -565,6 +615,7 @@ void ScopePlot::endRegionZoom(QPointF endPx) {
     if (dxPx > 4 && dyPx > 4) {
         impl_->plot->xAxis->setRange(std::min(a.x(), b.x()),
                                      std::max(a.x(), b.x()));
+        impl_->autoFit[impl_->plot->xAxis] = false;
         for (auto* ax : impl_->yAxes) {
             const double y0 = ax->pixelToCoord(impl_->regionStartPx.y());
             const double y1 = ax->pixelToCoord(endPx.y());
