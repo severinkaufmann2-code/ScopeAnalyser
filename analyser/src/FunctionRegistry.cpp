@@ -452,6 +452,39 @@ std::shared_ptr<Signal> impl_MaxPair(const FunctionArgs& a, QString* err) {
         [](double x, double y){ return std::max(x, y); }, err, "Max");
 }
 
+// Replace(signal, oldValue, newValue [, tolerance])
+//   Element-wise substitution. Wherever signal[i] "matches" oldValue, emit
+//   newValue; otherwise emit signal[i]. Match is exact by default; pass a
+//   positive tolerance to match |signal[i] - oldValue| <= tolerance.
+//   newValue can be a scalar or another signal (intersection-resampled).
+std::shared_ptr<Signal> impl_Replace(const FunctionArgs& a, QString* err) {
+    if (a.size() < 3 || a.size() > 4) {
+        if (err) *err = QString("Replace expects 3 or 4 arg(s), got %1")
+                            .arg(a.size());
+        return nullptr;
+    }
+    double oldV = 0;
+    if (!asScalar(a[1], oldV)) {
+        if (err) *err = "Replace: oldValue must be a scalar";
+        return nullptr;
+    }
+    double tol = 0;
+    if (a.size() == 4 && !asScalar(a[3], tol)) {
+        if (err) *err = "Replace: tolerance must be a scalar";
+        return nullptr;
+    }
+    if (tol < 0) tol = -tol;
+
+    auto match = [oldV, tol](double v) {
+        return (tol == 0) ? (v == oldV) : (std::abs(v - oldV) <= tol);
+    };
+    // newValue can be scalar or signal: piggy-back on elementwiseBinary by
+    // pairing signal with newValue and choosing between sides via match().
+    return elementwiseBinary(a[0], a[2],
+        [match](double v, double newV){ return match(v) ? newV : v; },
+        err, "Replace");
+}
+
 // ---- Slice(signal, t_start, t_end) — keep samples with t in [start, end] ----
 std::shared_ptr<Signal> impl_Slice(const FunctionArgs& a, QString* err) {
     if (!ensureN(a, 3, err, "Slice")) return nullptr;
@@ -732,6 +765,11 @@ void FunctionRegistry::registerBuiltins() {
     add("Limit",      "Limit(signal, lo, hi)",
         "Element-wise clamp into the [lo, hi] interval. lo/hi must be scalars.",
         3, 3, &impl_Limit);
+    add("Replace",    "Replace(signal, oldValue, newValue [, tolerance])",
+        "Element-wise substitution. Where signal matches oldValue (exact by "
+        "default, or within ±tolerance), emit newValue (scalar or another "
+        "signal). Useful for swapping sentinels or filling specific values.",
+        3, 4, &impl_Replace);
     add("Slice",      "Slice(signal, t_start, t_end)",
         "Keep only samples whose timestamp falls in [t_start, t_end] seconds. "
         "Inclusive bounds.",

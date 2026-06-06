@@ -463,3 +463,68 @@ TEST(FormulaEngine, FFTPeakAtKnownFrequency) {
         ? (view.timestamps[1] - view.timestamps[0]) / 1e9 : 0;
     EXPECT_NEAR(peakFreqHz, f0, 2.0 * df) << "peak at " << peakFreqHz << " Hz";
 }
+
+// -------- Replace --------
+
+namespace {
+std::shared_ptr<Signal> makeFromValues(QString name,
+                                        const std::vector<double>& vs) {
+    Signal::Meta m;
+    m.name = std::move(name);
+    m.dataType = DataType::Float64;
+    auto sig = std::make_shared<Signal>(m);
+    std::vector<TimestampNs> ts(vs.size());
+    for (std::size_t i = 0; i < vs.size(); ++i) ts[i] = i * 1'000'000'000LL;
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), vs.size());
+    return sig;
+}
+}  // namespace
+
+TEST(FormulaEngine, ReplaceExactConstantSwapsMatches) {
+    SignalStore store;
+    store.add(makeFromValues("S", {0, 1, 0, 2, 0, 3}));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("R = Replace(S, 0, 99)", &err)) << err.toStdString();
+    auto vs = store.get("R")->readAsDouble();
+    const std::vector<double> want = {99, 1, 99, 2, 99, 3};
+    ASSERT_EQ(vs.size(), want.size());
+    for (std::size_t i = 0; i < want.size(); ++i) EXPECT_DOUBLE_EQ(vs[i], want[i]);
+}
+
+TEST(FormulaEngine, ReplaceWithToleranceCatchesNearMisses) {
+    SignalStore store;
+    store.add(makeFromValues("S", {0.0, 1.0, 1e-10, 2.0}));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("R = Replace(S, 0, 99, 1e-9)", &err)) << err.toStdString();
+    auto vs = store.get("R")->readAsDouble();
+    EXPECT_DOUBLE_EQ(vs[0], 99.0);
+    EXPECT_DOUBLE_EQ(vs[1],  1.0);
+    EXPECT_DOUBLE_EQ(vs[2], 99.0);  // 1e-10 ≤ 1e-9, matched
+    EXPECT_DOUBLE_EQ(vs[3],  2.0);
+}
+
+TEST(FormulaEngine, ReplaceWithoutToleranceMissesNearZero) {
+    SignalStore store;
+    store.add(makeFromValues("S", {0.0, 1e-10}));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("R = Replace(S, 0, 99)", &err)) << err.toStdString();
+    auto vs = store.get("R")->readAsDouble();
+    EXPECT_DOUBLE_EQ(vs[0], 99.0);
+    EXPECT_DOUBLE_EQ(vs[1], 1e-10);  // exact match fails
+}
+
+TEST(FormulaEngine, ReplaceUsesSignalAsReplacement) {
+    SignalStore store;
+    store.add(makeFromValues("S", {0, 1, 0, 2}));
+    store.add(makeFromValues("Fallback", {10, 20, 30, 40}));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("R = Replace(S, 0, Fallback)", &err)) << err.toStdString();
+    auto vs = store.get("R")->readAsDouble();
+    const std::vector<double> want = {10, 1, 30, 2};
+    ASSERT_EQ(vs.size(), want.size());
+    for (std::size_t i = 0; i < want.size(); ++i) EXPECT_DOUBLE_EQ(vs[i], want[i]);
+}
