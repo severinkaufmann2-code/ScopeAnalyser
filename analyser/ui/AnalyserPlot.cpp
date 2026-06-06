@@ -6,8 +6,7 @@
 #include "scope/analyser/FormulaEngine.h"
 #include "scope/plot/ScopePlot.h"
 #include "scope/plot/PlotLayout.h"
-#include "scope/converter/CsvWriter.h"
-#include "scope/core/Hdf5Session.h"
+#include "scope/converter/SignalIO.h"
 
 #include <qcustomplot.h>
 
@@ -600,7 +599,12 @@ void AnalyserPlot::saveChartDialog() {
     SaveChartDialog dlg(xr.lower, xr.upper, this);
     if (dlg.exec() != QDialog::Accepted) return;
 
-    const bool csv = (dlg.format() == SaveChartDialog::Format::Csv);
+    const auto fmtChoice = dlg.format();
+    const converter::FileFormat fmt =
+          (fmtChoice == SaveChartDialog::Format::Csv)  ? converter::FileFormat::Csv
+        : (fmtChoice == SaveChartDialog::Format::Mdf4) ? converter::FileFormat::Mdf4
+                                                       : converter::FileFormat::Hdf5;
+    const bool csv = (fmt == converter::FileFormat::Csv);
     const bool customRange = dlg.useCustomRange();
     const core::TimestampNs fromNs = customRange
         ? static_cast<core::TimestampNs>(dlg.fromSec() * 1e9)
@@ -664,15 +668,11 @@ void AnalyserPlot::saveChartDialog() {
         return;
     }
 
-    QFileDialog fileDlg(this, csv ? "Save chart (.csv)" : "Save chart (.h5)");
+    QFileDialog fileDlg(this,
+        QString("Save chart (.%1)").arg(converter::defaultSuffix(fmt)));
     fileDlg.setAcceptMode(QFileDialog::AcceptSave);
-    if (csv) {
-        fileDlg.setNameFilters({"CSV (*.csv)", "Text (*.txt)", "All files (*)"});
-        fileDlg.setDefaultSuffix("csv");
-    } else {
-        fileDlg.setNameFilters({"Scope sessions (*.h5)", "All files (*)"});
-        fileDlg.setDefaultSuffix("h5");
-    }
+    fileDlg.setNameFilters(converter::nameFilters(fmt));
+    fileDlg.setDefaultSuffix(converter::defaultSuffix(fmt));
     if (fileDlg.exec() != QDialog::Accepted) return;
     const auto sel = fileDlg.selectedFiles();
     if (sel.isEmpty()) return;
@@ -686,28 +686,15 @@ void AnalyserPlot::saveChartDialog() {
             : p + suffix;
     };
 
-    // Helper: actually write one file.
+    converter::SaveOptions saveOpts;
+    saveOpts.csv = dlg.csvOptions();
+
     auto writeOne = [&](const QString& outPath,
                         const std::vector<std::shared_ptr<core::Signal>>& chans,
                         QString* err) -> bool {
-        if (csv) {
-            return converter::writeCsv(
-                std::filesystem::path(outPath.toStdString()),
-                chans, dlg.csvOptions(), err);
-        }
-        auto session = core::Hdf5Session::create(
-            std::filesystem::path(outPath.toStdString()), err);
-        if (!session) return false;
-        for (const auto& s : chans) {
-            if (!session->addChannel(s->meta(), err)) continue;
-            auto v = s->snapshotForRead();
-            if (v.count > 0) {
-                session->appendSamples(s->meta().name,
-                                       v.timestamps, v.values, v.count, err);
-            }
-        }
-        session->flush();
-        return true;
+        return converter::saveFile(
+            std::filesystem::path(outPath.toStdString()),
+            chans, fmt, saveOpts, err);
     };
 
     const bool haveBoth = !timeChans.empty() && !freqChans.empty();
@@ -758,178 +745,30 @@ QString uniqueStoreName(const core::SignalStore& store, const QString& base) {
     return base + " (?)";
 }
 
-// Split "<name> [<unit>]" into name + unit. If the bracketed unit is
-// missing, returns name=trimmed input and unit empty.
-void splitNameUnit(const QString& header, QString* name, QString* unit) {
-    QString h = header.trimmed();
-    const int open  = h.lastIndexOf('[');
-    const int close = h.lastIndexOf(']');
-    if (open > 0 && close > open && close == h.size() - 1) {
-        *name = h.left(open).trimmed();
-        *unit = h.mid(open + 1, close - open - 1).trimmed();
-    } else {
-        *name = h;
-        *unit = QString();
-    }
-}
-
-// Pick the column delimiter by counting candidates in the header line.
-QChar autoDetectDelim(const QString& headerLine) {
-    const std::array<QChar, 4> candidates{QChar(','), QChar(';'),
-                                          QChar('\t'), QChar('|')};
-    QChar best = ',';
-    int bestCount = -1;
-    for (QChar c : candidates) {
-        const int n = headerLine.count(c);
-        if (n > bestCount) { bestCount = n; best = c; }
-    }
-    return best;
-}
-
-// Parse a CSV chart produced by AnalyserPlot::saveChartDialog or the
-// Converter's Save CSV. Auto-detects the column delimiter and the
-// time-mode (shared single time column vs per-signal pairs).
-bool loadCsvChart(const QString& path,
-                  std::vector<std::shared_ptr<core::Signal>>* out,
-                  QString* errorOut) {
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        if (errorOut) *errorOut = "Couldn't open file.";
-        return false;
-    }
-    QTextStream ts(&f);
-    QString headerLine;
-    do {
-        headerLine = ts.readLine();
-    } while (!headerLine.isNull() && headerLine.trimmed().isEmpty());
-    if (headerLine.isNull()) {
-        if (errorOut) *errorOut = "Empty file.";
-        return false;
-    }
-
-    const QChar sep = autoDetectDelim(headerLine);
-    const QStringList headers = headerLine.split(sep);
-    if (headers.size() < 2) {
-        if (errorOut) *errorOut = "Need at least one time column and one value column.";
-        return false;
-    }
-
-    // Detect time-mode: shared if first column starts with "t " or is "t".
-    // Per-signal if columns alternate t_<name> / <name>.
-    auto isTimeHeader = [](const QString& h){
-        const QString t = h.trimmed();
-        return t == "t" || t.startsWith("t ") || t.startsWith("t[");
-    };
-    const bool shared = isTimeHeader(headers[0])
-                     && (headers.size() < 3 || !headers[2].trimmed().startsWith("t_"));
-
-    // Build per-signal targets (name, unit, time-column-index, value-column-index).
-    struct Target { QString name, unit; int tCol{-1}, vCol{-1}; };
-    std::vector<Target> targets;
-    if (shared) {
-        for (int i = 1; i < headers.size(); ++i) {
-            Target t;
-            splitNameUnit(headers[i], &t.name, &t.unit);
-            t.tCol = 0;
-            t.vCol = i;
-            if (!t.name.isEmpty()) targets.push_back(std::move(t));
-        }
-    } else {
-        // Expect pairs: t_<name>, <name>. Skip any prefix "t_".
-        for (int i = 0; i + 1 < headers.size(); i += 2) {
-            Target t;
-            splitNameUnit(headers[i + 1], &t.name, &t.unit);
-            t.tCol = i;
-            t.vCol = i + 1;
-            if (!t.name.isEmpty()) targets.push_back(std::move(t));
-        }
-    }
-    if (targets.empty()) {
-        if (errorOut) *errorOut = "No data columns found.";
-        return false;
-    }
-
-    // Per-target accumulators.
-    std::vector<std::vector<core::TimestampNs>> tsBufs(targets.size());
-    std::vector<std::vector<double>>            vsBufs(targets.size());
-
-    while (!ts.atEnd()) {
-        const QString line = ts.readLine();
-        if (line.trimmed().isEmpty()) continue;
-        const QStringList parts = line.split(sep);
-        for (std::size_t k = 0; k < targets.size(); ++k) {
-            const Target& tg = targets[k];
-            if (tg.tCol >= parts.size() || tg.vCol >= parts.size()) continue;
-            QString tStr = parts[tg.tCol].trimmed();
-            QString vStr = parts[tg.vCol].trimmed();
-            if (tStr.isEmpty() || vStr.isEmpty()) continue;
-            // Tolerate both '.' and ',' as decimal separator.
-            tStr.replace(',', '.');
-            vStr.replace(',', '.');
-            bool okT = false, okV = false;
-            const double tSec = tStr.toDouble(&okT);
-            const double v    = vStr.toDouble(&okV);
-            if (!okT || !okV) continue;
-            tsBufs[k].push_back(static_cast<core::TimestampNs>(tSec * 1e9));
-            vsBufs[k].push_back(v);
-        }
-    }
-
-    for (std::size_t k = 0; k < targets.size(); ++k) {
-        if (tsBufs[k].empty()) continue;
-        core::Signal::Meta m;
-        m.name = targets[k].name;
-        m.unit = targets[k].unit;
-        m.dataType = core::DataType::Float64;
-        m.sourceSymbol = QString::fromStdString(
-            std::filesystem::path(path.toStdString()).filename().string());
-        auto sig = std::make_shared<core::Signal>(m);
-        sig->append(tsBufs[k].data(),
-                    reinterpret_cast<const std::byte*>(vsBufs[k].data()),
-                    tsBufs[k].size());
-        out->push_back(std::move(sig));
-    }
-    return true;
-}
-
 }  // namespace
 
 void AnalyserPlot::openChartDialog() {
     QFileDialog dlg(this, "Open chart");
     dlg.setAcceptMode(QFileDialog::AcceptOpen);
-    dlg.setNameFilters({"Scope chart (*.h5 *.csv *.txt)",
-                        "HDF5 (*.h5)",
-                        "CSV / text (*.csv *.txt)",
-                        "All files (*)"});
+    dlg.setNameFilters(converter::nameFilters(converter::FileFormat::Auto));
     if (dlg.exec() != QDialog::Accepted) return;
     const auto sel = dlg.selectedFiles();
     if (sel.isEmpty()) return;
     const QString path = sel.first();
 
-    std::vector<std::shared_ptr<core::Signal>> loaded;
-    QString err;
-    if (path.endsWith(".h5", Qt::CaseInsensitive)) {
-        auto session = core::Hdf5Session::openForRead(
-            std::filesystem::path(path.toStdString()), &err);
-        if (!session) {
-            QMessageBox::critical(this, "Open failed",
-                err.isEmpty() ? QString("Couldn't open file.") : err);
-            return;
-        }
-        loaded = session->loadAllSignals(&err);
-    } else {
-        if (!loadCsvChart(path, &loaded, &err)) {
-            QMessageBox::critical(this, "Open failed", err);
-            return;
-        }
+    auto r = converter::loadFile(std::filesystem::path(path.toStdString()));
+    if (!r.ok && r.channels.empty()) {
+        QMessageBox::critical(this, "Open failed",
+            r.error.isEmpty() ? QString("Couldn't open file.") : r.error);
+        return;
     }
-    if (loaded.empty()) {
+    if (r.channels.empty()) {
         QMessageBox::warning(this, "Empty file",
-            err.isEmpty() ? QString("No channels found in this file.") : err);
+            r.error.isEmpty() ? QString("No channels found in this file.") : r.error);
         return;
     }
 
-    for (auto& s : loaded) {
+    for (auto& s : r.channels) {
         auto meta = s->meta();
         meta.name = uniqueStoreName(store_, meta.name);
         s->setMeta(meta);
@@ -937,7 +776,7 @@ void AnalyserPlot::openChartDialog() {
     }
     QMessageBox::information(this, "Opened",
         QString("Loaded %1 channel(s) from %2")
-            .arg(loaded.size()).arg(QFileInfo(path).fileName()));
+            .arg(r.channels.size()).arg(QFileInfo(path).fileName()));
 }
 
 }  // namespace scope::analyser::ui

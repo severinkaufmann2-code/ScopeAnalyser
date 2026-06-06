@@ -2,7 +2,7 @@
 #include "scope/converter/ConverterProfile.h"
 #include "scope/converter/CsvSource.h"
 #include "scope/converter/CsvWriter.h"
-#include "scope/core/Hdf5Session.h"
+#include "scope/converter/SignalIO.h"
 
 #include "MappingPanel.h"
 #include "CsvExportDialog.h"
@@ -337,11 +337,13 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     : QWidget(parent), store_(store), impl_(std::make_unique<Impl>()) {
 
     auto* openCsvBtn  = new QPushButton("Open CSV…", this);
-    auto* loadH5Btn   = new QPushButton("Open .h5…", this);
+    auto* loadH5Btn   = new QPushButton("Open recording…", this);
+    loadH5Btn->setToolTip("Open an .h5 or .mf4 recording");
     auto* saveWsBtn   = new QPushButton("Save workspace…", this);
     auto* loadWsBtn   = new QPushButton("Load workspace…", this);
     auto* applyAllBtn = new QPushButton("Apply all (import signals)", this);
     auto* saveH5Btn   = new QPushButton("Save .h5…", this);
+    auto* saveMf4Btn  = new QPushButton("Save .mf4…", this);
     auto* saveCsvBtn  = new QPushButton("Save CSV…", this);
 
     impl_->statusLabel = new QLabel("No file open", this);
@@ -355,6 +357,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     topBar->addWidget(applyAllBtn);
     topBar->addSpacing(20);
     topBar->addWidget(saveH5Btn);
+    topBar->addWidget(saveMf4Btn);
     topBar->addWidget(saveCsvBtn);
     topBar->addStretch();
     topBar->addWidget(impl_->statusLabel);
@@ -517,35 +520,29 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         loadActiveState();
     });
 
-    // ---- Open .h5 (loads all signals into memory, doesn't push to store
-    //               until user selects + Applies) ----------------------
-    connect(loadH5Btn, &QPushButton::clicked, this,
-            [this, saveActiveState, loadActiveState, addFileToList]{
-        const QString path = QFileDialog::getOpenFileName(
-            this, "Open recording (.h5)", QString(),
-            "Scope sessions (*.h5);;All files (*)");
+    // ---- Open .h5 / .mf4 (loads all signals into memory, doesn't push to
+    //               store until user selects + Applies) -----------------
+    auto openRecording = [this, saveActiveState, loadActiveState, addFileToList]
+        (const QString& path) {
         if (path.isEmpty()) return;
 
-        QString err;
-        auto session = core::Hdf5Session::openForRead(
-            std::filesystem::path(path.toStdString()), &err);
-        if (!session) {
+        auto r = converter::loadFile(std::filesystem::path(path.toStdString()));
+        if (!r.ok && r.channels.empty()) {
             QMessageBox::critical(this, "Open failed",
-                err.isEmpty() ? QString("Unknown error") : err);
+                r.error.isEmpty() ? QString("Unknown error") : r.error);
             return;
         }
-        auto loaded = session->loadAllSignals(&err);
-        if (loaded.empty()) {
+        if (r.channels.empty()) {
             QMessageBox::warning(this, "Empty file",
-                err.isEmpty() ? QString("No channels in this file.") : err);
+                r.error.isEmpty() ? QString("No channels in this file.") : r.error);
             return;
         }
 
         auto f = std::make_unique<OpenedFile>();
-        f->type = FileType::H5;
+        f->type = FileType::H5;  // unified: any "recording" file uses H5 lane
         f->path = path;
         f->displayName = QFileInfo(path).fileName();
-        f->h5Signals = std::move(loaded);
+        f->h5Signals = std::move(r.channels);
         // Default: all channels checked (so the user just clicks Apply
         // to get the old behaviour).
         for (const auto& s : f->h5Signals) {
@@ -561,6 +558,13 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             impl_->fileList->setCurrentRow(impl_->activeIndex);
         }
         loadActiveState();
+    };
+
+    connect(loadH5Btn, &QPushButton::clicked, this, [this, openRecording]{
+        const QString path = QFileDialog::getOpenFileName(
+            this, "Open recording (.h5 / .mf4)", QString(),
+            "Recordings (*.h5 *.mf4);;HDF5 (*.h5);;MDF4 (*.mf4);;All files (*)");
+        openRecording(path);
     });
 
     // ---- Apply for the active file ----------------------------------
@@ -1050,15 +1054,14 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                 }
             } else if (type == "h5") {
                 f->type = FileType::H5;
-                QString h5err;
-                auto session = core::Hdf5Session::openForRead(
-                    std::filesystem::path(filePath.toStdString()), &h5err);
-                if (!session) {
+                auto rr = converter::loadFile(
+                    std::filesystem::path(filePath.toStdString()));
+                if (!rr.ok && rr.channels.empty()) {
                     QMessageBox::warning(this, "H5 reopen failed",
-                        QString("%1:\n%2").arg(filePath, h5err));
+                        QString("%1:\n%2").arg(filePath, rr.error));
                     continue;
                 }
-                f->h5Signals = session->loadAllSignals(&h5err);
+                f->h5Signals = std::move(rr.channels);
                 for (const auto& jn : jf.value("selectedChannels",
                                                nlohmann::json::array()))
                     f->h5SelectedChannels << QString::fromStdString(
@@ -1094,46 +1097,43 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         impl_->statusLabel->setText(msg);
     });
 
-    // ---- Save HDF5: dump the SignalStore to a recording file ----------
-    connect(saveH5Btn, &QPushButton::clicked, this, [this]{
+    // ---- Save recording: dump the SignalStore to .h5 or .mf4 ----------
+    auto saveRecording = [this](converter::FileFormat fmt, const QString& title) {
         if (store_.size() == 0) {
             QMessageBox::information(this, "Nothing to save",
                 "The signal store is empty. Apply a file first.");
             return;
         }
-        QFileDialog dlg(this, "Save recording (.h5)");
+        QFileDialog dlg(this, title);
         dlg.setAcceptMode(QFileDialog::AcceptSave);
-        dlg.setNameFilters({"Scope sessions (*.h5)", "All files (*)"});
-        dlg.setDefaultSuffix("h5");
+        dlg.setNameFilters(converter::nameFilters(fmt));
+        dlg.setDefaultSuffix(converter::defaultSuffix(fmt));
         if (dlg.exec() != QDialog::Accepted) return;
         const auto sel = dlg.selectedFiles();
         if (sel.isEmpty()) return;
         QString path = sel.first();
-        if (!path.endsWith(".h5", Qt::CaseInsensitive)) path += ".h5";
 
+        std::vector<std::shared_ptr<scope::core::Signal>> chans;
+        for (const auto& name : store_.channelNames()) {
+            if (auto s = store_.get(name)) chans.push_back(std::move(s));
+        }
         QString err;
-        auto session = scope::core::Hdf5Session::create(
-            std::filesystem::path(path.toStdString()), &err);
-        if (!session) {
+        if (!converter::saveFile(
+                std::filesystem::path(path.toStdString()),
+                chans, fmt, {}, &err)) {
             QMessageBox::critical(this, "Save failed", err);
             return;
         }
-        int written = 0;
-        for (const auto& name : store_.channelNames()) {
-            auto sig = store_.get(name);
-            if (!sig) continue;
-            if (!session->addChannel(sig->meta(), &err)) continue;
-            auto view = sig->snapshotForRead();
-            if (view.count > 0) {
-                session->appendSamples(name, view.timestamps, view.values,
-                                       view.count, &err);
-            }
-            ++written;
-        }
-        session->flush();
         impl_->statusLabel->setText(QString("Saved %1: %2 channel(s)")
                                         .arg(QFileInfo(path).fileName())
-                                        .arg(written));
+                                        .arg(chans.size()));
+    };
+
+    connect(saveH5Btn, &QPushButton::clicked, this, [saveRecording]{
+        saveRecording(converter::FileFormat::Hdf5, "Save recording (.h5)");
+    });
+    connect(saveMf4Btn, &QPushButton::clicked, this, [saveRecording]{
+        saveRecording(converter::FileFormat::Mdf4, "Save recording (.mf4)");
     });
 
     // ---- Save CSV: dialog + writer ------------------------------------
@@ -1145,24 +1145,26 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         }
         ui::CsvExportDialog optionsDlg(this);
         if (optionsDlg.exec() != QDialog::Accepted) return;
-        const auto opts = optionsDlg.options();
+        converter::SaveOptions saveOpts;
+        saveOpts.csv = optionsDlg.options();
 
         QFileDialog dlg(this, "Save CSV");
         dlg.setAcceptMode(QFileDialog::AcceptSave);
-        dlg.setNameFilters({"CSV (*.csv)", "Text (*.txt)", "All files (*)"});
-        dlg.setDefaultSuffix("csv");
+        dlg.setNameFilters(converter::nameFilters(converter::FileFormat::Csv));
+        dlg.setDefaultSuffix(converter::defaultSuffix(converter::FileFormat::Csv));
         if (dlg.exec() != QDialog::Accepted) return;
         const auto sel = dlg.selectedFiles();
         if (sel.isEmpty()) return;
         QString path = sel.first();
-        if (!path.contains('.')) path += ".csv";
 
         std::vector<std::shared_ptr<scope::core::Signal>> chans;
         for (const auto& name : store_.channelNames()) {
             if (auto s = store_.get(name)) chans.push_back(std::move(s));
         }
         QString err;
-        if (!writeCsv(std::filesystem::path(path.toStdString()), chans, opts, &err)) {
+        if (!converter::saveFile(std::filesystem::path(path.toStdString()),
+                                 chans, converter::FileFormat::Csv,
+                                 saveOpts, &err)) {
             QMessageBox::critical(this, "Save failed", err);
             return;
         }

@@ -3,6 +3,7 @@ set(CORE_HEADERS
     include/scope/core/Signal.h
     include/scope/core/SignalStore.h
     include/scope/core/Hdf5Session.h
+    include/scope/core/Mdf4Session.h
     include/scope/core/IAdsClient.h
 )
 
@@ -10,6 +11,7 @@ set(CORE_SOURCES
     src/Signal.cpp
     src/SignalStore.cpp
     src/Hdf5Session.cpp
+    src/Mdf4Session.cpp
 )
 
 scope_add_library(scope_core
@@ -23,5 +25,6 @@ scope_add_library(scope_core
         nlohmann_json::nlohmann_json
         HighFive
         concurrentqueue
+        mdf
     FOLDER scope/core
 )

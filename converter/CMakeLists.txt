@@ -4,6 +4,7 @@ set(CONVERTER_HEADERS
     include/scope/converter/ExcelSource.h
     include/scope/converter/CsvSource.h
     include/scope/converter/CsvWriter.h
+    include/scope/converter/SignalIO.h
     include/scope/converter/ConverterWidget.h
     ui/MappingPanel.h
     ui/ChannelEditDialog.h
@@ -15,6 +16,7 @@ set(CONVERTER_SOURCES
     src/ExcelSource.cpp
     src/CsvSource.cpp
     src/CsvWriter.cpp
+    src/SignalIO.cpp
     ui/ConverterWidget.cpp
     ui/MappingPanel.cpp
     ui/ChannelEditDialog.cpp

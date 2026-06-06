@@ -44,11 +44,13 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
 
     // ---- Format ------------------------------------------------------
     h5Radio_  = new QRadioButton("HDF5 (.h5) — lossless recording format", this);
+    mf4Radio_ = new QRadioButton("MDF4 (.mf4) — ASAM standard, opens in DiaDem / asammdf / MATLAB", this);
     csvRadio_ = new QRadioButton("CSV (.csv) — text, configurable below", this);
     h5Radio_->setChecked(true);
     auto* formatBox = new QGroupBox("Format", this);
     auto* formatLayout = new QVBoxLayout(formatBox);
     formatLayout->addWidget(h5Radio_);
+    formatLayout->addWidget(mf4Radio_);
     formatLayout->addWidget(csvRadio_);
 
     // ---- Time range --------------------------------------------------
@@ -157,6 +159,7 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     root->addWidget(buttons);
 
     connect(h5Radio_,  &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
+    connect(mf4Radio_, &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
     connect(csvRadio_, &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
     connect(allRangeRadio_,    &QRadioButton::toggled, this, [this](bool){ onRangeModeChanged(); });
     connect(customRangeRadio_, &QRadioButton::toggled, this, [this](bool){ onRangeModeChanged(); });
@@ -181,7 +184,9 @@ void SaveChartDialog::onRangeModeChanged() {
 }
 
 SaveChartDialog::Format SaveChartDialog::format() const {
-    return csvRadio_->isChecked() ? Format::Csv : Format::Hdf5;
+    if (csvRadio_->isChecked()) return Format::Csv;
+    if (mf4Radio_->isChecked()) return Format::Mdf4;
+    return Format::Hdf5;
 }
 
 bool   SaveChartDialog::useCustomRange() const { return customRangeRadio_->isChecked(); }

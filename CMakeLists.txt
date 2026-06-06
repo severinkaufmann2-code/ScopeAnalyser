@@ -88,6 +88,28 @@ FetchContent_Declare(beckhoff_ads
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(beckhoff_ads)
 
+# mdflib — open-source C++ library for ASAM MDF 4.x (.mf4) read/write.
+# Disable everything we don't need: tool/viewer (WxWidgets), tests, docs,
+# the Python module, and the .NET / C language-binding shared library
+# (mdflibrary), which is a lot of extra code we never link.
+set(MDF_BUILD_TOOL          OFF CACHE BOOL "" FORCE)
+set(MDF_BUILD_TEST          OFF CACHE BOOL "" FORCE)
+set(MDF_BUILD_DOC           OFF CACHE BOOL "" FORCE)
+set(MDF_BUILD_PYTHON        OFF CACHE BOOL "" FORCE)
+set(MDF_BUILD_GTEST         OFF CACHE BOOL "" FORCE)
+set(MDF_BUILD_SHARED_LIB    OFF CACHE BOOL "" FORCE)
+set(MDF_BUILD_SHARED_LIB_NET OFF CACHE BOOL "" FORCE)
+set(MDF_BUILD_SHARED_LIB_EXAMPLE OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(mdflib
+    GIT_REPOSITORY https://github.com/ihedvall/mdflib.git
+    # Pinned past v2.3.0 for the <cstdint> include fix in itimestamp.h, and
+    # before commit 223a531 which broke FetchContent integration by switching
+    # ZLIB/EXPAT discovery from find_package() to include(${CMAKE_SOURCE_DIR}
+    # /script/zlib.cmake) — that path doesn't exist in our project root.
+    # Re-evaluate when a tag past 223a531 lands with that issue resolved.
+    GIT_TAG        110209aa154f88dde158936f5a3e90de4f4677fa)
+FetchContent_MakeAvailable(mdflib)
+
 include(cmake/scope_helpers.cmake)
 
 add_subdirectory(core)
