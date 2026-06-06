@@ -11,12 +11,12 @@ This file is a roadmap. Pieces get built as they're needed.
 
 ---
 
-## Tier 1 — covered by this PR
+## Tier 1 — done
 
 | Function | Signature | Notes |
 |---|---|---|
-| `Replace(s, oldV, newV)` | scalar-or-signal args | Replace samples equal to `oldV` with `newV`. |
-| `ForwardFill(s)` / `ForwardFill(s, fillValue)` | fillValue defaults to 0 | Replace fill samples with the previous non-fill value. Leading run of fill values is preserved (no preceding good value yet). |
+| `Replace(s, oldV, newV [, tol])` | scalar-or-signal args + optional tolerance | Replace samples equal to `oldV` with `newV`. Exact by default; `\|v − oldV\| ≤ tol` if tolerance > 0. Done in `08f5fa4`. |
+| `ForwardFill(s)` / `ForwardFill(s, fillValue)` | fillValue defaults to 0 | Replace fill samples with the previous non-fill value. Leading run of fill values is preserved. Done. |
 
 ## Tier 2 — to add when first needed
 

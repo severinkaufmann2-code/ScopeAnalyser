@@ -528,3 +528,41 @@ TEST(FormulaEngine, ReplaceUsesSignalAsReplacement) {
     ASSERT_EQ(vs.size(), want.size());
     for (std::size_t i = 0; i < want.size(); ++i) EXPECT_DOUBLE_EQ(vs[i], want[i]);
 }
+
+// -------- ForwardFill --------
+
+TEST(FormulaEngine, ForwardFillFillsGapsWithLastGoodValue) {
+    SignalStore store;
+    store.add(makeFromValues("S", {5, 0, 0, 7, 0, 8}));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("F = ForwardFill(S)", &err)) << err.toStdString();
+    auto vs = store.get("F")->readAsDouble();
+    const std::vector<double> want = {5, 5, 5, 7, 7, 8};
+    ASSERT_EQ(vs.size(), want.size());
+    for (std::size_t i = 0; i < want.size(); ++i) EXPECT_DOUBLE_EQ(vs[i], want[i]);
+}
+
+TEST(FormulaEngine, ForwardFillLeadingFillStaysAsIs) {
+    SignalStore store;
+    store.add(makeFromValues("S", {0, 0, 5, 0}));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("F = ForwardFill(S)", &err)) << err.toStdString();
+    auto vs = store.get("F")->readAsDouble();
+    const std::vector<double> want = {0, 0, 5, 5};
+    ASSERT_EQ(vs.size(), want.size());
+    for (std::size_t i = 0; i < want.size(); ++i) EXPECT_DOUBLE_EQ(vs[i], want[i]);
+}
+
+TEST(FormulaEngine, ForwardFillCustomMarker) {
+    SignalStore store;
+    store.add(makeFromValues("S", {5, 99, 99, 7, 99, 8}));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("F = ForwardFill(S, 99)", &err)) << err.toStdString();
+    auto vs = store.get("F")->readAsDouble();
+    const std::vector<double> want = {5, 5, 5, 7, 7, 8};
+    ASSERT_EQ(vs.size(), want.size());
+    for (std::size_t i = 0; i < want.size(); ++i) EXPECT_DOUBLE_EQ(vs[i], want[i]);
+}
