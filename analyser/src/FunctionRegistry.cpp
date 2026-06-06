@@ -116,29 +116,22 @@ std::shared_ptr<Signal> impl_Integral(const FunctionArgs& a, QString* err) {
 }
 
 // ---- Derivative(signal) — run-based forward difference ----
-// ---- Derivative(signal, window_seconds) — least-squares slope ----
 //
-// One-arg form: slope across each "run" of constant value. For each
-// sample i, find the next sample j > i where v[j] differs from v[i],
-// and assign dst[k] = (v[j] - v[i]) / (t[j] - t[i]) to every sample
-// k in [i, j). After the last change, samples carry the most recent
-// slope forward. For a signal where every sample is distinct (any
-// truly continuous signal), this is identical to plain forward
-// difference. For a quantised signal that only updates every few
-// samples — common in PLC data where REAL/LREAL values come from
-// integer-tick sensors — this returns the true underlying rate
-// instead of the comb pattern a naïve adjacent-sample difference
-// produces.
+// Slope across each "run" of constant value. For each sample i, find
+// the next sample j > i where v[j] differs from v[i], and assign
+// dst[k] = (v[j] - v[i]) / (t[j] - t[i]) to every sample k in [i, j).
+// After the last change, samples carry the most recent slope forward.
 //
-// Two-arg form: at each sample, fit a line through every sample
-// within ±window_seconds/2 and report that line's slope. Robust
-// against noise as well as quantisation.
+// For a signal where every sample is distinct (any truly continuous
+// signal), this is identical to plain forward difference. For a
+// quantised signal that only updates every few samples — common in
+// PLC data where REAL/LREAL values come from integer-tick sensors —
+// this returns the true underlying rate instead of the comb pattern
+// a naïve adjacent-sample difference produces.
+//
+// For noise rejection, compose with Filter:  Derivative(Filter(s, t)).
 std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
-    if (a.size() != 1 && a.size() != 2) {
-        if (err) *err = QString("Derivative expects 1 or 2 arg(s), got %1")
-                            .arg(a.size());
-        return nullptr;
-    }
+    if (!ensureN(a, 1, err, "Derivative")) return nullptr;
     auto signal = a[0];
     auto view = signal->snapshotForRead();
     auto src  = signal->readAsDouble();
@@ -146,47 +139,6 @@ std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
     std::vector<double> dst(view.count, 0.0);
     if (view.count < 2) return makeDoubleSignal("Derivative", ts, dst);
 
-    // Two-arg form: least-squares slope over a centred time window.
-    if (a.size() == 2) {
-        double windowSec = 0;
-        if (!asScalar(a[1], windowSec) || windowSec <= 0) {
-            if (err) *err = "Derivative: window must be a positive scalar (seconds)";
-            return nullptr;
-        }
-        const TimestampNs halfNs =
-            static_cast<TimestampNs>(windowSec * 1e9 / 2.0);
-        std::size_t lo = 0, hi = 0;
-        for (std::size_t i = 0; i < view.count; ++i) {
-            const TimestampNs tCenter = ts[i];
-            while (lo < view.count && tCenter - ts[lo] > halfNs) ++lo;
-            while (hi + 1 < view.count && ts[hi + 1] - tCenter <= halfNs) ++hi;
-            if (hi <= lo) {
-                if (i > 0 && i + 1 < view.count) {
-                    const double dt = (ts[i + 1] - ts[i - 1]) * 1e-9;
-                    dst[i] = (src[i + 1] - src[i - 1]) / (dt != 0 ? dt : 1e-12);
-                }
-                continue;
-            }
-            const std::size_t n = hi - lo + 1;
-            double sumX = 0, sumY = 0;
-            for (std::size_t k = lo; k <= hi; ++k) {
-                sumX += ts[k] * 1e-9;
-                sumY += src[k];
-            }
-            const double meanX = sumX / static_cast<double>(n);
-            const double meanY = sumY / static_cast<double>(n);
-            double num = 0, den = 0;
-            for (std::size_t k = lo; k <= hi; ++k) {
-                const double dx = ts[k] * 1e-9 - meanX;
-                num += dx * (src[k] - meanY);
-                den += dx * dx;
-            }
-            dst[i] = (den != 0) ? num / den : 0.0;
-        }
-        return makeDoubleSignal("Derivative", ts, dst);
-    }
-
-    // One-arg form: run-based forward difference.
     double lastSlope = 0.0;
     std::size_t i = 0;
     while (i < view.count) {
@@ -410,11 +362,14 @@ void FunctionRegistry::registerBuiltins() {
         "1st-order low-pass IIR with time constant tau.", 2, 2, &impl_Filter);
     add("Integral",   "Integral(signal)",
         "Trapezoidal cumulative integration.", 1, 1, &impl_Integral);
-    add("Derivative", "Derivative(signal[, window_seconds])",
-        "Time derivative. With one arg: central difference (point-wise). "
-        "With a window: least-squares slope over a centred time window — "
-        "robust against quantisation, corners, and noise.",
-        1, 2, &impl_Derivative);
+    add("Derivative", "Derivative(signal)",
+        "Run-based forward difference: slope from each value transition "
+        "to the next. Equivalent to plain forward difference on a signal "
+        "whose samples are all distinct; recovers the true rate on a "
+        "quantised PLC value that stays flat for several samples then "
+        "jumps. For noisy signals, compose with Filter: "
+        "Derivative(Filter(s, tau)).",
+        1, 1, &impl_Derivative);
     add("Mean",       "Mean(signal, window_seconds)",
         "Rolling arithmetic mean over the last window_seconds.", 2, 2, &impl_Mean);
     add("RMS",        "RMS(signal, window_seconds)",

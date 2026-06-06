@@ -164,19 +164,15 @@ Functions: `Filter`, `Integral`, `Derivative`, `Mean`, `RMS`, `Min`, `Max`,
 `Shift`, `Abs`, `Sqrt`, `Log`, `Sin`, `Cos`, `Resample`. See the side panel
 for the full reference.
 
-`Derivative` has two forms:
-- `Derivative(signal)` — run-based forward difference. For each
-  "run" of constant value, the derivative is the slope across that
-  run to the next change. For a signal where every sample is
-  distinct (any truly continuous trace) this is identical to plain
-  forward difference. For a PLC value that stays flat for several
-  samples and then updates (typical of integer sensors stored as
-  REAL/LREAL) it reports the underlying rate instead of the comb
-  pattern naïve adjacent-sample differencing produces.
-- `Derivative(signal, window_seconds)` — least-squares slope over
-  a centred time window. Robust against noise as well as
-  quantisation; pick a window matching the timescale of the
-  underlying motion you care about.
+`Derivative(signal)` is a run-based forward difference. For each
+"run" of constant value, the derivative is the slope across that
+run to the next change. For a signal where every sample is distinct
+(any truly continuous trace) this is identical to plain forward
+difference. For a PLC value that stays flat for several samples
+and then updates (typical of integer sensors stored as REAL/LREAL)
+it reports the underlying rate instead of the comb pattern naïve
+adjacent-sample differencing produces. For noisy signals,
+compose with `Filter`:  `D = Derivative(Filter(s, tau))`.
 
 **Different sample rates per channel work out of the box.** When two channels
 of different rates appear in the same expression (e.g. `Hi + Lo` where `Hi`

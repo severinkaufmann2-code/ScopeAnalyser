@@ -161,46 +161,6 @@ TEST(FormulaEngine, DerivativeOfQuantisedRampIsConstant) {
     EXPECT_EQ(zeros, 0) << "no sample should be 0 — that's the comb bug";
 }
 
-// Windowed Derivative: linear-regression slope over a centred time
-// window. Should recover the underlying slope even when the source
-// values are quantised (integer-valued, simulating a coarse
-// measurement). Build a quantised ramp (round(0.1*i) so consecutive
-// values are often equal) and verify the windowed derivative reports
-// the true slope to a tight tolerance, while the plain one-arg form
-// produces alternating zeros and spikes.
-TEST(FormulaEngine, DerivativeWindowedRecoversUnderlyingSlope) {
-    SignalStore store;
-    Signal::Meta m;
-    m.name = "Q";
-    m.dataType = DataType::Float64;
-    m.sampleRateHz = 100.0;
-    auto sig = std::make_shared<Signal>(m);
-    const std::size_t N = 201;          // 2 s worth at 100 Hz
-    const double dt    = 0.01;
-    const double slope = 5.0;           // underlying signal: y = 5*t
-    std::vector<TimestampNs> ts(N);
-    std::vector<double> vs(N);
-    for (std::size_t i = 0; i < N; ++i) {
-        ts[i] = static_cast<TimestampNs>(i * dt * 1e9);
-        // Round to 1 → many consecutive samples share the same value.
-        vs[i] = std::round(slope * i * dt);
-    }
-    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), N);
-    store.add(sig);
-
-    FormulaEngine engine(store);
-    QString err;
-    ASSERT_TRUE(engine.evaluate("Dw = Derivative(Q, 0.5)", &err))
-        << err.toStdString();
-    auto out = store.get("Dw");
-    auto ovs = out->readAsDouble();
-    // Inner samples (away from window edges) should report ≈ 5 ± a small
-    // boundary effect from the quantisation.
-    for (std::size_t i = 50; i + 50 < ovs.size(); ++i) {
-        EXPECT_NEAR(ovs[i], slope, 0.5) << "at i=" << i;
-    }
-}
-
 TEST(FormulaEngine, UnknownChannelGivesError) {
     SignalStore store;
     FormulaEngine engine(store);
