@@ -71,6 +71,15 @@ public:
     void zoomYBy(double factor, int yAxisIndex = -1);   // -1 = all Y axes
     void zoomBothBy(double factor);
 
+    // ---- Two-point measurement -------------------------------------
+    // When enabled, left-clicks in the plot interior place markers (up
+    // to two). With both placed, a connecting line and a text label
+    // show ΔX / ΔY. Right-click clears. setMeasureMode(false) hides
+    // everything and restores normal click behaviour.
+    void setMeasureMode(bool enabled);
+    bool isMeasureMode() const;
+    void clearMeasurement();
+
 public slots:
     void fitAll();
     void savePngDialog();
@@ -79,6 +88,7 @@ public slots:
 signals:
     void pausedChanged(bool paused);
     void yAxesChanged();     // emitted when axes are added/removed/renamed
+    void measureModeChanged(bool enabled);
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;

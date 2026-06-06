@@ -197,6 +197,18 @@ remove the selected one from the store. Only formula-derived
 channels are editable — recorded / imported channels have no
 formula to change.
 
+**Display mode** — the `Display:` combo in the sidebar switches
+every graph between *Line* (default), *Points* (scatter dot at every
+sample — visually shows the sample rate), and *Line + points*
+(both). Useful for double-checking that you imported a 4 kHz
+signal as 4 kHz and not something else.
+
+**Measure (Δx / Δy)** — toggle button in the sidebar. While on,
+left-click two points on the plot to mark them; an orange dashed
+line connects them and a label shows `Δx`, `Δy`, and `1/|Δx|` so
+you can read frequency in Hz directly. Right-click clears the
+markers; click the button again to leave measurement mode.
+
 ### Converter
 
 The Converter is a multi-file workspace. Every file you open (CSV or

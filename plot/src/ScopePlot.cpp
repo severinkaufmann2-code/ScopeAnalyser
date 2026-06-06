@@ -16,6 +16,9 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
+#include <cmath>
+#include <limits>
+
 #include <spdlog/spdlog.h>
 
 #include <array>
@@ -82,6 +85,17 @@ struct ScopePlot::Impl {
     // True while the user is holding the left mouse button down on the plot
     // (used to detect pan-via-QCustomPlot-iRangeDrag and mark axes manual).
     bool                 leftButtonDown{false};
+
+    // ---- Two-point measurement -----------------------------------
+    bool                 measureMode{false};
+    QPointF              measureP1{std::numeric_limits<double>::quiet_NaN(),
+                                   std::numeric_limits<double>::quiet_NaN()};
+    QPointF              measureP2{std::numeric_limits<double>::quiet_NaN(),
+                                   std::numeric_limits<double>::quiet_NaN()};
+    QCPItemEllipse*      measureDot1{nullptr};
+    QCPItemEllipse*      measureDot2{nullptr};
+    QCPItemLine*         measureLine{nullptr};
+    QCPItemText*         measureText{nullptr};
 };
 
 ScopePlot::ScopePlot(QWidget* parent)
@@ -192,6 +206,28 @@ ScopePlot::ScopePlot(QWidget* parent)
     impl_->regionRect->setBrush(QBrush(QColor(0, 102, 204, 40)));
     impl_->regionRect->setVisible(false);
 
+    // ---- Measurement items (hidden until measureMode is on) --------
+    const QColor measureColor(220, 100, 0);
+    auto mkDot = [&](QCPItemEllipse*& dot) {
+        dot = new QCPItemEllipse(impl_->plot);
+        dot->setPen(QPen(measureColor, 2));
+        dot->setBrush(QBrush(measureColor));
+        dot->setVisible(false);
+    };
+    mkDot(impl_->measureDot1);
+    mkDot(impl_->measureDot2);
+    impl_->measureLine = new QCPItemLine(impl_->plot);
+    impl_->measureLine->setPen(QPen(measureColor, 1, Qt::DashLine));
+    impl_->measureLine->setVisible(false);
+    impl_->measureText = new QCPItemText(impl_->plot);
+    impl_->measureText->setPositionAlignment(Qt::AlignBottom | Qt::AlignLeft);
+    impl_->measureText->setFont(QFont("monospace", 9));
+    impl_->measureText->setColor(measureColor);
+    impl_->measureText->setPadding(QMargins(4, 2, 4, 2));
+    impl_->measureText->setBrush(QBrush(QColor(255, 255, 255, 200)));
+    impl_->measureText->setPen(QPen(measureColor));
+    impl_->measureText->setVisible(false);
+
     // ---- Layout --------------------------------------------------------
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -234,6 +270,29 @@ void ScopePlot::setPaused(bool paused) {
 }
 
 void ScopePlot::togglePause() { setPaused(!impl_->paused); }
+
+// ---- Measurement ----------------------------------------------------------
+bool ScopePlot::isMeasureMode() const { return impl_->measureMode; }
+
+void ScopePlot::setMeasureMode(bool enabled) {
+    if (impl_->measureMode == enabled) return;
+    impl_->measureMode = enabled;
+    if (!enabled) clearMeasurement();
+    // Crosshair conflicts visually with markers; hide it while measuring.
+    impl_->plot->setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
+    emit measureModeChanged(enabled);
+}
+
+void ScopePlot::clearMeasurement() {
+    impl_->measureP1 = {std::numeric_limits<double>::quiet_NaN(),
+                        std::numeric_limits<double>::quiet_NaN()};
+    impl_->measureP2 = impl_->measureP1;
+    impl_->measureDot1->setVisible(false);
+    impl_->measureDot2->setVisible(false);
+    impl_->measureLine->setVisible(false);
+    impl_->measureText->setVisible(false);
+    impl_->plot->replot(QCustomPlot::rpQueuedReplot);
+}
 
 // ---- Multi-Y-axis API ----------------------------------------------------
 
@@ -681,6 +740,84 @@ bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
         }
         case QEvent::MouseButtonPress: {
             auto* me = static_cast<QMouseEvent*>(ev);
+            // Measurement: left = place next point, right = clear.
+            if (impl_->measureMode) {
+                if (me->button() == Qt::RightButton) {
+                    clearMeasurement();
+                    return true;
+                }
+                if (me->button() == Qt::LeftButton) {
+                    const QPointF px = me->position();
+                    const double x = impl_->plot->xAxis->pixelToCoord(px.x());
+                    const double y = impl_->plot->yAxis->pixelToCoord(px.y());
+                    // First click → place P1. Second click → P2 + show
+                    // deltas. Third click → restart from P1 again.
+                    const bool haveP1 = !std::isnan(impl_->measureP1.x());
+                    const bool haveP2 = !std::isnan(impl_->measureP2.x());
+                    if (!haveP1 || haveP2) {
+                        // start fresh
+                        impl_->measureP1 = {x, y};
+                        impl_->measureP2 = {std::numeric_limits<double>::quiet_NaN(),
+                                            std::numeric_limits<double>::quiet_NaN()};
+                    } else {
+                        impl_->measureP2 = {x, y};
+                    }
+                    // Refresh visuals.
+                    auto setDot = [&](QCPItemEllipse* d, const QPointF& p, bool vis) {
+                        if (!vis) { d->setVisible(false); return; }
+                        const double r = 4.0;
+                        const double xp = impl_->plot->xAxis->coordToPixel(p.x());
+                        const double yp = impl_->plot->yAxis->coordToPixel(p.y());
+                        d->topLeft->setType(QCPItemPosition::ptAbsolute);
+                        d->bottomRight->setType(QCPItemPosition::ptAbsolute);
+                        d->topLeft->setCoords(xp - r, yp - r);
+                        d->bottomRight->setCoords(xp + r, yp + r);
+                        d->setVisible(true);
+                    };
+                    setDot(impl_->measureDot1, impl_->measureP1,
+                           !std::isnan(impl_->measureP1.x()));
+                    setDot(impl_->measureDot2, impl_->measureP2,
+                           !std::isnan(impl_->measureP2.x()));
+                    const bool both = !std::isnan(impl_->measureP1.x())
+                                   && !std::isnan(impl_->measureP2.x());
+                    impl_->measureLine->setVisible(both);
+                    impl_->measureText->setVisible(both);
+                    if (both) {
+                        impl_->measureLine->start->setType(QCPItemPosition::ptPlotCoords);
+                        impl_->measureLine->end->setType(QCPItemPosition::ptPlotCoords);
+                        impl_->measureLine->start->setCoords(
+                            impl_->measureP1.x(), impl_->measureP1.y());
+                        impl_->measureLine->end->setCoords(
+                            impl_->measureP2.x(), impl_->measureP2.y());
+                        const double dx = impl_->measureP2.x() - impl_->measureP1.x();
+                        const double dy = impl_->measureP2.y() - impl_->measureP1.y();
+                        const double absDx = std::abs(dx);
+                        QString dxStr;
+                        if (absDx != 0 && absDx < 1e-3)
+                            dxStr = QString("%1 ms").arg(dx * 1e3, 0, 'g', 6);
+                        else
+                            dxStr = QString("%1 s").arg(dx, 0, 'g', 6);
+                        const double freq = (dx != 0) ? 1.0 / std::abs(dx) : 0.0;
+                        QString line2;
+                        if (freq > 0) {
+                            line2 = QString("1/|Δx| = %1 Hz")
+                                        .arg(freq, 0, 'g', 6);
+                        }
+                        impl_->measureText->setText(
+                            QString("Δx = %1\nΔy = %2%3")
+                                .arg(dxStr)
+                                .arg(dy, 0, 'g', 6)
+                                .arg(line2.isEmpty() ? QString()
+                                                     : "\n" + line2));
+                        impl_->measureText->position->setType(QCPItemPosition::ptPlotCoords);
+                        const double midX = (impl_->measureP1.x() + impl_->measureP2.x()) / 2.0;
+                        const double topY = std::max(impl_->measureP1.y(), impl_->measureP2.y());
+                        impl_->measureText->position->setCoords(midX, topY);
+                    }
+                    impl_->plot->replot(QCustomPlot::rpQueuedReplot);
+                    return true;
+                }
+            }
             if (me->button() == Qt::LeftButton
                 && (me->modifiers() & Qt::ControlModifier)) {
                 beginRegionZoom(me->position());

@@ -34,7 +34,16 @@ public slots:
     void saveChartDialog();
     void openChartDialog();
 
+public:
+    enum class DisplayMode { Line, Points, Both };
+
 private:
+    void applyDisplayMode();
+    void applyDisplayModeTo(QCPGraph* graph) const;
+
+    DisplayMode displayMode_{DisplayMode::Line};
+
+
     void rebuildTable();
     void redrawForActiveChannels();
     void rebuildAxisCombos();
