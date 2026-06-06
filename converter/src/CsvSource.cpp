@@ -337,6 +337,35 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
             vs.swap(vsOut);
         }
 
+        // Collapse runs of equal *value* (distinct timestamps, same Y).
+        // This is the staircase pattern of a CSV logged faster than
+        // the underlying value updates — common for integer-sensor
+        // values stored as REAL/LREAL. KeepFirst keeps the timestamp
+        // at which the value first became X; KeepLast keeps the last
+        // confirmation. Applied AFTER the timestamp-dedup step.
+        if (ySpec.collapseValuePlateaus != ColumnMapping::ValuePlateauMode::None
+            && !vs.empty()) {
+            std::vector<TimestampNs> tsOut;
+            std::vector<double> vsOut;
+            tsOut.reserve(vs.size());
+            vsOut.reserve(vs.size());
+            std::size_t i = 0;
+            while (i < vs.size()) {
+                std::size_t j = i + 1;
+                while (j < vs.size() && vs[j] == vs[i]) ++j;
+                if (ySpec.collapseValuePlateaus
+                    == ColumnMapping::ValuePlateauMode::KeepLast) {
+                    tsOut.push_back(ts[j - 1]);
+                } else {
+                    tsOut.push_back(ts[i]);  // KeepFirst
+                }
+                vsOut.push_back(vs[i]);  // any sample in the run carries the value
+                i = j;
+            }
+            ts.swap(tsOut);
+            vs.swap(vsOut);
+        }
+
         Signal::Meta m;
         m.name = ySpec.signalName.isEmpty()
                  ? QString("Col%1").arg(colLabel(yCol))

@@ -64,6 +64,11 @@ ConverterProfile ConverterProfile::loadFromFile(const std::filesystem::path& pat
                 else if (cdStr == "last")  c.collapseDuplicates = ColumnMapping::CollapseMode::Last;
                 else if (cdStr == "mean")  c.collapseDuplicates = ColumnMapping::CollapseMode::Mean;
                 else                       c.collapseDuplicates = ColumnMapping::CollapseMode::None;
+                const auto vpStr = QString::fromStdString(
+                    jc.value("collapseValuePlateaus", std::string{"none"}));
+                if      (vpStr == "first") c.collapseValuePlateaus = ColumnMapping::ValuePlateauMode::KeepFirst;
+                else if (vpStr == "last")  c.collapseValuePlateaus = ColumnMapping::ValuePlateauMode::KeepLast;
+                else                       c.collapseValuePlateaus = ColumnMapping::ValuePlateauMode::None;
                 p.columns.push_back(std::move(c));
             }
         }
@@ -111,6 +116,13 @@ bool ConverterProfile::saveToFile(const std::filesystem::path& path,
                 default: break;
             }
             jc["collapseDuplicates"] = cd;
+            const char* vp = "none";
+            switch (c.collapseValuePlateaus) {
+                case ColumnMapping::ValuePlateauMode::KeepFirst: vp = "first"; break;
+                case ColumnMapping::ValuePlateauMode::KeepLast:  vp = "last";  break;
+                default: break;
+            }
+            jc["collapseValuePlateaus"] = vp;
             j["columns"].push_back(std::move(jc));
         }
         std::ofstream f(path);

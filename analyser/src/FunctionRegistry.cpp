@@ -115,21 +115,20 @@ std::shared_ptr<Signal> impl_Integral(const FunctionArgs& a, QString* err) {
     return makeDoubleSignal("Integral", ts, dst);
 }
 
-// ---- Derivative(signal) — run-based forward difference ----
+// ---- Derivative(signal) — plain Δy/Δx (central difference) ----
 //
-// Slope across each "run" of constant value. For each sample i, find
-// the next sample j > i where v[j] differs from v[i], and assign
-// dst[k] = (v[j] - v[i]) / (t[j] - t[i]) to every sample k in [i, j).
-// After the last change, samples carry the most recent slope forward.
+// Textbook central difference on the interior, forward at the start,
+// backward at the end. Same shape as numpy.gradient.
 //
-// For a signal where every sample is distinct (any truly continuous
-// signal), this is identical to plain forward difference. For a
-// quantised signal that only updates every few samples — common in
-// PLC data where REAL/LREAL values come from integer-tick sensors —
-// this returns the true underlying rate instead of the comb pattern
-// a naïve adjacent-sample difference produces.
+//   dst[0]      = (v[1]   - v[0])   / (t[1]   - t[0])
+//   dst[i]      = (v[i+1] - v[i-1]) / (t[i+1] - t[i-1])   for 1 ≤ i ≤ N-2
+//   dst[N-1]    = (v[N-1] - v[N-2]) / (t[N-1] - t[N-2])
 //
-// For noise rejection, compose with Filter:  Derivative(Filter(s, t)).
+// If the source signal is staircase-quantised (a PLC value that stays
+// flat for several samples then jumps), this produces the classic
+// comb pattern — that's a *data shape* issue, fix it at import with
+// the Converter's "Value plateaus" collapse option. For noise, compose
+// with Filter:  Derivative(Filter(s, tau)).
 std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
     if (!ensureN(a, 1, err, "Derivative")) return nullptr;
     auto signal = a[0];
@@ -139,24 +138,15 @@ std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
     std::vector<double> dst(view.count, 0.0);
     if (view.count < 2) return makeDoubleSignal("Derivative", ts, dst);
 
-    double lastSlope = 0.0;
-    std::size_t i = 0;
-    while (i < view.count) {
-        std::size_t j = i + 1;
-        while (j < view.count && src[j] == src[i]) ++j;
-        if (j >= view.count) {
-            // No further change — every remaining sample carries the
-            // most recent slope. (If there was never a change at all,
-            // lastSlope is still 0, which matches "constant signal,
-            // zero derivative".)
-            for (std::size_t k = i; k < view.count; ++k) dst[k] = lastSlope;
-            break;
-        }
-        const double dt = (ts[j] - ts[i]) * 1e-9;
-        const double slope = (dt != 0) ? (src[j] - src[i]) / dt : 0.0;
-        for (std::size_t k = i; k < j; ++k) dst[k] = slope;
-        lastSlope = slope;
-        i = j;
+    for (std::size_t i = 1; i + 1 < view.count; ++i) {
+        const double dt = (ts[i + 1] - ts[i - 1]) * 1e-9;
+        dst[i] = (src[i + 1] - src[i - 1]) / (dt != 0 ? dt : 1e-12);
+    }
+    {
+        const double dtF = (ts[1] - ts[0]) * 1e-9;
+        if (dtF != 0) dst[0] = (src[1] - src[0]) / dtF;
+        const double dtB = (ts.back() - ts[ts.size() - 2]) * 1e-9;
+        if (dtB != 0) dst.back() = (src.back() - src[src.size() - 2]) / dtB;
     }
     return makeDoubleSignal("Derivative", ts, dst);
 }
@@ -363,12 +353,10 @@ void FunctionRegistry::registerBuiltins() {
     add("Integral",   "Integral(signal)",
         "Trapezoidal cumulative integration.", 1, 1, &impl_Integral);
     add("Derivative", "Derivative(signal)",
-        "Run-based forward difference: slope from each value transition "
-        "to the next. Equivalent to plain forward difference on a signal "
-        "whose samples are all distinct; recovers the true rate on a "
-        "quantised PLC value that stays flat for several samples then "
-        "jumps. For noisy signals, compose with Filter: "
-        "Derivative(Filter(s, tau)).",
+        "Δy/Δx via central difference (forward at the first sample, "
+        "backward at the last). For staircase-quantised data, collapse "
+        "value plateaus at import in the Converter. For noisy data, "
+        "compose: Derivative(Filter(s, tau)).",
         1, 1, &impl_Derivative);
     add("Mean",       "Mean(signal, window_seconds)",
         "Rolling arithmetic mean over the last window_seconds.", 2, 2, &impl_Mean);

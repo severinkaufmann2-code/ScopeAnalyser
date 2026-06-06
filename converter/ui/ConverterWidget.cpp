@@ -297,6 +297,31 @@ QStringList scanDuplicateTimestamps(const core::SignalStore& store,
     return warnings;
 }
 
+// Same idea for staircase / quantised data: count consecutive samples
+// that share the same Y value despite having different timestamps.
+// Threshold: 30 % (this pattern is rarer noise and more often a real
+// data shape, so don't fire on trace amounts).
+QStringList scanValuePlateaus(const core::SignalStore& store,
+                              const QStringList& names) {
+    QStringList warnings;
+    for (const auto& name : names) {
+        auto sig = store.get(name);
+        if (!sig) continue;
+        auto view = sig->snapshotForRead();
+        if (view.count < 2) continue;
+        auto vs = sig->readAsDouble();
+        std::size_t same = 0;
+        for (std::size_t i = 1; i < view.count && i < vs.size(); ++i)
+            if (vs[i] == vs[i - 1]) ++same;
+        if (same * 10 > view.count * 3) {  // > 30 %
+            warnings << QString("• %1: %2 of %3 samples repeat the "
+                                "previous value")
+                            .arg(name).arg(same).arg(view.count);
+        }
+    }
+    return warnings;
+}
+
 QString uniqueStoreName(const core::SignalStore& store, const QString& base) {
     if (!store.contains(base)) return base;
     for (int i = 2; i < 10000; ++i) {
@@ -634,16 +659,28 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         impl_->statusLabel->setText(
             QString("Imported %1 signal(s) from %2")
                 .arg(n).arg(f.displayName));
-        const auto warns = scanDuplicateTimestamps(store_, f.importedNames);
-        if (!warns.isEmpty()) {
-            QMessageBox::warning(this, "Duplicate timestamps detected",
-                QString("Some channels in %1 contain many duplicate "
-                        "timestamps:\n\n%2\n\nThis is usually a CSV that "
-                        "repeated the same X value across several rows. "
-                        "If you want to collapse them, edit the channel "
-                        "and set Duplicate timestamps → first / last / "
-                        "mean. Otherwise the duplicates are kept as-is.")
-                    .arg(f.displayName).arg(warns.join("\n")));
+        const auto dupWarns  = scanDuplicateTimestamps(store_, f.importedNames);
+        const auto platWarns = scanValuePlateaus(store_, f.importedNames);
+        if (!dupWarns.isEmpty() || !platWarns.isEmpty()) {
+            QString msg;
+            if (!dupWarns.isEmpty()) {
+                msg += QString("Duplicate timestamps in %1:\n\n%2\n\n"
+                               "Edit the channel and set "
+                               "Duplicate timestamps → first / last / mean "
+                               "to collapse them.\n\n")
+                           .arg(f.displayName).arg(dupWarns.join("\n"));
+            }
+            if (!platWarns.isEmpty()) {
+                msg += QString("Value plateaus in %1:\n\n%2\n\n"
+                               "This is a CSV logged faster than the "
+                               "underlying value updates. Edit the channel "
+                               "and set Value plateaus → first / last "
+                               "timestamp to collapse them. Otherwise "
+                               "Derivative on this signal will produce a "
+                               "comb pattern.")
+                           .arg(f.displayName).arg(platWarns.join("\n"));
+            }
+            QMessageBox::warning(this, "Import warnings", msg);
         }
     };
 
@@ -826,6 +863,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         int totalSignals = 0, okFiles = 0;
         QStringList failures;
         QStringList dupWarnings;
+        QStringList platWarnings;
         for (auto& fp : impl_->files) {
             auto& f = *fp;
             int n = 0;
@@ -838,9 +876,10 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             }
             if (n > 0) {
                 totalSignals += n; ++okFiles;
-                const auto warns = scanDuplicateTimestamps(store_, f.importedNames);
-                for (const auto& w : warns)
+                for (const auto& w : scanDuplicateTimestamps(store_, f.importedNames))
                     dupWarnings << QString("%1 — %2").arg(f.displayName, w);
+                for (const auto& w : scanValuePlateaus(store_, f.importedNames))
+                    platWarnings << QString("%1 — %2").arg(f.displayName, w);
             } else {
                 failures << QString("%1%2")
                                 .arg(f.displayName)
@@ -855,13 +894,23 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             QMessageBox::warning(this, "Some files were skipped",
                 "These files produced no signals:\n" + failures.join("\n"));
         }
-        if (!dupWarnings.isEmpty()) {
-            QMessageBox::warning(this, "Duplicate timestamps detected",
-                "Some channels contain many duplicate timestamps:\n\n"
-                + dupWarnings.join("\n")
-                + "\n\nIf you want to collapse them, edit the channel "
-                  "and set Duplicate timestamps → first / last / mean. "
-                  "Otherwise the duplicates are kept as-is.");
+        if (!dupWarnings.isEmpty() || !platWarnings.isEmpty()) {
+            QString w;
+            if (!dupWarnings.isEmpty()) {
+                w += "Duplicate timestamps:\n\n"
+                   + dupWarnings.join("\n")
+                   + "\n\nEdit the channel and set Duplicate timestamps "
+                     "→ first / last / mean to collapse.\n\n";
+            }
+            if (!platWarnings.isEmpty()) {
+                w += "Value plateaus (CSV logged faster than the value "
+                     "updates):\n\n"
+                   + platWarnings.join("\n")
+                   + "\n\nEdit the channel and set Value plateaus → "
+                     "first / last timestamp to collapse. Derivative "
+                     "on a staircase signal produces a comb pattern.";
+            }
+            QMessageBox::warning(this, "Import warnings", w);
         }
         impl_->statusLabel->setText(msg);
     });

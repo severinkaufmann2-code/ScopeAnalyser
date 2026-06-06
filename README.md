@@ -164,15 +164,14 @@ Functions: `Filter`, `Integral`, `Derivative`, `Mean`, `RMS`, `Min`, `Max`,
 `Shift`, `Abs`, `Sqrt`, `Log`, `Sin`, `Cos`, `Resample`. See the side panel
 for the full reference.
 
-`Derivative(signal)` is a run-based forward difference. For each
-"run" of constant value, the derivative is the slope across that
-run to the next change. For a signal where every sample is distinct
-(any truly continuous trace) this is identical to plain forward
-difference. For a PLC value that stays flat for several samples
-and then updates (typical of integer sensors stored as REAL/LREAL)
-it reports the underlying rate instead of the comb pattern naïve
-adjacent-sample differencing produces. For noisy signals,
-compose with `Filter`:  `D = Derivative(Filter(s, tau))`.
+`Derivative(signal)` is plain `Δy/Δx` — central difference on the
+interior, forward at the first sample, backward at the last. Same
+shape as `numpy.gradient`. For a staircase-quantised signal
+(a PLC value that stays flat for several samples then jumps), this
+produces a comb pattern by design: fix the data shape at import
+with the Converter's *Value plateaus* option (one sample per
+value run). For noisy signals, compose with `Filter`:
+`D = Derivative(Filter(s, tau))`.
 
 **Different sample rates per channel work out of the box.** When two channels
 of different rates appear in the same expression (e.g. `Hi + Lo` where `Hi`
@@ -288,6 +287,18 @@ averages the run. The choice is per-channel and persisted in
 `.scaconv`. After each Apply the Converter scans the imported
 signals and warns once if any channel still has >10 % duplicates,
 so you can fix the mapping if it was unintended.
+
+**Value-plateau handling (CSV)**. Distinct timestamps but the same
+Y for several consecutive rows is the staircase pattern of a CSV
+logged faster than the underlying value updates (integer encoder
+read at 4 kHz, for example). In the same dialog the *Value
+plateaus* combo collapses each run of equal Y into one sample:
+*Collapse → first timestamp* uses the time the value first
+appeared, *Collapse → last timestamp* uses the last confirmation
+before it changed. After Apply the Converter warns if any channel
+has >30 % consecutive-equal-value pairs and the mode is still
+*Keep all* — this is the fix to apply before running `Derivative`
+on the channel (otherwise central diff produces a comb pattern).
 
 ### Export and multi-source import (Converter)
 

@@ -114,51 +114,12 @@ TEST(FormulaEngine, DerivativeOfLinearIsConstant) {
     ASSERT_TRUE(engine.evaluate("D = Derivative(L)", &err)) << err.toStdString();
     auto out = store.get("D");
     auto ovs = out->readAsDouble();
-    // Run-based forward difference on a ramp where every sample is
-    // distinct: each sample's run is length 1, so the slope is just
-    // forward diff = 10 everywhere. The last sample carries the
-    // previous slope forward, also 10.
+    // Central difference on a true linear ramp: every sample reports
+    // the exact slope. Endpoints use forward/backward, which also
+    // give the exact slope here because the ramp is uniform.
     for (std::size_t i = 0; i < ovs.size(); ++i) {
         EXPECT_NEAR(ovs[i], 10.0, 1e-9) << "at i=" << i;
     }
-}
-
-// Regression: PLC-style quantised signal (value updates every N samples).
-// The naïve adjacent-sample difference gives a comb pattern that looks
-// like vertical bars going to 0 in the plot. Run-based forward
-// difference reports the underlying constant slope everywhere instead.
-TEST(FormulaEngine, DerivativeOfQuantisedRampIsConstant) {
-    SignalStore store;
-    Signal::Meta m;
-    m.name = "Q";
-    m.dataType = DataType::Float64;
-    m.sampleRateHz = 100.0;
-    auto sig = std::make_shared<Signal>(m);
-    const std::size_t N = 30;
-    const double dt = 0.01;
-    std::vector<TimestampNs> ts(N);
-    std::vector<double> vs(N);
-    // value increments by 1 every 3 samples → underlying slope = 1/(3*dt)
-    for (std::size_t i = 0; i < N; ++i) {
-        ts[i] = static_cast<TimestampNs>(i * dt * 1e9);
-        vs[i] = static_cast<double>(i / 3);
-    }
-    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), N);
-    store.add(sig);
-
-    FormulaEngine engine(store);
-    QString err;
-    ASSERT_TRUE(engine.evaluate("D = Derivative(Q)", &err)) << err.toStdString();
-    auto ovs = store.get("D")->readAsDouble();
-    ASSERT_EQ(ovs.size(), N);
-
-    const double expected = 1.0 / (3.0 * dt);
-    int zeros = 0;
-    for (std::size_t i = 0; i < ovs.size(); ++i) {
-        if (std::abs(ovs[i]) < 1e-9) zeros++;
-        EXPECT_NEAR(ovs[i], expected, 1e-9) << "at i=" << i;
-    }
-    EXPECT_EQ(zeros, 0) << "no sample should be 0 — that's the comb bug";
 }
 
 TEST(FormulaEngine, UnknownChannelGivesError) {

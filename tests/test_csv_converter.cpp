@@ -437,3 +437,98 @@ TEST(CsvConverter, CollapseDuplicates_Mean) {
     EXPECT_DOUBLE_EQ(vs[1], (2 + 3 + 4 + 5) / 4.0);  // mean of {2,3,4,5}
     std::filesystem::remove(path);
 }
+
+// Value-plateau collapse: a CSV logged faster than the underlying
+// value updates (integer encoder, distinct timestamps but value
+// repeats across rows). With KeepFirst / KeepLast we get one sample
+// per value run.
+namespace {
+auto writePlateauCsv = []{
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_plat.csv";
+    std::ofstream f(path);
+    f << "t,v\n";
+    f << "0.00,10\n";
+    f << "0.01,10\n";
+    f << "0.02,10\n";
+    f << "0.03,11\n";
+    f << "0.04,11\n";
+    f << "0.05,11\n";
+    f << "0.06,12\n";
+    f << "0.07,12\n";
+    f << "0.08,12\n";
+    return path;
+};
+
+ConverterProfile makePlateauProfile(ColumnMapping::ValuePlateauMode mode) {
+    ConverterProfile p;
+    p.headerRow = 1;
+    p.decimalSeparator = ".";
+    ColumnMapping x{"A", ColumnMapping::Role::XTime,  "",  "s"};
+    ColumnMapping y{"B", ColumnMapping::Role::Signal, "V", "V"};
+    y.xSourceColumn          = "A";
+    y.collapseValuePlateaus  = mode;
+    p.columns = { x, y };
+    return p;
+}
+}  // namespace
+
+TEST(CsvConverter, ValuePlateaus_None_KeepsAll) {
+    auto path = writePlateauCsv();
+    CsvSource src(path);
+    QString err;
+    auto sigs = src.apply(makePlateauProfile(ColumnMapping::ValuePlateauMode::None), &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    EXPECT_EQ(sigs[0]->sampleCount(), 9u);  // 9 rows preserved
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, ValuePlateaus_KeepFirst) {
+    auto path = writePlateauCsv();
+    CsvSource src(path);
+    QString err;
+    auto sigs = src.apply(makePlateauProfile(ColumnMapping::ValuePlateauMode::KeepFirst), &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto view = sigs[0]->snapshotForRead();
+    auto vs   = sigs[0]->readAsDouble();
+    ASSERT_EQ(view.count, 3u);
+    EXPECT_NEAR(view.timestamps[0] / 1e9, 0.00, 1e-9);
+    EXPECT_NEAR(view.timestamps[1] / 1e9, 0.03, 1e-9);
+    EXPECT_NEAR(view.timestamps[2] / 1e9, 0.06, 1e-9);
+    EXPECT_DOUBLE_EQ(vs[0], 10.0);
+    EXPECT_DOUBLE_EQ(vs[1], 11.0);
+    EXPECT_DOUBLE_EQ(vs[2], 12.0);
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, ValuePlateaus_KeepLast) {
+    auto path = writePlateauCsv();
+    CsvSource src(path);
+    QString err;
+    auto sigs = src.apply(makePlateauProfile(ColumnMapping::ValuePlateauMode::KeepLast), &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto view = sigs[0]->snapshotForRead();
+    auto vs   = sigs[0]->readAsDouble();
+    ASSERT_EQ(view.count, 3u);
+    EXPECT_NEAR(view.timestamps[0] / 1e9, 0.02, 1e-9);
+    EXPECT_NEAR(view.timestamps[1] / 1e9, 0.05, 1e-9);
+    EXPECT_NEAR(view.timestamps[2] / 1e9, 0.08, 1e-9);
+    EXPECT_DOUBLE_EQ(vs[0], 10.0);
+    EXPECT_DOUBLE_EQ(vs[1], 11.0);
+    EXPECT_DOUBLE_EQ(vs[2], 12.0);
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, ValuePlateaus_AllSameCollapsesToOne) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_flat.csv";
+    {
+        std::ofstream f(path);
+        f << "t,v\n";
+        for (int i = 0; i < 5; ++i) f << (i * 0.01) << ",7\n";
+    }
+    CsvSource src(path);
+    QString err;
+    auto sigs = src.apply(makePlateauProfile(ColumnMapping::ValuePlateauMode::KeepFirst), &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    EXPECT_EQ(sigs[0]->sampleCount(), 1u);
+    std::filesystem::remove(path);
+}

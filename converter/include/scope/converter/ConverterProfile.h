@@ -44,6 +44,16 @@ struct ColumnMapping {
     // collapse each run of equal timestamps into one sample.
     enum class CollapseMode { None, First, Last, Mean };
     CollapseMode collapseDuplicates{CollapseMode::None};
+
+    // What to do when several CSV rows produce distinct timestamps but
+    // share the same Y value (staircase pattern — common when a CSV
+    // is logged faster than the underlying value updates, e.g. an
+    // integer encoder read at 4 kHz). None keeps every sample.
+    // KeepFirst keeps only the first sample of each run of equal
+    // values; KeepLast keeps the last. Applied after the duplicate-
+    // timestamp collapse.
+    enum class ValuePlateauMode { None, KeepFirst, KeepLast };
+    ValuePlateauMode collapseValuePlateaus{ValuePlateauMode::None};
 };
 
 struct ConverterProfile {

@@ -49,6 +49,7 @@ private:
     QCheckBox*      resetToZeroCheck_{nullptr};
     QDoubleSpinBox* offsetSpin_{nullptr};
     QComboBox*      collapseCombo_{nullptr};
+    QComboBox*      plateauCombo_{nullptr};
 
     QStringList availableXColumns_;
 };

@@ -31,6 +31,7 @@ constexpr int kRoleSampleRateUnit      = Qt::UserRole + 3;   // QString
 constexpr int kRoleResetTimeToZero     = Qt::UserRole + 4;   // bool
 constexpr int kRoleTimeOffsetSec       = Qt::UserRole + 5;   // double
 constexpr int kRoleCollapseMode        = Qt::UserRole + 6;   // int (CollapseMode)
+constexpr int kRolePlateauMode         = Qt::UserRole + 7;   // int (ValuePlateauMode)
 
 QString xSourceLabel(const ColumnMapping& m) {
     if (m.role != ColumnMapping::Role::Signal) return "—";
@@ -62,6 +63,11 @@ QString xSourceLabel(const ColumnMapping& m) {
         case ColumnMapping::CollapseMode::Last:  badges << "dedup:last";  break;
         case ColumnMapping::CollapseMode::Mean:  badges << "dedup:mean";  break;
         case ColumnMapping::CollapseMode::None:  default: break;
+    }
+    switch (m.collapseValuePlateaus) {
+        case ColumnMapping::ValuePlateauMode::KeepFirst: badges << "plat:first"; break;
+        case ColumnMapping::ValuePlateauMode::KeepLast:  badges << "plat:last";  break;
+        case ColumnMapping::ValuePlateauMode::None:      default: break;
     }
     if (badges.isEmpty()) return base;
     return base + "  [" + badges.join(", ") + "]";
@@ -291,6 +297,7 @@ void MappingPanel::appendChannelRow(const ColumnMapping& m) {
     xSrcItem->setData(kRoleResetTimeToZero, m.resetTimeToZero);
     xSrcItem->setData(kRoleTimeOffsetSec,   m.timeOffsetSec);
     xSrcItem->setData(kRoleCollapseMode,    static_cast<int>(m.collapseDuplicates));
+    xSrcItem->setData(kRolePlateauMode,     static_cast<int>(m.collapseValuePlateaus));
     channelTable_->setItem(row, ColCol,    colItem);
     channelTable_->setItem(row, ColRows,   rowsItem);
     channelTable_->setItem(row, ColRole,   roleItem);
@@ -319,6 +326,8 @@ ColumnMapping MappingPanel::rowToMapping(int row) const {
         m.timeOffsetSec         = xs->data(kRoleTimeOffsetSec).toDouble();
         m.collapseDuplicates    = static_cast<ColumnMapping::CollapseMode>(
             xs->data(kRoleCollapseMode).toInt());
+        m.collapseValuePlateaus = static_cast<ColumnMapping::ValuePlateauMode>(
+            xs->data(kRolePlateauMode).toInt());
     }
     return m;
 }
@@ -380,6 +389,7 @@ void MappingPanel::onEditChannel() {
         xs->setData(kRoleResetTimeToZero, m.resetTimeToZero);
         xs->setData(kRoleTimeOffsetSec,   m.timeOffsetSec);
         xs->setData(kRoleCollapseMode,    static_cast<int>(m.collapseDuplicates));
+        xs->setData(kRolePlateauMode,     static_cast<int>(m.collapseValuePlateaus));
         return;
     }
 }

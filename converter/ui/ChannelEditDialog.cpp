@@ -194,12 +194,34 @@ ChannelEditDialog::ChannelEditDialog(QWidget* parent) : QDialog(parent) {
     collapseRow->addWidget(new QLabel("Duplicate timestamps:", xSourceGroup_));
     collapseRow->addWidget(collapseCombo_, /*stretch=*/1);
 
+    plateauCombo_ = new QComboBox(xSourceGroup_);
+    plateauCombo_->addItem("Keep all (no collapse)",
+                           static_cast<int>(ColumnMapping::ValuePlateauMode::None));
+    plateauCombo_->addItem("Collapse → first timestamp",
+                           static_cast<int>(ColumnMapping::ValuePlateauMode::KeepFirst));
+    plateauCombo_->addItem("Collapse → last timestamp",
+                           static_cast<int>(ColumnMapping::ValuePlateauMode::KeepLast));
+    plateauCombo_->setToolTip(
+        "Staircase / quantised data: consecutive samples with distinct\n"
+        "timestamps that share the same Y value (e.g. a PLC logged at\n"
+        "4 kHz but the integer sensor only updates every few ticks).\n"
+        "  Keep all                — every row kept (default).\n"
+        "  Collapse first timestamp — one sample per value run, at the\n"
+        "                            timestamp the value first appeared.\n"
+        "  Collapse last timestamp  — one sample per value run, at the\n"
+        "                            last timestamp before the value\n"
+        "                            changed.");
+    auto* plateauRow = new QHBoxLayout();
+    plateauRow->addWidget(new QLabel("Value plateaus:", xSourceGroup_));
+    plateauRow->addWidget(plateauCombo_, /*stretch=*/1);
+
     auto* xLayout = new QVBoxLayout(xSourceGroup_);
     xLayout->addLayout(xColRow);
     xLayout->addLayout(xRateRow);
     xLayout->addWidget(resetToZeroCheck_);
     xLayout->addLayout(offsetRow);
     xLayout->addLayout(collapseRow);
+    xLayout->addLayout(plateauRow);
 
     connect(useColumnRadio_, &QRadioButton::toggled,
             this, [this](bool){ onXSourceModeChanged(); });
@@ -284,6 +306,14 @@ void ChannelEditDialog::setMapping(const ColumnMapping& m) {
             }
         }
     }
+    if (plateauCombo_) {
+        for (int i = 0; i < plateauCombo_->count(); ++i) {
+            if (plateauCombo_->itemData(i).toInt() == static_cast<int>(m.collapseValuePlateaus)) {
+                plateauCombo_->setCurrentIndex(i);
+                break;
+            }
+        }
+    }
     onRoleChanged();
     onXSourceModeChanged();
 }
@@ -330,6 +360,9 @@ bool ChannelEditDialog::getMapping(ColumnMapping* out, QString* errorOut) const 
         out->collapseDuplicates = collapseCombo_
             ? static_cast<ColumnMapping::CollapseMode>(collapseCombo_->currentData().toInt())
             : ColumnMapping::CollapseMode::None;
+        out->collapseValuePlateaus = plateauCombo_
+            ? static_cast<ColumnMapping::ValuePlateauMode>(plateauCombo_->currentData().toInt())
+            : ColumnMapping::ValuePlateauMode::None;
     } else {
         // X-axis channel: not a Y, no X-source needed.
         out->useSampleRate = false;
@@ -338,6 +371,7 @@ bool ChannelEditDialog::getMapping(ColumnMapping* out, QString* errorOut) const 
         out->resetTimeToZero = false;
         out->timeOffsetSec   = 0.0;
         out->collapseDuplicates = ColumnMapping::CollapseMode::None;
+        out->collapseValuePlateaus = ColumnMapping::ValuePlateauMode::None;
     }
     return true;
 }
