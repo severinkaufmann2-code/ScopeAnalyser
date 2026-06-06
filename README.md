@@ -273,6 +273,12 @@ The Converter top bar has four buttons:
   Converter workflow above for the per-file editing).
 - **Save workspace… / Load workspace…** — `.scaws` JSON of the full
   file list + per-file state.
+- **Apply all (import signals)** — runs Apply on every file in the
+  workspace using each one's saved mappings / channel selection.
+  Use this after Load workspace… to push everything into the
+  SignalStore (and the Analyser) in one click. Files that produce
+  no signals are reported in a summary dialog and skipped — the
+  others still import.
 - **Save .h5…** — write every channel currently in the SignalStore to
   a recording file (same format the Recorder writes).
 - **Save CSV…** — write every channel to CSV. A small Options dialog

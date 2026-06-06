@@ -275,6 +275,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     auto* loadH5Btn   = new QPushButton("Open .h5…", this);
     auto* saveWsBtn   = new QPushButton("Save workspace…", this);
     auto* loadWsBtn   = new QPushButton("Load workspace…", this);
+    auto* applyAllBtn = new QPushButton("Apply all (import signals)", this);
     auto* saveH5Btn   = new QPushButton("Save .h5…", this);
     auto* saveCsvBtn  = new QPushButton("Save CSV…", this);
 
@@ -286,6 +287,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     topBar->addSpacing(20);
     topBar->addWidget(saveWsBtn);
     topBar->addWidget(loadWsBtn);
+    topBar->addWidget(applyAllBtn);
     topBar->addSpacing(20);
     topBar->addWidget(saveH5Btn);
     topBar->addWidget(saveCsvBtn);
@@ -488,23 +490,23 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     });
 
     // ---- Apply for the active file ----------------------------------
-    auto applyCsv = [this](OpenedFile& f) {
+    // Lower-level: do the import using an explicit profile / selection,
+    // without touching the active panel widgets. Used both by the per-file
+    // Apply (which reads the visible panel state first) and by "Apply all"
+    // (which reads each file's saved state directly).
+    auto applyCsvWith = [this](OpenedFile& f,
+                               const ConverterProfile& profile,
+                               QString* errOut) -> int {
         if (!f.csv) {
-            QMessageBox::information(this, "No file",
-                "This file isn't loaded.");
-            return;
+            if (errOut) *errOut = "File isn't loaded.";
+            return 0;
         }
-        const auto profile = impl_->mapping->buildProfile("csv");
-        f.profile = profile;
         QString err;
         auto sigs = f.csv->apply(profile, &err);
         if (sigs.empty()) {
-            QMessageBox::critical(this, "Import failed",
-                err.isEmpty() ? "No signals produced." : err);
-            return;
+            if (errOut) *errOut = err.isEmpty() ? "No signals produced." : err;
+            return 0;
         }
-        // Roll back previous imports from this file before re-applying, so
-        // re-running Apply doesn't leave stale signals or pile up duplicates.
         for (const auto& n : f.importedNames) store_.remove(n);
         f.importedNames.clear();
         for (auto& s : sigs) {
@@ -517,18 +519,13 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             f.importedNames << unique;
             store_.add(s);
         }
-        impl_->statusLabel->setText(
-            QString("Imported %1 signal(s) from %2")
-                .arg(sigs.size()).arg(f.displayName));
+        return static_cast<int>(sigs.size());
     };
 
-    auto applyH5 = [this](OpenedFile& f) {
-        const auto checked  = impl_->h5Selector->checkedNames();
-        const auto relative = impl_->h5Selector->relativeNames();
-        const auto offsets  = impl_->h5Selector->offsetMap();
-        f.h5SelectedChannels = checked;
-        f.h5RelativeChannels = relative;
-        f.h5OffsetSec        = offsets;
+    auto applyH5With = [this](OpenedFile& f,
+                              const QStringList& checked,
+                              const QStringList& relative,
+                              const QHash<QString, double>& offsets) -> int {
         for (const auto& n : f.importedNames) store_.remove(n);
         f.importedNames.clear();
         int n = 0;
@@ -548,8 +545,6 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
 
             std::shared_ptr<core::Signal> toAdd;
             if ((isRel || offS != 0.0) && view.count > 0) {
-                // Build a fresh shifted Signal so the in-memory cache stays
-                // bit-identical to the file.
                 const core::TimestampNs t0  = isRel ? view.timestamps[0] : 0;
                 const core::TimestampNs off =
                     static_cast<core::TimestampNs>(std::llround(offS * 1e9));
@@ -563,7 +558,6 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                     reinterpret_cast<const std::byte*>(values.data()),
                     view.count);
             } else {
-                // No shift requested — reuse the cached Signal directly.
                 if (unique != meta0.name) s->setMeta(meta);
                 toAdd = s;
             }
@@ -571,6 +565,36 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             store_.add(toAdd);
             ++n;
         }
+        return n;
+    };
+
+    auto applyCsv = [this, applyCsvWith](OpenedFile& f) {
+        if (!f.csv) {
+            QMessageBox::information(this, "No file",
+                "This file isn't loaded.");
+            return;
+        }
+        const auto profile = impl_->mapping->buildProfile("csv");
+        f.profile = profile;
+        QString err;
+        const int n = applyCsvWith(f, profile, &err);
+        if (n == 0) {
+            QMessageBox::critical(this, "Import failed", err);
+            return;
+        }
+        impl_->statusLabel->setText(
+            QString("Imported %1 signal(s) from %2")
+                .arg(n).arg(f.displayName));
+    };
+
+    auto applyH5 = [this, applyH5With](OpenedFile& f) {
+        const auto checked  = impl_->h5Selector->checkedNames();
+        const auto relative = impl_->h5Selector->relativeNames();
+        const auto offsets  = impl_->h5Selector->offsetMap();
+        f.h5SelectedChannels = checked;
+        f.h5RelativeChannels = relative;
+        f.h5OffsetSec        = offsets;
+        const int n = applyH5With(f, checked, relative, offsets);
         impl_->statusLabel->setText(
             QString("Imported %1 channel(s) from %2")
                 .arg(n).arg(f.displayName));
@@ -711,6 +735,46 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             impl_->statusLabel->setText("No file open");
             impl_->removeFileBtn->setEnabled(false);
         }
+    });
+
+    // ---- Apply all: apply every file in the workspace to the store --
+    connect(applyAllBtn, &QPushButton::clicked, this,
+            [this, saveActiveState, applyCsvWith, applyH5With]{
+        if (impl_->files.empty()) {
+            QMessageBox::information(this, "Nothing to apply",
+                "Open at least one file first.");
+            return;
+        }
+        // Flush the active panel's edits into its file before iterating.
+        saveActiveState();
+        int totalSignals = 0, okFiles = 0;
+        QStringList failures;
+        for (auto& fp : impl_->files) {
+            auto& f = *fp;
+            int n = 0;
+            QString err;
+            if (f.type == FileType::Csv) {
+                n = applyCsvWith(f, f.profile, &err);
+            } else {
+                n = applyH5With(f, f.h5SelectedChannels,
+                                f.h5RelativeChannels, f.h5OffsetSec);
+            }
+            if (n > 0) { totalSignals += n; ++okFiles; }
+            else {
+                failures << QString("%1%2")
+                                .arg(f.displayName)
+                                .arg(err.isEmpty() ? QString()
+                                                   : QString(" (%1)").arg(err));
+            }
+        }
+        QString msg = QString("Applied %1 file(s), %2 signal(s) imported")
+                          .arg(okFiles).arg(totalSignals);
+        if (!failures.isEmpty()) {
+            msg += QString(" — %1 skipped").arg(failures.size());
+            QMessageBox::warning(this, "Some files were skipped",
+                "These files produced no signals:\n" + failures.join("\n"));
+        }
+        impl_->statusLabel->setText(msg);
     });
 
     // ---- Save workspace (.scaws) -----------------------------------
