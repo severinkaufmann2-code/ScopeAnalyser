@@ -70,6 +70,19 @@ public:
     // refit X on a redraw.
     bool xAxisIsAutoFit() const;
 
+    // ---- Line / scatter display mode -------------------------------
+    // Single toolbar combo: Line (connected, no scatter), Points
+    // (scatter dots only, no line — visually shows the sample rate),
+    // or Line + points (both). Stored on ScopePlot so hosts can let
+    // QCustomPlot's selection picker work on plain graphs.
+    enum class DisplayMode { Line = 0, Points = 1, Both = 2 };
+    DisplayMode lineDisplayMode() const;
+    void setLineDisplayMode(DisplayMode m);
+    // Apply the current mode's line style + scatter style to a single
+    // graph. Host calls this after creating a new graph so it picks
+    // up the current setting.
+    void applyLineDisplayModeTo(QCPGraph* graph) const;
+
     // Base palette colour for axis `axisIndex`.
     QColor axisBaseColor(int axisIndex) const;
     // A distinct shade of the axis colour for the Nth channel on that axis.
@@ -100,6 +113,7 @@ signals:
     void pausedChanged(bool paused);
     void yAxesChanged();     // emitted when axes are added/removed/renamed
     void measureModeChanged(bool enabled);
+    void lineDisplayModeChanged(DisplayMode m);
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;

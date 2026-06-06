@@ -231,6 +231,7 @@ void LivePreviewPlot::onChannelAdded(QString name) {
     g->setName(name);
     // Adaptive sampling stays at its QCustomPlot default (true) for
     // smooth pan/zoom on long live-preview windows.
+    scope_->applyLineDisplayModeTo(g);
     graphs_[name] = g;
     rebuildTable();
     recolorChannels();

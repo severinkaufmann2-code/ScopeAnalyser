@@ -12,6 +12,7 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QShortcut>
+#include <QComboBox>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -96,6 +97,8 @@ struct ScopePlot::Impl {
     QCPItemEllipse*      measureDot2{nullptr};
     QCPItemLine*         measureLine{nullptr};
     QCPItemText*         measureText{nullptr};
+
+    ScopePlot::DisplayMode lineDisplayMode{ScopePlot::DisplayMode::Line};
 };
 
 ScopePlot::ScopePlot(QWidget* parent)
@@ -201,6 +204,28 @@ ScopePlot::ScopePlot(QWidget* parent)
                     mb->setChecked(on);
                 });
         tb->addWidget(mb);
+    }
+    tb->addSpacing(8);
+    {
+        auto* combo = new QComboBox(impl_->toolbar);
+        combo->addItem("Line");
+        combo->addItem("Points");
+        combo->addItem("Line + points");
+        combo->setToolTip(
+            "Line: connected only (fast on big signals).\n"
+            "Points: scatter dots at every sample — lets you see the\n"
+            "        sample rate of a signal directly.\n"
+            "Line + points: both.");
+        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [this](int i){
+            setLineDisplayMode(static_cast<DisplayMode>(i));
+        });
+        connect(this, &ScopePlot::lineDisplayModeChanged, combo,
+                [combo](DisplayMode m){
+            QSignalBlocker b(combo);
+            combo->setCurrentIndex(static_cast<int>(m));
+        });
+        tb->addWidget(combo);
     }
     tb->addSpacing(8);
     makeBtnLambda(QString::fromUtf8("Y+"),
@@ -316,6 +341,39 @@ void ScopePlot::setMeasureMode(bool enabled) {
     // Crosshair conflicts visually with markers; hide it while measuring.
     impl_->plot->setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
     emit measureModeChanged(enabled);
+}
+
+// ---- Display mode ---------------------------------------------------------
+ScopePlot::DisplayMode ScopePlot::lineDisplayMode() const {
+    return impl_->lineDisplayMode;
+}
+
+void ScopePlot::applyLineDisplayModeTo(QCPGraph* graph) const {
+    if (!graph) return;
+    switch (impl_->lineDisplayMode) {
+        case DisplayMode::Line:
+            graph->setLineStyle(QCPGraph::lsLine);
+            graph->setScatterStyle(QCPScatterStyle::ssNone);
+            break;
+        case DisplayMode::Points:
+            graph->setLineStyle(QCPGraph::lsNone);
+            graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, 4));
+            break;
+        case DisplayMode::Both:
+            graph->setLineStyle(QCPGraph::lsLine);
+            graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, 4));
+            break;
+    }
+}
+
+void ScopePlot::setLineDisplayMode(DisplayMode m) {
+    if (impl_->lineDisplayMode == m) return;
+    impl_->lineDisplayMode = m;
+    for (int g = 0; g < impl_->plot->graphCount(); ++g) {
+        applyLineDisplayModeTo(impl_->plot->graph(g));
+    }
+    impl_->plot->replot(QCustomPlot::rpQueuedReplot);
+    emit lineDisplayModeChanged(m);
 }
 
 void ScopePlot::clearMeasurement() {

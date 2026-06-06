@@ -65,17 +65,6 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     auto* saveChartBtn= new QPushButton("Save chart…", this);
     auto* redrawBtn   = new QPushButton("Redraw",   this);
 
-    auto* displayLabel = new QLabel("Display:", this);
-    auto* displayCombo = new QComboBox(this);
-    displayCombo->addItem("Line");
-    displayCombo->addItem("Points");
-    displayCombo->addItem("Line + points");
-    displayCombo->setToolTip(
-        "Line: connected only (fast on big signals).\n"
-        "Points: scatter dots at every sample — lets you see the\n"
-        "        sample rate of a signal directly.\n"
-        "Line + points: both.");
-
     auto* chBtnRow = new QHBoxLayout();
     chBtnRow->addWidget(addChBtn);
     chBtnRow->addWidget(editChBtn);
@@ -89,16 +78,12 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     auto* chartBtnRow = new QHBoxLayout();
     chartBtnRow->addWidget(openChartBtn);
     chartBtnRow->addWidget(saveChartBtn);
-    auto* displayRow = new QHBoxLayout();
-    displayRow->addWidget(displayLabel);
-    displayRow->addWidget(displayCombo, /*stretch=*/1);
 
     auto* leftLayout = new QVBoxLayout();
     leftLayout->addWidget(new QLabel("Channels", this));
     leftLayout->addWidget(table_, /*stretch=*/1);
     leftLayout->addLayout(chBtnRow);
     leftLayout->addLayout(axisBtnRow);
-    leftLayout->addLayout(displayRow);
     leftLayout->addLayout(layoutBtnRow);
     leftLayout->addLayout(chartBtnRow);
     leftLayout->addWidget(redrawBtn);
@@ -114,18 +99,28 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     connect(editChBtn,    &QPushButton::clicked, this, &AnalyserPlot::editChannelDialog);
     connect(saveChartBtn, &QPushButton::clicked, this, &AnalyserPlot::saveChartDialog);
     connect(openChartBtn, &QPushButton::clicked, this, &AnalyserPlot::openChartDialog);
-    connect(displayCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int idx){
-        switch (idx) {
-            case 1:  displayMode_ = DisplayMode::Points; break;
-            case 2:  displayMode_ = DisplayMode::Both;   break;
-            default: displayMode_ = DisplayMode::Line;   break;
-        }
-        applyDisplayMode();
-        scope_->plot()->replot(QCustomPlot::rpQueuedReplot);
-    });
     connect(table_, &QTableWidget::cellDoubleClicked, this,
             [this](int, int){ editChannelDialog(); });
+    // Click on a graph in the chart → select its row in the channels
+    // table (drives the row-selection highlight, so the user can see
+    // which channel they just clicked).
+    connect(scope_->plot(), &QCustomPlot::plottableClick, this,
+            [this](QCPAbstractPlottable* p, int /*dataIndex*/, QMouseEvent*){
+        auto* gr = qobject_cast<QCPGraph*>(p);
+        if (!gr) return;
+        QString clickedName;
+        for (auto it = graphs_.constBegin(); it != graphs_.constEnd(); ++it) {
+            if (it.value() == gr) { clickedName = it.key(); break; }
+        }
+        if (clickedName.isEmpty()) return;
+        for (int r = 0; r < table_->rowCount(); ++r) {
+            if (table_->item(r, ColName)->text() == clickedName) {
+                table_->selectRow(r);
+                table_->scrollToItem(table_->item(r, ColName));
+                return;
+            }
+        }
+    });
     connect(removeChBtn,  &QPushButton::clicked, this, [this]{
         const int r = table_->currentRow();
         if (r < 0) return;
@@ -273,30 +268,6 @@ void AnalyserPlot::onVisibilityChanged(int /*row*/) {
     redrawForActiveChannels();
 }
 
-void AnalyserPlot::applyDisplayModeTo(QCPGraph* graph) const {
-    if (!graph) return;
-    switch (displayMode_) {
-        case DisplayMode::Line:
-            graph->setLineStyle(QCPGraph::lsLine);
-            graph->setScatterStyle(QCPScatterStyle::ssNone);
-            break;
-        case DisplayMode::Points:
-            graph->setLineStyle(QCPGraph::lsNone);
-            graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, 4));
-            break;
-        case DisplayMode::Both:
-            graph->setLineStyle(QCPGraph::lsLine);
-            graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, 4));
-            break;
-    }
-}
-
-void AnalyserPlot::applyDisplayMode() {
-    for (auto it = graphs_.constBegin(); it != graphs_.constEnd(); ++it) {
-        applyDisplayModeTo(it.value());
-    }
-}
-
 void AnalyserPlot::recolorChannels() {
     // For each axis, give the Nth channel on it the Nth shade derived from
     // that axis's base colour.
@@ -367,7 +338,7 @@ void AnalyserPlot::redrawForActiveChannels() {
             // quantised data, not a rendering bug — the run-based
             // Derivative no longer produces that pattern.
             graphs_[name] = graph;
-            applyDisplayModeTo(graph);
+            scope_->applyLineDisplayModeTo(graph);
         } else if (graph->valueAxis() != scope_->yAxis(axisIndex)) {
             scope_->setGraphYAxis(graph, axisIndex);
         }

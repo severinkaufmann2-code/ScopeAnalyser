@@ -95,9 +95,11 @@ A toolbar above each plot exposes the same actions as buttons:
 `⤢ Fit`, `↔ +` / `↔ −`, `↕ +` / `↕ −`, **`↕ → Y`** (fit each Y axis
 to the data inside the current X window — X is left alone),
 **`Δ Measure`** (checkable: click two points to get Δx / Δy /
-1/|Δx|, right-click to clear), `Y+` (add a Y axis), `PNG…` (save
-image). The Recorder's plot also has `⏸ Pause` / `▶ Resume` to
-freeze the display while recording continues in the background.
+1/|Δx|, right-click to clear), **`Display:` combo** (Line / Points
+/ Line + points — *Points* puts a scatter dot at every sample so
+you can see the sample rate directly), `Y+` (add a Y axis), `PNG…`
+(save image). The Recorder's plot also has `⏸ Pause` / `▶ Resume`
+to freeze the display while recording continues in the background.
 
 **Multiple Y axes** — both plots support an arbitrary number of Y
 axes, alternating between the left and right side. To use them:
@@ -200,11 +202,9 @@ remove the selected one from the store. Only formula-derived
 channels are editable — recorded / imported channels have no
 formula to change.
 
-**Display mode** — the `Display:` combo in the sidebar switches
-every graph between *Line* (default), *Points* (scatter dot at every
-sample — visually shows the sample rate), and *Line + points*
-(both). Useful for double-checking that you imported a 4 kHz
-signal as 4 kHz and not something else.
+**Click a graph to highlight it** — clicking on a trace in the
+chart selects the matching row in the Channels sidebar so you can
+see at a glance which channel you just hit.
 
 **Stable view on visibility toggles** — checking/unchecking a
 channel in the sidebar table no longer refits the X axis. The
