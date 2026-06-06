@@ -435,20 +435,38 @@ void AnalyserPlot::saveLayoutDialog() {
         a.max = ax->range().upper;
         layout.axes.append(a);
     }
+    // Flush whatever's currently in the table into the sticky cache so
+    // the latest user edits aren't missed for the channels currently
+    // visible. Then walk EVERY channel in the store — the table only
+    // shows the current View (Time or Frequency); we want to persist
+    // all of them.
     for (int r = 0; r < table_->rowCount(); ++r) {
+        const QString name = table_->item(r, ColName)
+                                 ? table_->item(r, ColName)->text()
+                                 : QString();
+        if (name.isEmpty()) continue;
+        bool vis = false; int axis = 0;
+        if (auto* cb = qobject_cast<QCheckBox*>(table_->cellWidget(r, ColVis))) vis = cb->isChecked();
+        if (auto* co = qobject_cast<QComboBox*>(table_->cellWidget(r, ColAxis))) axis = co->currentIndex();
+        savedRowState_[name] = {vis, axis};
+    }
+
+    for (const auto& name : store_.channelNames()) {
+        auto sig = store_.get(name);
+        if (!sig) continue;
         scope::plot::PlotLayoutChannel c;
-        c.name = table_->item(r, ColName)->text();
-        c.axisIndex = axisIndexForRow(r);
+        c.name = name;
+        c.axisIndex = savedRowState_.value(name, {true, 0}).second;
+        c.domain = (sig->meta().domain == scope::core::Signal::Domain::Frequency)
+                       ? "frequency" : "time";
         // For formula-derived channels, FormulaEngine::evaluate stamps
         // "<name> = <expr>" into sourceSymbol. Extract just the
         // right-hand side so reload can re-evaluate it.
-        if (auto sig = store_.get(c.name)) {
-            const QString src = sig->meta().sourceSymbol;
-            const int eq = src.indexOf('=');
-            if (eq > 0) {
-                const QString lhs = src.left(eq).trimmed();
-                if (lhs == c.name) c.formula = src.mid(eq + 1).trimmed();
-            }
+        const QString src = sig->meta().sourceSymbol;
+        const int eq = src.indexOf('=');
+        if (eq > 0) {
+            const QString lhs = src.left(eq).trimmed();
+            if (lhs == name) c.formula = src.mid(eq + 1).trimmed();
         }
         layout.channels.append(c);
     }

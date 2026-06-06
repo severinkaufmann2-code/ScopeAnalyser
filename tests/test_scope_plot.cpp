@@ -484,6 +484,43 @@ TEST(ScopePlot, LayoutFileRoundTrip) {
     std::filesystem::remove(path);
 }
 
+TEST(ScopePlot, LayoutFileRoundTripPreservesMixedDomain) {
+    // Regression: Save layout used to only persist channels currently
+    // in the table (i.e. the active View domain). After the fix it
+    // persists every channel in the store, tagging each with its
+    // domain so a reload restores it under the right View.
+    auto path = std::filesystem::temp_directory_path() / "scope_mixed_layout.scolayout";
+
+    scope::plot::PlotLayout layout;
+    layout.axes.append({"v",   "left",  true, 0.0, 10.0});
+
+    scope::plot::PlotLayoutChannel timeCh;
+    timeCh.name = "speed";
+    timeCh.axisIndex = 0;
+    timeCh.formula = "";
+    timeCh.domain = "time";
+    layout.channels.append(timeCh);
+
+    scope::plot::PlotLayoutChannel freqCh;
+    freqCh.name = "SpeedSpectrum";
+    freqCh.axisIndex = 0;
+    freqCh.formula = "FFT(speed)";
+    freqCh.domain = "frequency";
+    layout.channels.append(freqCh);
+
+    QString err;
+    ASSERT_TRUE(layout.saveToFile(path, &err)) << err.toStdString();
+    auto loaded = scope::plot::PlotLayout::loadFromFile(path, &err);
+    ASSERT_TRUE(err.isEmpty()) << err.toStdString();
+    ASSERT_EQ(loaded.channels.size(), 2);
+    EXPECT_EQ(loaded.channels[0].name,    "speed");
+    EXPECT_EQ(loaded.channels[0].domain,  "time");
+    EXPECT_EQ(loaded.channels[1].name,    "SpeedSpectrum");
+    EXPECT_EQ(loaded.channels[1].domain,  "frequency");
+    EXPECT_EQ(loaded.channels[1].formula, "FFT(speed)");
+    std::filesystem::remove(path);
+}
+
 TEST(ScopePlot, FitAllRescalesEachYAxisIndependently) {
     GuiAppFixture fixture;
 

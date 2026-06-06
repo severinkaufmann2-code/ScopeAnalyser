@@ -25,6 +25,10 @@ struct PlotLayoutChannel {
     // is loaded and the channel name isn't in the store yet but `formula`
     // is non-empty, the host re-evaluates it through the FormulaEngine.
     QString formula;
+    // "time" or "frequency". Hint for the Analyser's View combo so a
+    // round-tripped layout puts the channel back in the right view.
+    // Empty (or "time") on read = treat as time-domain.
+    QString domain{"time"};
 };
 
 // Persistable plot configuration: the set of Y axes (label / side / optional
