@@ -22,6 +22,12 @@ namespace scope::core {
 // Signal::append() from the writer thread.
 class Signal {
 public:
+    // What the "timestamps" axis means. Almost every signal is Time
+    // (seconds-since-epoch in ns). FFT output is Frequency — the same
+    // 64-bit field encodes Hz × 1e9 instead, and the Analyser plot
+    // shows those signals on a separate view.
+    enum class Domain : std::uint8_t { Time, Frequency };
+
     struct Meta {
         QString name;
         QString unit;
@@ -30,6 +36,7 @@ public:
         double sampleRateHz{0.0};      // 0 = irregular / event-based
         std::uint32_t parentTaskCycleUs{0};
         QString sourceSymbol;          // PLC symbol, file column, or formula
+        Domain  domain{Domain::Time};
     };
 
     explicit Signal(Meta meta);

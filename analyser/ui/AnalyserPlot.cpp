@@ -79,7 +79,20 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     chartBtnRow->addWidget(openChartBtn);
     chartBtnRow->addWidget(saveChartBtn);
 
+    auto* viewRow = new QHBoxLayout();
+    viewRow->addWidget(new QLabel("View:", this));
+    auto* viewCombo = new QComboBox(this);
+    viewCombo->addItem("Time  (t [s])");
+    viewCombo->addItem("Frequency  (f [Hz])");
+    viewCombo->setToolTip(
+        "Time: show only time-domain channels (recorded / imported / "
+        "derived from time-domain).\n"
+        "Frequency: show only frequency-domain channels (output of "
+        "FFT). The X-axis label updates accordingly.");
+    viewRow->addWidget(viewCombo, /*stretch=*/1);
+
     auto* leftLayout = new QVBoxLayout();
+    leftLayout->addLayout(viewRow);
     leftLayout->addWidget(new QLabel("Channels", this));
     leftLayout->addWidget(table_, /*stretch=*/1);
     leftLayout->addLayout(chBtnRow);
@@ -99,6 +112,18 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     connect(editChBtn,    &QPushButton::clicked, this, &AnalyserPlot::editChannelDialog);
     connect(saveChartBtn, &QPushButton::clicked, this, &AnalyserPlot::saveChartDialog);
     connect(openChartBtn, &QPushButton::clicked, this, &AnalyserPlot::openChartDialog);
+    connect(viewCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int idx){
+        viewDomain_ = (idx == 1) ? scope::core::Signal::Domain::Frequency
+                                 : scope::core::Signal::Domain::Time;
+        scope_->plot()->xAxis->setLabel(
+            viewDomain_ == scope::core::Signal::Domain::Frequency
+                ? "f [Hz]" : "t [s]");
+        rebuildTable();
+        // Fresh data shape — let the next redraw auto-fit X.
+        hasDrawnYet_ = false;
+        redrawForActiveChannels();
+    });
     connect(table_, &QTableWidget::cellDoubleClicked, this,
             [this](int, int){ editChannelDialog(); });
     // Click on a graph in the chart → select its row in the channels
@@ -193,20 +218,25 @@ QSet<QString> AnalyserPlot::activeChannels() const {
 }
 
 void AnalyserPlot::rebuildTable() {
-    QHash<QString, std::pair<bool,int>> prev;
+    // Snapshot whatever's currently shown into the sticky cache so we
+    // don't lose user-set visibility / axis when the View combo flips
+    // between Time and Frequency.
     for (int r = 0; r < table_->rowCount(); ++r) {
         const QString name = table_->item(r, ColName) ? table_->item(r, ColName)->text() : QString();
         if (name.isEmpty()) continue;
         bool vis = false; int axis = 0;
         if (auto* cb = qobject_cast<QCheckBox*>(table_->cellWidget(r, ColVis))) vis = cb->isChecked();
         if (auto* co = qobject_cast<QComboBox*>(table_->cellWidget(r, ColAxis))) axis = co->currentIndex();
-        prev[name] = {vis, axis};
+        savedRowState_[name] = {vis, axis};
     }
+    auto& prev = savedRowState_;
 
     table_->setRowCount(0);
     const bool firstTime = prev.isEmpty();
     const auto names = store_.channelNames();
     for (const auto& name : names) {
+        // Only show channels in the currently-selected domain.
+        if (auto s = store_.get(name); s && s->meta().domain != viewDomain_) continue;
         const int r = table_->rowCount();
         table_->insertRow(r);
 

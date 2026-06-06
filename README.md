@@ -170,9 +170,12 @@ Functions:
 - **Time-axis operations**: `Shift(s, seconds)`, `Slice(s, t_start, t_end)`,
   `Resample(s, rate_or_signal)`.
 - **Frequency**: `FFT(s)` — Hann-windowed, zero-padded radix-2 FFT
-  magnitude spectrum. Output X axis is frequency in Hz (the chart
-  label still says `t [s]` — right-click the X axis to rename it
-  `f [Hz]`). Compose with `Slice` to FFT a time window:
+  magnitude spectrum. FFT output signals are flagged
+  *frequency-domain* and live behind the sidebar **View** combo:
+  set it to *Frequency (f [Hz])* to see them (and only them) and
+  the X axis automatically relabels `f [Hz]`. Set it back to
+  *Time (t [s])* for the rest of your channels. Compose with
+  `Slice` to FFT a time window:
   `Spec = FFT(Slice(speed, 5.0, 10.0))`.
 
 See the side panel for the full reference with signatures.

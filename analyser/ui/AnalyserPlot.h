@@ -41,6 +41,9 @@ private:
     // leave X alone so manual zoom isn't yanked back.
     bool hasDrawnYet_{false};
 
+    // Which signal domain is currently visible in the table + chart.
+    scope::core::Signal::Domain viewDomain_{scope::core::Signal::Domain::Time};
+
     void rebuildTable();
     void redrawForActiveChannels();
     void rebuildAxisCombos();
@@ -62,6 +65,11 @@ private:
     // store yet. When the SignalStore adds one of these, we apply the saved
     // axis assignment instead of the unit-match default.
     QHash<QString, int> pendingAssignments_;
+
+    // Per-channel sticky table state (visibility + axis index). Persists
+    // across rebuildTable() calls so that toggling the View combo
+    // (Time / Frequency) doesn't lose the user's per-channel choices.
+    QHash<QString, std::pair<bool, int>> savedRowState_;
 };
 
 }  // namespace scope::analyser::ui

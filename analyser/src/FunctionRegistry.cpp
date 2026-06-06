@@ -22,12 +22,14 @@ namespace {
 std::shared_ptr<Signal> makeDoubleSignal(const QString& sourceFormula,
                                          const std::vector<TimestampNs>& ts,
                                          const std::vector<double>& vals,
-                                         const QString& unit = "") {
+                                         const QString& unit = "",
+                                         Signal::Domain domain = Signal::Domain::Time) {
     Signal::Meta meta;
     meta.name = sourceFormula;          // overridden by caller before add()
     meta.unit = unit;
     meta.dataType = DataType::Float64;
     meta.sourceSymbol = sourceFormula;
+    meta.domain = domain;
     if (ts.size() >= 2) {
         const double dtNs = static_cast<double>(ts.back() - ts.front());
         if (dtNs > 0) meta.sampleRateHz = (ts.size() - 1) * 1e9 / dtNs;
@@ -458,7 +460,8 @@ std::shared_ptr<Signal> impl_Slice(const FunctionArgs& a, QString* err) {
         ts.push_back(view.timestamps[i]);
         dst.push_back(i < src.size() ? src[i] : 0.0);
     }
-    return makeDoubleSignal("Slice", ts, dst, signal->meta().unit);
+    return makeDoubleSignal("Slice", ts, dst, signal->meta().unit,
+                            signal->meta().domain);
 }
 
 // ---- FFT(signal) — magnitude spectrum ----
@@ -545,7 +548,8 @@ std::shared_ptr<Signal> impl_FFT(const FunctionArgs& a, QString* err) {
         outTs[k] = static_cast<TimestampNs>(k * df * 1e9);
         outVs[k] = std::abs(buf[k]) / static_cast<double>(view.count);
     }
-    return makeDoubleSignal("FFT", outTs, outVs, "magnitude");
+    return makeDoubleSignal("FFT", outTs, outVs, "magnitude",
+                            Signal::Domain::Frequency);
 }
 
 // Helpers for Resample.
