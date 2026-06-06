@@ -274,6 +274,29 @@ ConverterWidget::~ConverterWidget() = default;
 
 namespace {
 
+// Scan a freshly-imported set of channels (by name) for residual
+// duplicate timestamps. Returns one human-readable warning line per
+// channel whose duplicate ratio exceeds 10 %. Empty list means
+// nothing of concern.
+QStringList scanDuplicateTimestamps(const core::SignalStore& store,
+                                    const QStringList& names) {
+    QStringList warnings;
+    for (const auto& name : names) {
+        auto sig = store.get(name);
+        if (!sig) continue;
+        auto view = sig->snapshotForRead();
+        if (view.count < 2) continue;
+        std::size_t dups = 0;
+        for (std::size_t i = 1; i < view.count; ++i)
+            if (view.timestamps[i] == view.timestamps[i - 1]) ++dups;
+        if (dups * 10 > view.count) {  // > 10 %
+            warnings << QString("• %1: %2 of %3 samples share a timestamp")
+                            .arg(name).arg(dups).arg(view.count);
+        }
+    }
+    return warnings;
+}
+
 QString uniqueStoreName(const core::SignalStore& store, const QString& base) {
     if (!store.contains(base)) return base;
     for (int i = 2; i < 10000; ++i) {
@@ -611,6 +634,17 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         impl_->statusLabel->setText(
             QString("Imported %1 signal(s) from %2")
                 .arg(n).arg(f.displayName));
+        const auto warns = scanDuplicateTimestamps(store_, f.importedNames);
+        if (!warns.isEmpty()) {
+            QMessageBox::warning(this, "Duplicate timestamps detected",
+                QString("Some channels in %1 contain many duplicate "
+                        "timestamps:\n\n%2\n\nThis is usually a CSV that "
+                        "repeated the same X value across several rows. "
+                        "If you want to collapse them, edit the channel "
+                        "and set Duplicate timestamps → first / last / "
+                        "mean. Otherwise the duplicates are kept as-is.")
+                    .arg(f.displayName).arg(warns.join("\n")));
+        }
     };
 
     auto applyH5 = [this, applyH5With](OpenedFile& f) {
@@ -791,6 +825,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         saveActiveState();
         int totalSignals = 0, okFiles = 0;
         QStringList failures;
+        QStringList dupWarnings;
         for (auto& fp : impl_->files) {
             auto& f = *fp;
             int n = 0;
@@ -801,8 +836,12 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                 n = applyH5With(f, f.h5SelectedChannels,
                                 f.h5RelativeChannels, f.h5OffsetSec);
             }
-            if (n > 0) { totalSignals += n; ++okFiles; }
-            else {
+            if (n > 0) {
+                totalSignals += n; ++okFiles;
+                const auto warns = scanDuplicateTimestamps(store_, f.importedNames);
+                for (const auto& w : warns)
+                    dupWarnings << QString("%1 — %2").arg(f.displayName, w);
+            } else {
                 failures << QString("%1%2")
                                 .arg(f.displayName)
                                 .arg(err.isEmpty() ? QString()
@@ -815,6 +854,14 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             msg += QString(" — %1 skipped").arg(failures.size());
             QMessageBox::warning(this, "Some files were skipped",
                 "These files produced no signals:\n" + failures.join("\n"));
+        }
+        if (!dupWarnings.isEmpty()) {
+            QMessageBox::warning(this, "Duplicate timestamps detected",
+                "Some channels contain many duplicate timestamps:\n\n"
+                + dupWarnings.join("\n")
+                + "\n\nIf you want to collapse them, edit the channel "
+                  "and set Duplicate timestamps → first / last / mean. "
+                  "Otherwise the duplicates are kept as-is.");
         }
         impl_->statusLabel->setText(msg);
     });

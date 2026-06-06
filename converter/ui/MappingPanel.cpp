@@ -30,6 +30,7 @@ constexpr int kRoleSampleRateHz        = Qt::UserRole + 2;   // double
 constexpr int kRoleSampleRateUnit      = Qt::UserRole + 3;   // QString
 constexpr int kRoleResetTimeToZero     = Qt::UserRole + 4;   // bool
 constexpr int kRoleTimeOffsetSec       = Qt::UserRole + 5;   // double
+constexpr int kRoleCollapseMode        = Qt::UserRole + 6;   // int (CollapseMode)
 
 QString xSourceLabel(const ColumnMapping& m) {
     if (m.role != ColumnMapping::Role::Signal) return "—";
@@ -56,6 +57,12 @@ QString xSourceLabel(const ColumnMapping& m) {
     if (m.timeOffsetSec != 0.0)   badges << QString("%1%2s")
                                               .arg(m.timeOffsetSec >= 0 ? "+" : "")
                                               .arg(m.timeOffsetSec, 0, 'g', 4);
+    switch (m.collapseDuplicates) {
+        case ColumnMapping::CollapseMode::First: badges << "dedup:first"; break;
+        case ColumnMapping::CollapseMode::Last:  badges << "dedup:last";  break;
+        case ColumnMapping::CollapseMode::Mean:  badges << "dedup:mean";  break;
+        case ColumnMapping::CollapseMode::None:  default: break;
+    }
     if (badges.isEmpty()) return base;
     return base + "  [" + badges.join(", ") + "]";
 }
@@ -283,6 +290,7 @@ void MappingPanel::appendChannelRow(const ColumnMapping& m) {
     xSrcItem->setData(kRoleSampleRateUnit,  m.sampleRateDisplayUnit);
     xSrcItem->setData(kRoleResetTimeToZero, m.resetTimeToZero);
     xSrcItem->setData(kRoleTimeOffsetSec,   m.timeOffsetSec);
+    xSrcItem->setData(kRoleCollapseMode,    static_cast<int>(m.collapseDuplicates));
     channelTable_->setItem(row, ColCol,    colItem);
     channelTable_->setItem(row, ColRows,   rowsItem);
     channelTable_->setItem(row, ColRole,   roleItem);
@@ -309,6 +317,8 @@ ColumnMapping MappingPanel::rowToMapping(int row) const {
         if (m.sampleRateDisplayUnit.isEmpty()) m.sampleRateDisplayUnit = "ms";
         m.resetTimeToZero       = xs->data(kRoleResetTimeToZero).toBool();
         m.timeOffsetSec         = xs->data(kRoleTimeOffsetSec).toDouble();
+        m.collapseDuplicates    = static_cast<ColumnMapping::CollapseMode>(
+            xs->data(kRoleCollapseMode).toInt());
     }
     return m;
 }
@@ -369,6 +379,7 @@ void MappingPanel::onEditChannel() {
         xs->setData(kRoleSampleRateUnit,  m.sampleRateDisplayUnit);
         xs->setData(kRoleResetTimeToZero, m.resetTimeToZero);
         xs->setData(kRoleTimeOffsetSec,   m.timeOffsetSec);
+        xs->setData(kRoleCollapseMode,    static_cast<int>(m.collapseDuplicates));
         return;
     }
 }

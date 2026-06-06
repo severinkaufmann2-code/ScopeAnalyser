@@ -354,3 +354,86 @@ TEST(CsvConverter, ResetThenOffsetFirstSampleAtOffset) {
     EXPECT_NEAR(view.timestamps[1] / 1e9, 3.5, 1e-9);
     std::filesystem::remove(path);
 }
+
+// Duplicate-X collapse: a CSV that repeats the same X for several rows
+// should produce one Signal sample per unique X when collapse is set.
+namespace {
+auto writeDupCsv = []{
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_dup.csv";
+    std::ofstream f(path);
+    f << "t,v\n";
+    f << "0.25,1\n";
+    f << "0.25,1\n";
+    f << "0.25,1\n";
+    f << "0.25,1\n";
+    f << "0.5,2\n";
+    f << "0.5,3\n";   // different Y at duplicate t: matters for First vs Last vs Mean
+    f << "0.5,4\n";
+    f << "0.5,5\n";
+    return path;
+};
+
+ConverterProfile makeDupProfile(ColumnMapping::CollapseMode mode) {
+    ConverterProfile p;
+    p.headerRow = 1;
+    p.decimalSeparator = ".";
+    ColumnMapping x{"A", ColumnMapping::Role::XTime,  "",  "s"};
+    ColumnMapping y{"B", ColumnMapping::Role::Signal, "V", "V"};
+    y.xSourceColumn       = "A";
+    y.collapseDuplicates  = mode;
+    p.columns = { x, y };
+    return p;
+}
+}  // namespace
+
+TEST(CsvConverter, CollapseDuplicates_None_KeepsAll) {
+    auto path = writeDupCsv();
+    CsvSource src(path);
+    QString err;
+    auto sigs = src.apply(makeDupProfile(ColumnMapping::CollapseMode::None), &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    EXPECT_EQ(sigs[0]->sampleCount(), 8u);  // all 8 rows preserved
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, CollapseDuplicates_First) {
+    auto path = writeDupCsv();
+    CsvSource src(path);
+    QString err;
+    auto sigs = src.apply(makeDupProfile(ColumnMapping::CollapseMode::First), &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto view = sigs[0]->snapshotForRead();
+    auto vs   = sigs[0]->readAsDouble();
+    ASSERT_EQ(view.count, 2u);
+    EXPECT_NEAR(view.timestamps[0] / 1e9, 0.25, 1e-9);
+    EXPECT_NEAR(view.timestamps[1] / 1e9, 0.50, 1e-9);
+    EXPECT_DOUBLE_EQ(vs[0], 1.0);
+    EXPECT_DOUBLE_EQ(vs[1], 2.0);   // first of {2,3,4,5}
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, CollapseDuplicates_Last) {
+    auto path = writeDupCsv();
+    CsvSource src(path);
+    QString err;
+    auto sigs = src.apply(makeDupProfile(ColumnMapping::CollapseMode::Last), &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto vs = sigs[0]->readAsDouble();
+    ASSERT_EQ(sigs[0]->sampleCount(), 2u);
+    EXPECT_DOUBLE_EQ(vs[0], 1.0);
+    EXPECT_DOUBLE_EQ(vs[1], 5.0);   // last of {2,3,4,5}
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, CollapseDuplicates_Mean) {
+    auto path = writeDupCsv();
+    CsvSource src(path);
+    QString err;
+    auto sigs = src.apply(makeDupProfile(ColumnMapping::CollapseMode::Mean), &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto vs = sigs[0]->readAsDouble();
+    ASSERT_EQ(sigs[0]->sampleCount(), 2u);
+    EXPECT_DOUBLE_EQ(vs[0], 1.0);             // mean of {1,1,1,1}
+    EXPECT_DOUBLE_EQ(vs[1], (2 + 3 + 4 + 5) / 4.0);  // mean of {2,3,4,5}
+    std::filesystem::remove(path);
+}

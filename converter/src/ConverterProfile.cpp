@@ -58,6 +58,12 @@ ConverterProfile ConverterProfile::loadFromFile(const std::filesystem::path& pat
                     jc.value("sampleRateUnit", std::string{"ms"}));
                 c.resetTimeToZero       = jc.value("resetTimeToZero", false);
                 c.timeOffsetSec         = jc.value("timeOffsetSec", 0.0);
+                const auto cdStr = QString::fromStdString(
+                    jc.value("collapseDuplicates", std::string{"none"}));
+                if      (cdStr == "first") c.collapseDuplicates = ColumnMapping::CollapseMode::First;
+                else if (cdStr == "last")  c.collapseDuplicates = ColumnMapping::CollapseMode::Last;
+                else if (cdStr == "mean")  c.collapseDuplicates = ColumnMapping::CollapseMode::Mean;
+                else                       c.collapseDuplicates = ColumnMapping::CollapseMode::None;
                 p.columns.push_back(std::move(c));
             }
         }
@@ -97,6 +103,14 @@ bool ConverterProfile::saveToFile(const std::filesystem::path& path,
             jc["sampleRateUnit"]  = c.sampleRateDisplayUnit.toStdString();
             jc["resetTimeToZero"] = c.resetTimeToZero;
             jc["timeOffsetSec"]   = c.timeOffsetSec;
+            const char* cd = "none";
+            switch (c.collapseDuplicates) {
+                case ColumnMapping::CollapseMode::First: cd = "first"; break;
+                case ColumnMapping::CollapseMode::Last:  cd = "last";  break;
+                case ColumnMapping::CollapseMode::Mean:  cd = "mean";  break;
+                default: break;
+            }
+            jc["collapseDuplicates"] = cd;
             j["columns"].push_back(std::move(jc));
         }
         std::ofstream f(path);

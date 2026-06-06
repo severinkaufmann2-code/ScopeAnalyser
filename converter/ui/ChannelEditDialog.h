@@ -48,6 +48,7 @@ private:
     QComboBox*    rateUnit_;
     QCheckBox*      resetToZeroCheck_{nullptr};
     QDoubleSpinBox* offsetSpin_{nullptr};
+    QComboBox*      collapseCombo_{nullptr};
 
     QStringList availableXColumns_;
 };

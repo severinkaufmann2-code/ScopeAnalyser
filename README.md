@@ -277,6 +277,17 @@ stick.
 CSV values live inside the saved `.scaconv` profile. H5 values live
 inside the workspace `.scaws`. Both round-trip cleanly.
 
+**Duplicate-timestamp handling (CSV)**. If your CSV repeats the same
+X value for several rows (oversampled logs, redundant exports,
+wide-to-long reshapes), every row produces a sample by default —
+no warning, no dedup. In the Add channel dialog the *Duplicate
+timestamps* combo lets you collapse each run of equal X into one
+sample: *first* keeps the first Y, *last* keeps the last, *mean*
+averages the run. The choice is per-channel and persisted in
+`.scaconv`. After each Apply the Converter scans the imported
+signals and warns once if any channel still has >10 % duplicates,
+so you can fix the mapping if it was unintended.
+
 ### Export and multi-source import (Converter)
 
 The Converter top bar has four buttons:

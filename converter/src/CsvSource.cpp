@@ -300,6 +300,43 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
             for (auto& t : ts) t += off;
         }
 
+        // Collapse runs of equal timestamps per the chosen mode. The
+        // column-X path can produce duplicates when the CSV repeats the
+        // same X for multiple rows (oversampled logs, redundant exports,
+        // wide-to-long reshapes). Sample-rate mode is monotonic so this
+        // is a no-op there.
+        if (ySpec.collapseDuplicates != ColumnMapping::CollapseMode::None
+            && !ts.empty()) {
+            std::vector<TimestampNs> tsOut;
+            std::vector<double> vsOut;
+            tsOut.reserve(ts.size());
+            vsOut.reserve(ts.size());
+            std::size_t i = 0;
+            while (i < ts.size()) {
+                std::size_t j = i + 1;
+                while (j < ts.size() && ts[j] == ts[i]) ++j;
+                tsOut.push_back(ts[i]);
+                switch (ySpec.collapseDuplicates) {
+                    case ColumnMapping::CollapseMode::Last:
+                        vsOut.push_back(vs[j - 1]);
+                        break;
+                    case ColumnMapping::CollapseMode::Mean: {
+                        double acc = 0.0;
+                        for (std::size_t k = i; k < j; ++k) acc += vs[k];
+                        vsOut.push_back(acc / static_cast<double>(j - i));
+                        break;
+                    }
+                    case ColumnMapping::CollapseMode::First:
+                    default:
+                        vsOut.push_back(vs[i]);
+                        break;
+                }
+                i = j;
+            }
+            ts.swap(tsOut);
+            vs.swap(vsOut);
+        }
+
         Signal::Meta m;
         m.name = ySpec.signalName.isEmpty()
                  ? QString("Col%1").arg(colLabel(yCol))

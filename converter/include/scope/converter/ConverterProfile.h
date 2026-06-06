@@ -34,8 +34,16 @@ struct ColumnMapping {
     //   1. if resetTimeToZero: subtract this channel's first timestamp
     //      (no-op in sample-rate mode — it already starts at 0)
     //   2. add timeOffsetSec * 1e9 to every timestamp
+    //   3. collapse runs of equal timestamps per collapseDuplicates
     bool    resetTimeToZero{false};
     double  timeOffsetSec{0.0};
+
+    // What to do when several CSV rows produce the same X-axis
+    // timestamp for this Y signal. None passes them through unchanged
+    // (current default — round-trips the file). First / Last / Mean
+    // collapse each run of equal timestamps into one sample.
+    enum class CollapseMode { None, First, Last, Mean };
+    CollapseMode collapseDuplicates{CollapseMode::None};
 };
 
 struct ConverterProfile {

@@ -177,11 +177,29 @@ ChannelEditDialog::ChannelEditDialog(QWidget* parent) : QDialog(parent) {
     offsetRow->addWidget(new QLabel("Time offset:", xSourceGroup_));
     offsetRow->addWidget(offsetSpin_);
     offsetRow->addStretch();
+
+    collapseCombo_ = new QComboBox(xSourceGroup_);
+    collapseCombo_->addItem("Keep all (no collapse)",  static_cast<int>(ColumnMapping::CollapseMode::None));
+    collapseCombo_->addItem("Collapse → first value",  static_cast<int>(ColumnMapping::CollapseMode::First));
+    collapseCombo_->addItem("Collapse → last value",   static_cast<int>(ColumnMapping::CollapseMode::Last));
+    collapseCombo_->addItem("Collapse → mean of run",  static_cast<int>(ColumnMapping::CollapseMode::Mean));
+    collapseCombo_->setToolTip(
+        "If several CSV rows produce the same X timestamp for this\n"
+        "signal, what to do:\n"
+        "  Keep all       — round-trip every row (current default).\n"
+        "  Collapse first — keep only the first Y of each run.\n"
+        "  Collapse last  — keep only the last Y of each run.\n"
+        "  Collapse mean  — replace each run with its arithmetic mean.");
+    auto* collapseRow = new QHBoxLayout();
+    collapseRow->addWidget(new QLabel("Duplicate timestamps:", xSourceGroup_));
+    collapseRow->addWidget(collapseCombo_, /*stretch=*/1);
+
     auto* xLayout = new QVBoxLayout(xSourceGroup_);
     xLayout->addLayout(xColRow);
     xLayout->addLayout(xRateRow);
     xLayout->addWidget(resetToZeroCheck_);
     xLayout->addLayout(offsetRow);
+    xLayout->addLayout(collapseRow);
 
     connect(useColumnRadio_, &QRadioButton::toggled,
             this, [this](bool){ onXSourceModeChanged(); });
@@ -258,6 +276,14 @@ void ChannelEditDialog::setMapping(const ColumnMapping& m) {
     }
     if (resetToZeroCheck_) resetToZeroCheck_->setChecked(m.resetTimeToZero);
     if (offsetSpin_)       offsetSpin_->setValue(m.timeOffsetSec);
+    if (collapseCombo_) {
+        for (int i = 0; i < collapseCombo_->count(); ++i) {
+            if (collapseCombo_->itemData(i).toInt() == static_cast<int>(m.collapseDuplicates)) {
+                collapseCombo_->setCurrentIndex(i);
+                break;
+            }
+        }
+    }
     onRoleChanged();
     onXSourceModeChanged();
 }
@@ -301,6 +327,9 @@ bool ChannelEditDialog::getMapping(ColumnMapping* out, QString* errorOut) const 
             ? (resetToZeroCheck_->isEnabled() && resetToZeroCheck_->isChecked())
             : false;
         out->timeOffsetSec = offsetSpin_ ? offsetSpin_->value() : 0.0;
+        out->collapseDuplicates = collapseCombo_
+            ? static_cast<ColumnMapping::CollapseMode>(collapseCombo_->currentData().toInt())
+            : ColumnMapping::CollapseMode::None;
     } else {
         // X-axis channel: not a Y, no X-source needed.
         out->useSampleRate = false;
@@ -308,6 +337,7 @@ bool ChannelEditDialog::getMapping(ColumnMapping* out, QString* errorOut) const 
         out->sampleRateHz  = 0;
         out->resetTimeToZero = false;
         out->timeOffsetSec   = 0.0;
+        out->collapseDuplicates = ColumnMapping::CollapseMode::None;
     }
     return true;
 }
