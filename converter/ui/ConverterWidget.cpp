@@ -150,13 +150,21 @@ struct H5SelectorPanel : public QWidget {
                     const QStringList& preChecked,
                     const QStringList& preRelative,
                     const QHash<QString, double>& preOffsets) {
+        // Batch the rebuild — Qt would otherwise repaint after every
+        // insertRow / setCellWidget. setUpdatesEnabled(false) defers
+        // paints until we re-enable updates at the end.
+        table->setUpdatesEnabled(false);
         table->setRowCount(0);
+        // Pre-size the table so insertRow doesn't keep growing the
+        // internal vector.
+        int nValid = 0;
+        for (const auto& s : sigs) if (s) ++nValid;
+        table->setRowCount(nValid);
+        int r = 0;
         for (const auto& s : sigs) {
             if (!s) continue;
             const auto meta = s->meta();
             const auto view = s->snapshotForRead();
-            const int r = table->rowCount();
-            table->insertRow(r);
             auto* cb = new QCheckBox();
             cb->setChecked(preChecked.isEmpty() || preChecked.contains(meta.name));
             table->setCellWidget(r, kColVis, cb);
@@ -180,7 +188,9 @@ struct H5SelectorPanel : public QWidget {
             offSb->setDecimals(6);
             offSb->setValue(preOffsets.value(meta.name, 0.0));
             table->setCellWidget(r, kColOffset, offSb);
+            ++r;
         }
+        table->setUpdatesEnabled(true);
     }
 
     QStringList checkedNames() const {
@@ -246,8 +256,15 @@ struct ConverterWidget::Impl {
     int activeIndex{-1};
 
     // Block save-active-state-into-file from firing during setProfile()
-    // inside a programmatic switch.
+    // inside a programmatic switch. Also gates the parseOptionsChanged
+    // reparse handler so a programmatic load doesn't re-read the CSV
+    // from disk 3-4 times in a row.
     bool suppressSave{false};
+
+    // Identity of the OpenedFile whose H5 selector contents are
+    // currently in the panel. When switching back to the same file
+    // (e.g. A→B→A) we can skip the whole table rebuild.
+    const OpenedFile* lastH5Source{nullptr};
 };
 
 // Forward decls of helper methods on ConverterWidget
@@ -369,10 +386,19 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                     .arg(f.csv ? f.csv->rowCount()    : 0)
                     .arg(f.csv ? f.csv->columnCount() : 0));
         } else {
-            impl_->h5Selector->setSignals(f.h5Signals,
-                                          f.h5SelectedChannels,
-                                          f.h5RelativeChannels,
-                                          f.h5OffsetSec);
+            // Skip the table rebuild when switching back to the same
+            // H5 file (A→B→A) — its rows are already in the panel.
+            // The widget contents reflect what we left, so checkboxes
+            // and offsets are right. setRowCount(0) + insertRow * N +
+            // checkboxes + spinboxes can be 1000+ widget operations
+            // for big recordings, so this is the main win on toggle.
+            if (impl_->lastH5Source != &f) {
+                impl_->h5Selector->setSignals(f.h5Signals,
+                                              f.h5SelectedChannels,
+                                              f.h5RelativeChannels,
+                                              f.h5OffsetSec);
+                impl_->lastH5Source = &f;
+            }
             impl_->preview->setModel(nullptr);
             impl_->rightStack->setCurrentIndex(1);
             impl_->statusLabel->setText(
@@ -616,9 +642,24 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
 
     // ---- Parse-options change: rebuild CsvSource + preview ----------
     connect(impl_->mapping, &ui::MappingPanel::parseOptionsChanged, this, [this]{
+        // While loadActiveState() / loadProfile / load-workspace are
+        // programmatically setting MappingPanel widgets, the panel emits
+        // parseOptionsChanged 3-4 times. Each emission would otherwise
+        // re-read the whole CSV from disk and rebuild the preview model.
+        // The file's csv / previewModel were already built with the
+        // right delimiters when it was opened, so during a programmatic
+        // load we just suppress.
+        if (impl_->suppressSave) return;
         if (impl_->activeIndex < 0) return;
         auto& f = *impl_->files[impl_->activeIndex];
         if (f.type != FileType::Csv) return;
+        // If the delimiters / parse options match what's already cached
+        // on the CsvSource, nothing changed — skip the disk round-trip.
+        if (f.csv
+            && f.profile.columnDelimiter == impl_->mapping->columnDelimiter()
+            && f.profile.rowDelimiter    == impl_->mapping->rowDelimiter()) {
+            return;
+        }
         try {
             f.csv = std::make_unique<CsvSource>(
                 std::filesystem::path(f.path.toStdString()),
@@ -723,6 +764,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             delete impl_->fileList->takeItem(idx);
         }
         impl_->files.erase(impl_->files.begin() + idx);
+        impl_->lastH5Source = nullptr;   // erased file may have been it
         impl_->activeIndex = -1;
         const int newIdx = impl_->files.empty()
                               ? -1
@@ -867,6 +909,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             for (const auto& n : fp->importedNames) store_.remove(n);
         impl_->files.clear();
         impl_->fileList->clear();
+        impl_->lastH5Source = nullptr;
         impl_->activeIndex = -1;
 
         QStringList notFound;
