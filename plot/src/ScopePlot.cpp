@@ -997,6 +997,46 @@ bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
                     return true;
                 }
             }
+            const double dX = impl_->plot->xAxis->selectTest(pos, false);
+            if (dX >= 0 && dX < 8.0) {
+                QMenu menu;
+                auto* rename = menu.addAction("Rename…");
+                auto* range  = menu.addAction("Set range…");
+                auto* fit    = menu.addAction("Auto-scale X");
+                QAction* chosen = menu.exec(cm->globalPos());
+                if (!chosen) return true;
+                if (chosen == rename) {
+                    bool ok = false;
+                    const QString newLabel = QInputDialog::getText(
+                        this, "Rename X axis", "Label:",
+                        QLineEdit::Normal,
+                        impl_->plot->xAxis->label(), &ok);
+                    if (ok) {
+                        impl_->plot->xAxis->setLabel(newLabel);
+                        impl_->plot->replot(QCustomPlot::rpQueuedReplot);
+                    }
+                } else if (chosen == range) {
+                    bool ok = false;
+                    const double lo = QInputDialog::getDouble(
+                        this, "X axis range", "Min:",
+                        impl_->plot->xAxis->range().lower,
+                        -1e15, 1e15, 6, &ok);
+                    if (!ok) return true;
+                    const double hi = QInputDialog::getDouble(
+                        this, "X axis range", "Max:",
+                        impl_->plot->xAxis->range().upper,
+                        -1e15, 1e15, 6, &ok);
+                    if (!ok || hi <= lo) return true;
+                    impl_->plot->xAxis->setRange(lo, hi);
+                    impl_->autoFit[impl_->plot->xAxis] = false;
+                    impl_->plot->replot(QCustomPlot::rpQueuedReplot);
+                } else if (chosen == fit) {
+                    impl_->autoFit[impl_->plot->xAxis] = true;
+                    impl_->plot->xAxis->rescale();
+                    impl_->plot->replot(QCustomPlot::rpQueuedReplot);
+                }
+                return true;
+            }
             break;
         }
         default:

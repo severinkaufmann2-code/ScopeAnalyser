@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstring>
 #include <deque>
 
@@ -252,6 +253,300 @@ std::shared_ptr<Signal> impl_Sin(const FunctionArgs& a, QString* err)  {
 std::shared_ptr<Signal> impl_Cos(const FunctionArgs& a, QString* err)  {
     return elementwiseUnary(a, err, "Cos",  [](double v){ return std::cos(v); });
 }
+std::shared_ptr<Signal> impl_Tan(const FunctionArgs& a, QString* err)  {
+    return elementwiseUnary(a, err, "Tan",  [](double v){ return std::tan(v); });
+}
+std::shared_ptr<Signal> impl_Asin(const FunctionArgs& a, QString* err) {
+    return elementwiseUnary(a, err, "Asin", [](double v){ return std::asin(v); });
+}
+std::shared_ptr<Signal> impl_Acos(const FunctionArgs& a, QString* err) {
+    return elementwiseUnary(a, err, "Acos", [](double v){ return std::acos(v); });
+}
+std::shared_ptr<Signal> impl_Atan(const FunctionArgs& a, QString* err) {
+    return elementwiseUnary(a, err, "Atan", [](double v){ return std::atan(v); });
+}
+std::shared_ptr<Signal> impl_Exp(const FunctionArgs& a, QString* err)  {
+    return elementwiseUnary(a, err, "Exp",  [](double v){ return std::exp(v); });
+}
+std::shared_ptr<Signal> impl_Log10(const FunctionArgs& a, QString* err) {
+    return elementwiseUnary(a, err, "Log10", [](double v){ return std::log10(v); });
+}
+std::shared_ptr<Signal> impl_Floor(const FunctionArgs& a, QString* err) {
+    return elementwiseUnary(a, err, "Floor", [](double v){ return std::floor(v); });
+}
+std::shared_ptr<Signal> impl_Ceil(const FunctionArgs& a, QString* err) {
+    return elementwiseUnary(a, err, "Ceil",  [](double v){ return std::ceil(v); });
+}
+std::shared_ptr<Signal> impl_Round(const FunctionArgs& a, QString* err) {
+    return elementwiseUnary(a, err, "Round", [](double v){ return std::round(v); });
+}
+std::shared_ptr<Signal> impl_Sign(const FunctionArgs& a, QString* err) {
+    return elementwiseUnary(a, err, "Sign", [](double v){
+        return (v > 0) - (v < 0);
+    });
+}
+
+// ---- Elementwise binary functions ----
+// Mirrors FormulaEngine.cpp's elementwiseBinary but uses *err instead of
+// EvalCtx so it's reachable from named-function impls. Same three paths:
+// constant broadcast → fast same-grid → resample on the intersection.
+template <typename Op>
+std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
+                                          const std::shared_ptr<Signal>& b,
+                                          Op op,
+                                          QString* err,
+                                          const char* opName) {
+    auto avView = a->snapshotForRead();
+    auto bvView = b->snapshotForRead();
+    auto av = a->readAsDouble();
+    auto bv = b->readAsDouble();
+    const bool aConst = (avView.count == 1 && avView.timestamps[0] == 0);
+    const bool bConst = (bvView.count == 1 && bvView.timestamps[0] == 0);
+
+    auto makeSig = [&](const std::vector<TimestampNs>& ts,
+                       const std::vector<double>& vs) {
+        Signal::Meta m;
+        m.dataType = DataType::Float64;
+        m.name = opName;
+        auto s = std::make_shared<Signal>(m);
+        s->append(ts.data(),
+                  reinterpret_cast<const std::byte*>(vs.data()),
+                  vs.size());
+        return s;
+    };
+
+    if (aConst || bConst) {
+        const std::size_t n = aConst ? bvView.count : avView.count;
+        const TimestampNs* ts = aConst ? bvView.timestamps : avView.timestamps;
+        std::vector<double> out(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const double va = aConst ? av[0] : av[i];
+            const double vb = bConst ? bv[0] : bv[i];
+            out[i] = op(va, vb);
+        }
+        std::vector<TimestampNs> outTs(ts, ts + n);
+        return makeSig(outTs, out);
+    }
+
+    if (avView.count == 0 || bvView.count == 0) {
+        if (err) *err = QString("%1: empty operand").arg(opName);
+        return nullptr;
+    }
+
+    if (avView.count == bvView.count
+        && avView.timestamps[0] == bvView.timestamps[0]
+        && avView.timestamps[avView.count - 1]
+               == bvView.timestamps[bvView.count - 1]) {
+        const std::size_t n = avView.count;
+        std::vector<double> out(n);
+        for (std::size_t i = 0; i < n; ++i) out[i] = op(av[i], bv[i]);
+        std::vector<TimestampNs> outTs(avView.timestamps, avView.timestamps + n);
+        return makeSig(outTs, out);
+    }
+
+    // Different grids: build a uniform grid over the intersection and
+    // linearly interpolate both. Simpler than the parser's chooser.
+    const TimestampNs tLo = std::max(avView.timestamps[0], bvView.timestamps[0]);
+    const TimestampNs tHi = std::min(avView.timestamps[avView.count - 1],
+                                     bvView.timestamps[bvView.count - 1]);
+    if (tLo > tHi) {
+        if (err) *err = QString("%1: signals don't overlap in time").arg(opName);
+        return nullptr;
+    }
+    auto countInRange = [&](const Signal::ReadView& v) {
+        std::size_t c = 0;
+        for (std::size_t i = 0; i < v.count; ++i)
+            if (v.timestamps[i] >= tLo && v.timestamps[i] <= tHi) ++c;
+        return c;
+    };
+    const bool useA = countInRange(avView) >= countInRange(bvView);
+    const auto& gridView = useA ? avView  : bvView;
+    const auto& gridVals = useA ? av      : bv;
+    const auto& otherView = useA ? bvView : avView;
+    const auto& otherVals = useA ? bv     : av;
+
+    auto interp = [&](const Signal::ReadView& v,
+                      const std::vector<double>& vals,
+                      TimestampNs t) -> double {
+        if (v.count == 0) return 0;
+        if (t <= v.timestamps[0]) return vals.front();
+        if (t >= v.timestamps[v.count - 1]) return vals.back();
+        // binary search
+        std::size_t lo = 0, hi = v.count - 1;
+        while (lo + 1 < hi) {
+            const std::size_t mid = (lo + hi) / 2;
+            if (v.timestamps[mid] <= t) lo = mid;
+            else hi = mid;
+        }
+        const double t0 = static_cast<double>(v.timestamps[lo]);
+        const double t1 = static_cast<double>(v.timestamps[hi]);
+        const double f = (static_cast<double>(t) - t0) / (t1 - t0);
+        return vals[lo] + f * (vals[hi] - vals[lo]);
+    };
+
+    std::vector<TimestampNs> outTs;
+    std::vector<double> outVs;
+    outTs.reserve(gridView.count);
+    outVs.reserve(gridView.count);
+    for (std::size_t i = 0; i < gridView.count; ++i) {
+        const TimestampNs t = gridView.timestamps[i];
+        if (t < tLo || t > tHi) continue;
+        const double va = useA ? gridVals[i] : interp(otherView, otherVals, t);
+        const double vb = useA ? interp(otherView, otherVals, t) : gridVals[i];
+        outTs.push_back(t);
+        outVs.push_back(op(va, vb));
+    }
+    return makeSig(outTs, outVs);
+}
+
+std::shared_ptr<Signal> impl_Power(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 2, err, "Power")) return nullptr;
+    return elementwiseBinary(a[0], a[1],
+        [](double x, double e){ return std::pow(x, e); }, err, "Power");
+}
+std::shared_ptr<Signal> impl_Mod(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 2, err, "Mod")) return nullptr;
+    return elementwiseBinary(a[0], a[1],
+        [](double x, double d){ return d != 0 ? std::fmod(x, d) : 0.0; },
+        err, "Mod");
+}
+std::shared_ptr<Signal> impl_Atan2(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 2, err, "Atan2")) return nullptr;
+    return elementwiseBinary(a[0], a[1],
+        [](double y, double x){ return std::atan2(y, x); }, err, "Atan2");
+}
+
+// Clip(signal, lo, hi) — three args. lo/hi must be scalars.
+std::shared_ptr<Signal> impl_Clip(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 3, err, "Clip")) return nullptr;
+    double lo = 0, hi = 0;
+    if (!asScalar(a[1], lo) || !asScalar(a[2], hi)) {
+        if (err) *err = "Clip: lo and hi must be scalars";
+        return nullptr;
+    }
+    if (lo > hi) std::swap(lo, hi);
+    auto signal = a[0];
+    auto view = signal->snapshotForRead();
+    auto src  = signal->readAsDouble();
+    std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
+    std::vector<double> dst(view.count);
+    for (std::size_t i = 0; i < view.count; ++i)
+        dst[i] = std::clamp(src[i], lo, hi);
+    return makeDoubleSignal("Clip", ts, dst, signal->meta().unit);
+}
+
+// ---- Slice(signal, t_start, t_end) — keep samples with t in [start, end] ----
+std::shared_ptr<Signal> impl_Slice(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 3, err, "Slice")) return nullptr;
+    double tStartSec = 0, tEndSec = 0;
+    if (!asScalar(a[1], tStartSec) || !asScalar(a[2], tEndSec)) {
+        if (err) *err = "Slice: t_start and t_end must be scalars (seconds)";
+        return nullptr;
+    }
+    if (tStartSec > tEndSec) std::swap(tStartSec, tEndSec);
+    const TimestampNs tLo = static_cast<TimestampNs>(tStartSec * 1e9);
+    const TimestampNs tHi = static_cast<TimestampNs>(tEndSec   * 1e9);
+    auto signal = a[0];
+    auto view = signal->snapshotForRead();
+    auto src  = signal->readAsDouble();
+    std::vector<TimestampNs> ts;
+    std::vector<double> dst;
+    ts.reserve(view.count);
+    dst.reserve(view.count);
+    for (std::size_t i = 0; i < view.count; ++i) {
+        if (view.timestamps[i] < tLo || view.timestamps[i] > tHi) continue;
+        ts.push_back(view.timestamps[i]);
+        dst.push_back(i < src.size() ? src[i] : 0.0);
+    }
+    return makeDoubleSignal("Slice", ts, dst, signal->meta().unit);
+}
+
+// ---- FFT(signal) — magnitude spectrum ----
+//
+// Resamples to a uniform grid using the intersection-resample logic
+// (so non-uniform CSV imports work), applies a Hann window, zero-pads
+// to the next power of 2, runs an in-place radix-2 Cooley-Tukey FFT,
+// and returns the magnitude of the first N/2 + 1 bins. The output's
+// "timestamps" encode frequency: bin k → k × df nanoseconds (so a
+// 50 Hz peak appears at timestamp 50e9 — the plot's X axis numerically
+// matches Hz). Right-click the X axis label to rename "t [s]" → "f [Hz]".
+namespace {
+void fftRadix2(std::vector<std::complex<double>>& x) {
+    const std::size_t N = x.size();
+    if (N <= 1) return;
+    // Bit-reverse permutation
+    std::size_t j = 0;
+    for (std::size_t i = 1; i < N; ++i) {
+        std::size_t bit = N >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) std::swap(x[i], x[j]);
+    }
+    // Butterflies
+    for (std::size_t len = 2; len <= N; len <<= 1) {
+        const double ang = -2.0 * M_PI / static_cast<double>(len);
+        const std::complex<double> wlen(std::cos(ang), std::sin(ang));
+        for (std::size_t i = 0; i < N; i += len) {
+            std::complex<double> w(1.0, 0.0);
+            const std::size_t half = len / 2;
+            for (std::size_t k = 0; k < half; ++k) {
+                const auto u = x[i + k];
+                const auto v = x[i + k + half] * w;
+                x[i + k]        = u + v;
+                x[i + k + half] = u - v;
+                w *= wlen;
+            }
+        }
+    }
+}
+}  // namespace
+
+std::shared_ptr<Signal> impl_FFT(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 1, err, "FFT")) return nullptr;
+    auto signal = a[0];
+    auto view = signal->snapshotForRead();
+    if (view.count < 2) {
+        if (err) *err = "FFT: signal must have at least 2 samples.";
+        return nullptr;
+    }
+    auto src = signal->readAsDouble();
+
+    // Average dt to define the sample rate. Non-uniform grids get a
+    // single representative dt; for badly non-uniform data the user
+    // should resample first.
+    const double durationSec =
+        (view.timestamps[view.count - 1] - view.timestamps[0]) * 1e-9;
+    const double dt = durationSec / static_cast<double>(view.count - 1);
+    if (dt <= 0) {
+        if (err) *err = "FFT: non-monotonic / zero-duration time grid.";
+        return nullptr;
+    }
+    const double fs = 1.0 / dt;
+
+    // Pad to next power of 2.
+    std::size_t N = 1;
+    while (N < view.count) N <<= 1;
+    if (N < 2) N = 2;
+    std::vector<std::complex<double>> buf(N, {0.0, 0.0});
+    // Hann window applied across the actual samples; padding stays zero.
+    for (std::size_t i = 0; i < view.count; ++i) {
+        const double w = 0.5 * (1.0 - std::cos(2.0 * M_PI * i
+                                  / static_cast<double>(view.count - 1)));
+        buf[i] = {src[i] * w, 0.0};
+    }
+    fftRadix2(buf);
+
+    // Magnitude spectrum, first N/2 + 1 bins.
+    const double df = fs / static_cast<double>(N);
+    const std::size_t outN = N / 2 + 1;
+    std::vector<TimestampNs> outTs(outN);
+    std::vector<double> outVs(outN);
+    for (std::size_t k = 0; k < outN; ++k) {
+        outTs[k] = static_cast<TimestampNs>(k * df * 1e9);
+        outVs[k] = std::abs(buf[k]) / static_cast<double>(view.count);
+    }
+    return makeDoubleSignal("FFT", outTs, outVs, "magnitude");
+}
 
 // Helpers for Resample.
 bool isConstantHere(const std::shared_ptr<Signal>& s) {
@@ -378,6 +673,49 @@ void FunctionRegistry::registerBuiltins() {
         "Element-wise sine.", 1, 1, &impl_Sin);
     add("Cos",        "Cos(signal)",
         "Element-wise cosine.", 1, 1, &impl_Cos);
+    add("Tan",        "Tan(signal)",
+        "Element-wise tangent.", 1, 1, &impl_Tan);
+    add("Asin",       "Asin(signal)",
+        "Element-wise arcsine (radians).", 1, 1, &impl_Asin);
+    add("Acos",       "Acos(signal)",
+        "Element-wise arccosine (radians).", 1, 1, &impl_Acos);
+    add("Atan",       "Atan(signal)",
+        "Element-wise arctangent (radians).", 1, 1, &impl_Atan);
+    add("Atan2",      "Atan2(y, x)",
+        "Element-wise two-argument arctangent (radians, preserves quadrant). "
+        "Both args can be signals or scalars.",
+        2, 2, &impl_Atan2);
+    add("Exp",        "Exp(signal)",
+        "Element-wise e^signal.", 1, 1, &impl_Exp);
+    add("Log10",      "Log10(signal)",
+        "Element-wise base-10 logarithm.", 1, 1, &impl_Log10);
+    add("Floor",      "Floor(signal)",
+        "Element-wise round towards −∞.", 1, 1, &impl_Floor);
+    add("Ceil",       "Ceil(signal)",
+        "Element-wise round towards +∞.", 1, 1, &impl_Ceil);
+    add("Round",      "Round(signal)",
+        "Element-wise round to nearest integer.", 1, 1, &impl_Round);
+    add("Sign",       "Sign(signal)",
+        "Element-wise sign: −1, 0, or +1.", 1, 1, &impl_Sign);
+    add("Power",      "Power(base, exponent)",
+        "Element-wise power. Both args can be signals or scalars.",
+        2, 2, &impl_Power);
+    add("Mod",        "Mod(signal, divisor)",
+        "Element-wise floating-point modulo (sign of result follows dividend, "
+        "as in C/C++ fmod). Both args can be signals or scalars.",
+        2, 2, &impl_Mod);
+    add("Clip",       "Clip(signal, lo, hi)",
+        "Element-wise clamp into the [lo, hi] interval. lo/hi must be scalars.",
+        3, 3, &impl_Clip);
+    add("Slice",      "Slice(signal, t_start, t_end)",
+        "Keep only samples whose timestamp falls in [t_start, t_end] seconds. "
+        "Inclusive bounds.",
+        3, 3, &impl_Slice);
+    add("FFT",        "FFT(signal)",
+        "Magnitude spectrum via Hann-windowed, zero-padded radix-2 FFT. "
+        "Output X axis is frequency in Hz (numerically; the chart label still "
+        "shows 't [s]' — right-click to rename).",
+        1, 1, &impl_FFT);
     add("Resample",   "Resample(signal, rate_Hz_or_reference_signal)",
         "Linear-interpolate signal onto a new time grid. Pass a positive scalar "
         "for the target rate in Hz, or another signal to copy its timestamps.",

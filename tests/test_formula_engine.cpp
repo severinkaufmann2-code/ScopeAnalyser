@@ -242,3 +242,166 @@ TEST(FunctionRegistryBuiltins, AllRegistered) {
     EXPECT_NE(reg.find("Cos"),        nullptr);
     EXPECT_NE(reg.find("Resample"),   nullptr);
 }
+
+// -------- Round-tripping the new element-wise math --------
+
+TEST(FormulaEngine, PowerScalarExponent) {
+    SignalStore store;
+    store.add(makeRamp("A", 5, 1.0));  // 0,1,2,3,4
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("P = Power(A, 2)", &err)) << err.toStdString();
+    auto vs = store.get("P")->readAsDouble();
+    ASSERT_EQ(vs.size(), 5u);
+    for (std::size_t i = 0; i < 5; ++i) {
+        EXPECT_DOUBLE_EQ(vs[i], static_cast<double>(i * i));
+    }
+}
+
+TEST(FormulaEngine, ModBy3) {
+    SignalStore store;
+    store.add(makeRamp("A", 7, 1.0));  // 0..6
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("M = Mod(A, 3)", &err)) << err.toStdString();
+    auto vs = store.get("M")->readAsDouble();
+    const std::vector<double> expected = {0, 1, 2, 0, 1, 2, 0};
+    ASSERT_EQ(vs.size(), expected.size());
+    for (std::size_t i = 0; i < vs.size(); ++i)
+        EXPECT_DOUBLE_EQ(vs[i], expected[i]);
+}
+
+TEST(FormulaEngine, FloorCeilRoundSign) {
+    SignalStore store;
+    // values 0, 0.4, 1.0, 1.5, 2.9, -0.5, -1.5
+    Signal::Meta m; m.name = "V"; m.dataType = DataType::Float64; m.sampleRateHz = 1.0;
+    auto sig = std::make_shared<Signal>(m);
+    const std::vector<double> vs = {0.0, 0.4, 1.0, 1.5, 2.9, -0.5, -1.5};
+    std::vector<TimestampNs> ts(vs.size());
+    for (std::size_t i = 0; i < vs.size(); ++i) ts[i] = i * 1'000'000'000LL;
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), vs.size());
+    store.add(sig);
+
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("F = Floor(V)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("C = Ceil(V)",  &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("R = Round(V)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("S = Sign(V)",  &err)) << err.toStdString();
+    auto fv = store.get("F")->readAsDouble();
+    auto cv = store.get("C")->readAsDouble();
+    auto rv = store.get("R")->readAsDouble();
+    auto sv = store.get("S")->readAsDouble();
+    EXPECT_DOUBLE_EQ(fv[1],  0.0);   // floor(0.4)
+    EXPECT_DOUBLE_EQ(cv[1],  1.0);   // ceil(0.4)
+    EXPECT_DOUBLE_EQ(rv[3],  2.0);   // round(1.5) → 2 (banker's may differ, std::round → 2)
+    EXPECT_DOUBLE_EQ(sv[0],  0.0);
+    EXPECT_DOUBLE_EQ(sv[1],  1.0);
+    EXPECT_DOUBLE_EQ(sv[5], -1.0);
+}
+
+TEST(FormulaEngine, ExpLog10Inverses) {
+    SignalStore store;
+    store.add(makeRamp("A", 5, 1.0, 1.0));  // 1..5 (avoid log10(0))
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("E = Exp(A)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("L = Log10(A)", &err)) << err.toStdString();
+    auto ev = store.get("E")->readAsDouble();
+    auto lv = store.get("L")->readAsDouble();
+    EXPECT_NEAR(ev[0], std::exp(1.0),  1e-12);
+    EXPECT_NEAR(lv[4], std::log10(5.0), 1e-12);
+}
+
+TEST(FormulaEngine, ClipClampsInRange) {
+    SignalStore store;
+    store.add(makeRamp("A", 11, 1.0));  // 0..10
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("Cp = Clip(A, 2, 7)", &err)) << err.toStdString();
+    auto vs = store.get("Cp")->readAsDouble();
+    EXPECT_DOUBLE_EQ(vs[0],  2.0);
+    EXPECT_DOUBLE_EQ(vs[5],  5.0);
+    EXPECT_DOUBLE_EQ(vs[10], 7.0);
+}
+
+TEST(FormulaEngine, Atan2YOverX) {
+    SignalStore store;
+    // y = [0, 1, 1, 0]    x = [1, 1, 0, -1]   →  atan2 = 0, π/4, π/2, π
+    Signal::Meta my; my.name = "Y"; my.dataType = DataType::Float64; my.sampleRateHz = 1.0;
+    Signal::Meta mx; mx.name = "X"; mx.dataType = DataType::Float64; mx.sampleRateHz = 1.0;
+    auto yS = std::make_shared<Signal>(my);
+    auto xS = std::make_shared<Signal>(mx);
+    const std::vector<double> yv = {0, 1, 1, 0};
+    const std::vector<double> xv = {1, 1, 0, -1};
+    std::vector<TimestampNs> ts(yv.size());
+    for (std::size_t i = 0; i < ts.size(); ++i) ts[i] = i * 1'000'000'000LL;
+    yS->append(ts.data(), reinterpret_cast<const std::byte*>(yv.data()), yv.size());
+    xS->append(ts.data(), reinterpret_cast<const std::byte*>(xv.data()), xv.size());
+    store.add(yS); store.add(xS);
+
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("Th = Atan2(Y, X)", &err)) << err.toStdString();
+    auto th = store.get("Th")->readAsDouble();
+    EXPECT_NEAR(th[0], 0.0,                 1e-12);
+    EXPECT_NEAR(th[1], M_PI / 4.0,          1e-12);
+    EXPECT_NEAR(th[2], M_PI / 2.0,          1e-12);
+    EXPECT_NEAR(th[3], M_PI,                1e-12);
+}
+
+// -------- Slice --------
+
+TEST(FormulaEngine, SliceKeepsOnlyInWindow) {
+    SignalStore store;
+    store.add(makeRamp("A", 11, 0.1));  // t = 0, 0.1, ..., 1.0
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("S = Slice(A, 0.3, 0.6)", &err)) << err.toStdString();
+    auto view = store.get("S")->snapshotForRead();
+    auto vs   = store.get("S")->readAsDouble();
+    // Expected: timestamps 0.3, 0.4, 0.5, 0.6 → 4 samples
+    ASSERT_EQ(view.count, 4u);
+    EXPECT_NEAR(view.timestamps[0] / 1e9, 0.3, 1e-9);
+    EXPECT_NEAR(view.timestamps[3] / 1e9, 0.6, 1e-9);
+    EXPECT_DOUBLE_EQ(vs[0], 3.0);
+    EXPECT_DOUBLE_EQ(vs[3], 6.0);
+}
+
+// -------- FFT --------
+
+TEST(FormulaEngine, FFTPeakAtKnownFrequency) {
+    SignalStore store;
+    // 1024 samples at 1024 Hz of sin(2π * 50 * t). Peak should be at 50 Hz.
+    const std::size_t N = 1024;
+    const double fs = 1024.0;
+    const double f0 = 50.0;
+    Signal::Meta m; m.name = "S"; m.dataType = DataType::Float64; m.sampleRateHz = fs;
+    auto sig = std::make_shared<Signal>(m);
+    std::vector<TimestampNs> ts(N);
+    std::vector<double> vs(N);
+    for (std::size_t i = 0; i < N; ++i) {
+        const double t = i / fs;
+        ts[i] = static_cast<TimestampNs>(t * 1e9);
+        vs[i] = std::sin(2.0 * M_PI * f0 * t);
+    }
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), N);
+    store.add(sig);
+
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("F = FFT(S)", &err)) << err.toStdString();
+    auto out = store.get("F");
+    auto view = out->snapshotForRead();
+    auto mv   = out->readAsDouble();
+    // Find the peak bin
+    std::size_t peakIdx = 0;
+    for (std::size_t i = 1; i < view.count; ++i) {
+        if (mv[i] > mv[peakIdx]) peakIdx = i;
+    }
+    const double peakFreqHz = view.timestamps[peakIdx] / 1e9;
+    // Allow ±2 bin slack for Hann window + integer-padding effects.
+    const double df = (view.count > 1)
+        ? (view.timestamps[1] - view.timestamps[0]) / 1e9 : 0;
+    EXPECT_NEAR(peakFreqHz, f0, 2.0 * df) << "peak at " << peakFreqHz << " Hz";
+}

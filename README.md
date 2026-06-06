@@ -160,9 +160,22 @@ Sum      = Mock.sine_1hz + 2 * Mock.cosine_10hz - 1
 Energy   = RMS(Mock.sine_1hz, 0.5)
 ```
 
-Functions: `Filter`, `Integral`, `Derivative`, `Mean`, `RMS`, `Min`, `Max`,
-`Shift`, `Abs`, `Sqrt`, `Log`, `Sin`, `Cos`, `Resample`. See the side panel
-for the full reference.
+Functions:
+- **Smoothing / aggregation**: `Filter`, `Mean`, `RMS`, `Min`, `Max`.
+- **Calculus**: `Integral`, `Derivative`.
+- **Element-wise math**: `Abs`, `Sqrt`, `Sign`, `Floor`, `Ceil`,
+  `Round`, `Exp`, `Log`, `Log10`, `Sin`, `Cos`, `Tan`, `Asin`,
+  `Acos`, `Atan`, `Atan2(y, x)`, `Power(base, exp)`, `Mod(a, b)`,
+  `Clip(s, lo, hi)`.
+- **Time-axis operations**: `Shift(s, seconds)`, `Slice(s, t_start, t_end)`,
+  `Resample(s, rate_or_signal)`.
+- **Frequency**: `FFT(s)` — Hann-windowed, zero-padded radix-2 FFT
+  magnitude spectrum. Output X axis is frequency in Hz (the chart
+  label still says `t [s]` — right-click the X axis to rename it
+  `f [Hz]`). Compose with `Slice` to FFT a time window:
+  `Spec = FFT(Slice(speed, 5.0, 10.0))`.
+
+See the side panel for the full reference with signatures.
 
 `Derivative(signal)` is plain `Δy/Δx` — central difference on the
 interior, forward at the first sample, backward at the last. Same
