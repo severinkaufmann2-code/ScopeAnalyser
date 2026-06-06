@@ -161,12 +161,13 @@ Energy   = RMS(Mock.sine_1hz, 0.5)
 ```
 
 Functions:
-- **Smoothing / aggregation**: `Filter`, `Mean`, `RMS`, `Min`, `Max`.
+- **Smoothing / aggregation**: `Filter`, `Mean`, `RMS`,
+  `RollingMin`, `RollingMax`.
 - **Calculus**: `Integral`, `Derivative`.
 - **Element-wise math**: `Abs`, `Sqrt`, `Sign`, `Floor`, `Ceil`,
   `Round`, `Exp`, `Log`, `Log10`, `Sin`, `Cos`, `Tan`, `Asin`,
   `Acos`, `Atan`, `Atan2(y, x)`, `Power(base, exp)`, `Mod(a, b)`,
-  `Clip(s, lo, hi)`.
+  `Min(a, b)`, `Max(a, b)`, `Limit(s, lo, hi)`.
 - **Time-axis operations**: `Shift(s, seconds)`, `Slice(s, t_start, t_end)`,
   `Resample(s, rate_or_signal)`.
 - **Frequency**: `FFT(s)` — Hann-windowed, zero-padded radix-2 FFT

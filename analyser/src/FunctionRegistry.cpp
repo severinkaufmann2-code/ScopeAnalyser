@@ -194,19 +194,21 @@ std::shared_ptr<Signal> impl_RMS(const FunctionArgs& a, QString* err) {
         return std::sqrt(sum / (hi - lo + 1));
     });
 }
-std::shared_ptr<Signal> impl_Min(const FunctionArgs& a, QString* err) {
-    return rolling(a, err, "Min", [](const std::vector<double>& src, std::size_t lo, std::size_t hi){
-        double m = src[lo];
-        for (std::size_t k = lo + 1; k <= hi; ++k) m = std::min(m, src[k]);
-        return m;
-    });
+std::shared_ptr<Signal> impl_RollingMin(const FunctionArgs& a, QString* err) {
+    return rolling(a, err, "RollingMin",
+        [](const std::vector<double>& src, std::size_t lo, std::size_t hi){
+            double m = src[lo];
+            for (std::size_t k = lo + 1; k <= hi; ++k) m = std::min(m, src[k]);
+            return m;
+        });
 }
-std::shared_ptr<Signal> impl_Max(const FunctionArgs& a, QString* err) {
-    return rolling(a, err, "Max", [](const std::vector<double>& src, std::size_t lo, std::size_t hi){
-        double m = src[lo];
-        for (std::size_t k = lo + 1; k <= hi; ++k) m = std::max(m, src[k]);
-        return m;
-    });
+std::shared_ptr<Signal> impl_RollingMax(const FunctionArgs& a, QString* err) {
+    return rolling(a, err, "RollingMax",
+        [](const std::vector<double>& src, std::size_t lo, std::size_t hi){
+            double m = src[lo];
+            for (std::size_t k = lo + 1; k <= hi; ++k) m = std::max(m, src[k]);
+            return m;
+        });
 }
 
 // ---- Shift(signal, seconds) — time shift only, no resample ----
@@ -418,12 +420,12 @@ std::shared_ptr<Signal> impl_Atan2(const FunctionArgs& a, QString* err) {
         [](double y, double x){ return std::atan2(y, x); }, err, "Atan2");
 }
 
-// Clip(signal, lo, hi) — three args. lo/hi must be scalars.
-std::shared_ptr<Signal> impl_Clip(const FunctionArgs& a, QString* err) {
-    if (!ensureN(a, 3, err, "Clip")) return nullptr;
+// Limit(signal, lo, hi) — three args. lo/hi must be scalars.
+std::shared_ptr<Signal> impl_Limit(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 3, err, "Limit")) return nullptr;
     double lo = 0, hi = 0;
     if (!asScalar(a[1], lo) || !asScalar(a[2], hi)) {
-        if (err) *err = "Clip: lo and hi must be scalars";
+        if (err) *err = "Limit: lo and hi must be scalars";
         return nullptr;
     }
     if (lo > hi) std::swap(lo, hi);
@@ -434,7 +436,20 @@ std::shared_ptr<Signal> impl_Clip(const FunctionArgs& a, QString* err) {
     std::vector<double> dst(view.count);
     for (std::size_t i = 0; i < view.count; ++i)
         dst[i] = std::clamp(src[i], lo, hi);
-    return makeDoubleSignal("Clip", ts, dst, signal->meta().unit);
+    return makeDoubleSignal("Limit", ts, dst, signal->meta().unit);
+}
+
+// Min(a, b) / Max(a, b) — element-wise pair (Python's min(a, b), or
+// numpy.minimum / numpy.maximum). Either arg can be a signal or a scalar.
+std::shared_ptr<Signal> impl_MinPair(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 2, err, "Min")) return nullptr;
+    return elementwiseBinary(a[0], a[1],
+        [](double x, double y){ return std::min(x, y); }, err, "Min");
+}
+std::shared_ptr<Signal> impl_MaxPair(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 2, err, "Max")) return nullptr;
+    return elementwiseBinary(a[0], a[1],
+        [](double x, double y){ return std::max(x, y); }, err, "Max");
 }
 
 // ---- Slice(signal, t_start, t_end) — keep samples with t in [start, end] ----
@@ -661,10 +676,16 @@ void FunctionRegistry::registerBuiltins() {
         "Rolling arithmetic mean over the last window_seconds.", 2, 2, &impl_Mean);
     add("RMS",        "RMS(signal, window_seconds)",
         "Rolling root-mean-square.", 2, 2, &impl_RMS);
-    add("Min",        "Min(signal, window_seconds)",
-        "Rolling minimum.", 2, 2, &impl_Min);
-    add("Max",        "Max(signal, window_seconds)",
-        "Rolling maximum.", 2, 2, &impl_Max);
+    add("Min",        "Min(a, b)",
+        "Element-wise pair minimum. Both args can be signals or scalars.",
+        2, 2, &impl_MinPair);
+    add("Max",        "Max(a, b)",
+        "Element-wise pair maximum. Both args can be signals or scalars.",
+        2, 2, &impl_MaxPair);
+    add("RollingMin", "RollingMin(signal, window_seconds)",
+        "Minimum over a sliding time window.", 2, 2, &impl_RollingMin);
+    add("RollingMax", "RollingMax(signal, window_seconds)",
+        "Maximum over a sliding time window.", 2, 2, &impl_RollingMax);
     add("Shift",      "Shift(signal, seconds)",
         "Time-shift the signal by offset (positive shifts forward in time).", 2, 2, &impl_Shift);
     add("Abs",        "Abs(signal)",
@@ -708,9 +729,9 @@ void FunctionRegistry::registerBuiltins() {
         "Element-wise floating-point modulo (sign of result follows dividend, "
         "as in C/C++ fmod). Both args can be signals or scalars.",
         2, 2, &impl_Mod);
-    add("Clip",       "Clip(signal, lo, hi)",
+    add("Limit",      "Limit(signal, lo, hi)",
         "Element-wise clamp into the [lo, hi] interval. lo/hi must be scalars.",
-        3, 3, &impl_Clip);
+        3, 3, &impl_Limit);
     add("Slice",      "Slice(signal, t_start, t_end)",
         "Keep only samples whose timestamp falls in [t_start, t_end] seconds. "
         "Inclusive bounds.",

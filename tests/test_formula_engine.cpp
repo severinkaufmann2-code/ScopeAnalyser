@@ -313,16 +313,74 @@ TEST(FormulaEngine, ExpLog10Inverses) {
     EXPECT_NEAR(lv[4], std::log10(5.0), 1e-12);
 }
 
-TEST(FormulaEngine, ClipClampsInRange) {
+TEST(FormulaEngine, LimitClampsInRange) {
     SignalStore store;
     store.add(makeRamp("A", 11, 1.0));  // 0..10
     FormulaEngine engine(store);
     QString err;
-    ASSERT_TRUE(engine.evaluate("Cp = Clip(A, 2, 7)", &err)) << err.toStdString();
-    auto vs = store.get("Cp")->readAsDouble();
+    ASSERT_TRUE(engine.evaluate("Lm = Limit(A, 2, 7)", &err)) << err.toStdString();
+    auto vs = store.get("Lm")->readAsDouble();
     EXPECT_DOUBLE_EQ(vs[0],  2.0);
     EXPECT_DOUBLE_EQ(vs[5],  5.0);
     EXPECT_DOUBLE_EQ(vs[10], 7.0);
+}
+
+TEST(FormulaEngine, MinMaxPairScalarAndSignal) {
+    SignalStore store;
+    store.add(makeRamp("A", 11, 1.0));  // 0..10
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("Lo = Min(A, 5)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("Hi = Max(A, 5)", &err)) << err.toStdString();
+    auto lo = store.get("Lo")->readAsDouble();
+    auto hi = store.get("Hi")->readAsDouble();
+    for (int i = 0; i < 11; ++i) {
+        EXPECT_DOUBLE_EQ(lo[i], std::min(static_cast<double>(i), 5.0));
+        EXPECT_DOUBLE_EQ(hi[i], std::max(static_cast<double>(i), 5.0));
+    }
+}
+
+TEST(FormulaEngine, MinMaxPairSignalSignal) {
+    SignalStore store;
+    store.add(makeRamp("A", 11, 1.0));         // 0..10
+    store.add(makeRamp("B", 11, 1.0, 5));      // 5..15
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("Lo = Min(A, B)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("Hi = Max(A, B)", &err)) << err.toStdString();
+    auto lo = store.get("Lo")->readAsDouble();
+    auto hi = store.get("Hi")->readAsDouble();
+    for (int i = 0; i < 11; ++i) {
+        EXPECT_DOUBLE_EQ(lo[i], static_cast<double>(i));      // A always <= B
+        EXPECT_DOUBLE_EQ(hi[i], static_cast<double>(i + 5));  // B always >= A
+    }
+}
+
+TEST(FormulaEngine, RollingMinMaxStillWork) {
+    SignalStore store;
+    Signal::Meta m; m.name = "S"; m.dataType = DataType::Float64; m.sampleRateHz = 10.0;
+    auto sig = std::make_shared<Signal>(m);
+    const std::size_t N = 21;
+    std::vector<TimestampNs> ts(N);
+    std::vector<double> vs(N);
+    // 1.0 at i==0, 0 elsewhere
+    for (std::size_t i = 0; i < N; ++i) {
+        ts[i] = static_cast<TimestampNs>(i * 0.1 * 1e9);
+        vs[i] = (i == 10) ? 1.0 : 0.0;
+    }
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), N);
+    store.add(sig);
+
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("Mx = RollingMax(S, 0.5)", &err)) << err.toStdString();
+    auto mx = store.get("Mx")->readAsDouble();
+    // The spike sits inside any window that overlaps t = 1.0 s; at samples
+    // i = 10..14 the trailing-0.5 s window still includes it (just barely).
+    EXPECT_DOUBLE_EQ(mx[10], 1.0);
+    EXPECT_DOUBLE_EQ(mx[14], 1.0);
+    // Far enough away → 0
+    EXPECT_DOUBLE_EQ(mx[20], 0.0);
 }
 
 TEST(FormulaEngine, Atan2YOverX) {
