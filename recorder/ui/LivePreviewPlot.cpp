@@ -229,10 +229,8 @@ void LivePreviewPlot::onChannelAdded(QString name) {
 
     auto* g = plot->addGraph(plot->xAxis, scope_->yAxis(axisIdx));
     g->setName(name);
-    g->setLineStyle(QCPGraph::lsLine);
-    g->setScatterStyle(QCPScatterStyle::ssNone);
-    g->setAdaptiveSampling(false);
-    g->setBrush(Qt::NoBrush);
+    // Adaptive sampling stays at its QCustomPlot default (true) for
+    // smooth pan/zoom on long live-preview windows.
     graphs_[name] = g;
     rebuildTable();
     recolorChannels();
