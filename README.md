@@ -168,11 +168,13 @@ Functions:
   `Round`, `Exp`, `Log`, `Log10`, `Sin`, `Cos`, `Tan`, `Asin`,
   `Acos`, `Atan`, `Atan2(y, x)`, `Power(base, exp)`, `Mod(a, b)`,
   `Min(a, b)`, `Max(a, b)`, `Limit(s, lo, hi)`,
-  `Replace(s, oldV, newV [, tol])`, `ForwardFill(s [, fillValue])`.
-  `Replace` swaps matching samples (exact or `|v − oldV| ≤ tol`);
-  `newV` can be a scalar or another signal. `ForwardFill` carries
-  the last good value forward over fill samples (default fill = 0)
-  — handles sensor dropouts that report a sentinel.
+  `Replace(s, oldV, newV [, tol])`,
+  `ForwardFill(s [, fillValue [, tol]])`.
+  Both swap matching samples (exact or `|v − target| ≤ tol`).
+  `Replace`'s `newV` can be a scalar or another signal.
+  `ForwardFill` carries the last good value forward over fill
+  samples (default fill = 0) — handles sensor dropouts that report
+  a noisy sentinel.
 - **Time-axis operations**: `Shift(s, seconds)`, `Slice(s, t_start, t_end)`,
   `Resample(s, rate_or_signal)`.
 - **Frequency**: `FFT(s)` — Hann-windowed, zero-padded radix-2 FFT

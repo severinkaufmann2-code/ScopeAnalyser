@@ -485,31 +485,44 @@ std::shared_ptr<Signal> impl_Replace(const FunctionArgs& a, QString* err) {
         err, "Replace");
 }
 
-// ForwardFill(signal [, fillValue]) — replace samples equal to fillValue
-// (default 0) with the last preceding non-fill value. Leading run of fill
-// values is preserved (no good value has been seen yet).
+// ForwardFill(signal [, fillValue [, tolerance]]) — replace samples that
+// match the fill marker with the last preceding non-fill value. Match is
+// exact by default; pass a positive tolerance to match |v - fillValue| <=
+// tolerance. Leading run of matched samples is preserved (no good value
+// has been seen yet).
 std::shared_ptr<Signal> impl_ForwardFill(const FunctionArgs& a, QString* err) {
-    if (a.size() < 1 || a.size() > 2) {
-        if (err) *err = QString("ForwardFill expects 1 or 2 arg(s), got %1")
+    if (a.size() < 1 || a.size() > 3) {
+        if (err) *err = QString("ForwardFill expects 1, 2, or 3 arg(s), got %1")
                             .arg(a.size());
         return nullptr;
     }
     double fillValue = 0.0;
-    if (a.size() == 2 && !asScalar(a[1], fillValue)) {
+    if (a.size() >= 2 && !asScalar(a[1], fillValue)) {
         if (err) *err = "ForwardFill: fillValue must be a scalar";
         return nullptr;
     }
+    double tol = 0.0;
+    if (a.size() == 3 && !asScalar(a[2], tol)) {
+        if (err) *err = "ForwardFill: tolerance must be a scalar";
+        return nullptr;
+    }
+    if (tol < 0) tol = -tol;
+
     auto signal = a[0];
     auto view = signal->snapshotForRead();
     auto src  = signal->readAsDouble();
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(view.count);
 
+    auto matches = [fillValue, tol](double v) {
+        return (tol == 0) ? (v == fillValue) : (std::abs(v - fillValue) <= tol);
+    };
+
     bool haveGood = false;
     double lastGood = 0.0;
     for (std::size_t i = 0; i < view.count; ++i) {
         const double v = src[i];
-        if (v == fillValue) {
+        if (matches(v)) {
             dst[i] = haveGood ? lastGood : v;   // keep fill if no good value yet
         } else {
             dst[i] = v;
@@ -808,11 +821,12 @@ void FunctionRegistry::registerBuiltins() {
         "default, or within ±tolerance), emit newValue (scalar or another "
         "signal). Useful for swapping sentinels or filling specific values.",
         3, 4, &impl_Replace);
-    add("ForwardFill", "ForwardFill(signal [, fillValue])",
-        "Replace samples equal to fillValue (default 0) with the last "
-        "preceding non-fill value. Leading run of fill samples is kept. "
-        "Useful for sensor dropouts that report a sentinel value.",
-        1, 2, &impl_ForwardFill);
+    add("ForwardFill", "ForwardFill(signal [, fillValue [, tolerance]])",
+        "Replace samples matching fillValue (default 0) with the last "
+        "preceding non-matching value. Match is exact by default, or "
+        "within ±tolerance if given. Leading run of matched samples is "
+        "kept. Useful for sensor dropouts that report a sentinel value.",
+        1, 3, &impl_ForwardFill);
     add("Slice",      "Slice(signal, t_start, t_end)",
         "Keep only samples whose timestamp falls in [t_start, t_end] seconds. "
         "Inclusive bounds.",

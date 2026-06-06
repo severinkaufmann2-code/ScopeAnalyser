@@ -566,3 +566,18 @@ TEST(FormulaEngine, ForwardFillCustomMarker) {
     ASSERT_EQ(vs.size(), want.size());
     for (std::size_t i = 0; i < want.size(); ++i) EXPECT_DOUBLE_EQ(vs[i], want[i]);
 }
+
+TEST(FormulaEngine, ForwardFillTolerantMatchesNearbyValues) {
+    SignalStore store;
+    // Values that drift slightly from the -28000 sentinel.
+    store.add(makeFromValues("S",
+        {100, -28013, -27995, 200, -28000, 300}));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate(
+        "F = ForwardFill(S, -28000, 100)", &err)) << err.toStdString();
+    auto vs = store.get("F")->readAsDouble();
+    const std::vector<double> want = {100, 100, 100, 200, 200, 300};
+    ASSERT_EQ(vs.size(), want.size());
+    for (std::size_t i = 0; i < want.size(); ++i) EXPECT_DOUBLE_EQ(vs[i], want[i]);
+}
