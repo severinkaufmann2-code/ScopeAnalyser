@@ -26,7 +26,9 @@
 #include <QTextStream>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 
@@ -83,15 +85,28 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     auto* viewCombo = new QComboBox(this);
     viewCombo->addItem("Time  (t [s])");
     viewCombo->addItem("Frequency  (f [Hz])");
+    viewCombo->addItem("XY  (channel vs channel)");
     viewCombo->setToolTip(
         "Time: show only time-domain channels (recorded / imported / "
         "derived from time-domain).\n"
-        "Frequency: show only frequency-domain channels (output of "
-        "FFT). The X-axis label updates accordingly.");
+        "Frequency: show only frequency-domain channels (FFT).\n"
+        "XY: pick one channel as the X axis; Y candidates are filtered "
+        "to channels with the same domain as X.");
     viewRow->addWidget(viewCombo, /*stretch=*/1);
+
+    // X-channel selector for XY view. Sits directly under the View combo
+    // and is hidden in Time / Frequency mode.
+    xyXRow_ = new QWidget(this);
+    auto* xyXLayout = new QHBoxLayout(xyXRow_);
+    xyXLayout->setContentsMargins(0, 0, 0, 0);
+    xyXLayout->addWidget(new QLabel("X axis:", xyXRow_));
+    xyXCombo_ = new QComboBox(xyXRow_);
+    xyXLayout->addWidget(xyXCombo_, /*stretch=*/1);
+    xyXRow_->setVisible(false);
 
     auto* leftLayout = new QVBoxLayout();
     leftLayout->addLayout(viewRow);
+    leftLayout->addWidget(xyXRow_);
     leftLayout->addWidget(new QLabel("Channels", this));
     leftLayout->addWidget(table_, /*stretch=*/1);
     leftLayout->addLayout(chBtnRow);
@@ -113,28 +128,49 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     connect(openChartBtn, &QPushButton::clicked, this, &AnalyserPlot::openChartDialog);
     connect(viewCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int idx){
-        viewDomain_ = (idx == 1) ? scope::core::Signal::Domain::Frequency
-                                 : scope::core::Signal::Domain::Time;
-        scope_->plot()->xAxis->setLabel(
-            viewDomain_ == scope::core::Signal::Domain::Frequency
-                ? "f [Hz]" : "t [s]");
+        viewMode_ = (idx == 2) ? ViewMode::XY
+                  : (idx == 1) ? ViewMode::Frequency
+                               : ViewMode::Time;
+        xyXRow_->setVisible(viewMode_ == ViewMode::XY);
+        if (viewMode_ == ViewMode::XY) {
+            rebuildXyXCombo();
+            // Mirror the combo's data() back into xyChannel_ so the
+            // first paint picks up the user's previous choice (or empty
+            // if there's nothing selected yet).
+            xyChannel_ = xyXCombo_->currentData().toString();
+        }
+        // Plottable type differs across modes (Graph vs Curve), so the
+        // map can't just be repurposed.
+        clearAllPlottables();
+        // Reset the X axis label for non-XY; XY sets it from the chosen
+        // channel inside redrawForActiveChannels.
+        if (viewMode_ == ViewMode::Time) {
+            scope_->plot()->xAxis->setLabel("t [s]");
+        } else if (viewMode_ == ViewMode::Frequency) {
+            scope_->plot()->xAxis->setLabel("f [Hz]");
+        }
         rebuildTable();
-        // Fresh data shape — let the next redraw auto-fit X.
+        hasDrawnYet_ = false;     // re-fit X for the new data shape
+        redrawForActiveChannels();
+    });
+    connect(xyXCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int){
+        xyChannel_ = xyXCombo_->currentData().toString();
+        clearAllPlottables();
+        rebuildTable();
         hasDrawnYet_ = false;
         redrawForActiveChannels();
     });
     connect(table_, &QTableWidget::cellDoubleClicked, this,
             [this](int, int){ editChannelDialog(); });
-    // Click on a graph in the chart → select its row in the channels
-    // table (drives the row-selection highlight, so the user can see
-    // which channel they just clicked).
+    // Click on a plottable in the chart → select its row in the channels
+    // table. Works for both QCPGraph (Time / Frequency) and QCPCurve (XY).
     connect(scope_->plot(), &QCustomPlot::plottableClick, this,
             [this](QCPAbstractPlottable* p, int /*dataIndex*/, QMouseEvent*){
-        auto* gr = qobject_cast<QCPGraph*>(p);
-        if (!gr) return;
+        if (!p) return;
         QString clickedName;
-        for (auto it = graphs_.constBegin(); it != graphs_.constEnd(); ++it) {
-            if (it.value() == gr) { clickedName = it.key(); break; }
+        for (auto it = plotted_.constBegin(); it != plotted_.constEnd(); ++it) {
+            if (it.value() == p) { clickedName = it.key(); break; }
         }
         if (clickedName.isEmpty()) return;
         for (int r = 0; r < table_->rowCount(); ++r) {
@@ -179,6 +215,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     connect(scope_, &scope::plot::ScopePlot::yAxesChanged,
             this, [this]{ rebuildAxisCombos(); });
 
+    rebuildXyXCombo();
     rebuildTable();
 }
 
@@ -233,9 +270,40 @@ void AnalyserPlot::rebuildTable() {
     table_->setRowCount(0);
     const bool firstTime = prev.isEmpty();
     const auto names = store_.channelNames();
+
+    // XY mode: Y candidates share the X channel's domain. Mixing time
+    // and frequency axes on the same XY plot doesn't make sense, and
+    // the user agreed in the design discussion that strictly matching
+    // domains is the right rule.
+    scope::core::Signal::Domain xyDomain = scope::core::Signal::Domain::Time;
+    bool xyHasX = false;
+    if (viewMode_ == ViewMode::XY && !xyChannel_.isEmpty()) {
+        if (auto xs = store_.get(xyChannel_)) {
+            xyDomain = xs->meta().domain;
+            xyHasX = true;
+        }
+    }
+
     for (const auto& name : names) {
-        // Only show channels in the currently-selected domain.
-        if (auto s = store_.get(name); s && s->meta().domain != viewDomain_) continue;
+        auto s = store_.get(name);
+        if (!s) continue;
+        switch (viewMode_) {
+            case ViewMode::Time:
+                if (s->meta().domain != scope::core::Signal::Domain::Time) continue;
+                break;
+            case ViewMode::Frequency:
+                if (s->meta().domain != scope::core::Signal::Domain::Frequency) continue;
+                break;
+            case ViewMode::XY:
+                // No X picked yet → empty Y list; user picks X first.
+                if (!xyHasX) continue;
+                // Skip the X channel itself — it appears in the X combo
+                // above the table.
+                if (name == xyChannel_) continue;
+                // Same-domain filter.
+                if (s->meta().domain != xyDomain) continue;
+                break;
+        }
         const int r = table_->rowCount();
         table_->insertRow(r);
 
@@ -287,8 +355,9 @@ void AnalyserPlot::rebuildAxisCombos() {
 void AnalyserPlot::onAxisComboChanged(int row, int axisIndex) {
     if (row < 0 || row >= table_->rowCount()) return;
     const QString name = table_->item(row, ColName)->text();
-    if (!graphs_.contains(name)) return;
-    scope_->setGraphYAxis(graphs_[name], axisIndex);
+    auto* p = plotted_.value(name, nullptr);
+    if (!p) return;
+    p->setValueAxis(scope_->yAxis(axisIndex));
     recolorChannels();
     scope_->plot()->replot(QCustomPlot::rpQueuedReplot);
 }
@@ -303,89 +372,228 @@ void AnalyserPlot::recolorChannels() {
     QHash<int, int> perAxisCounter;
     for (int r = 0; r < table_->rowCount(); ++r) {
         const QString name = table_->item(r, ColName)->text();
-        if (!graphs_.contains(name)) continue;
+        if (!plotted_.contains(name)) continue;
         const int axisIdx = axisIndexForRow(r);
         const int onAxis  = perAxisCounter[axisIdx]++;
         const QColor c = scope_->deriveChannelColor(axisIdx, onAxis);
-        graphs_[name]->setPen(QPen(c));
+        plotted_[name]->setPen(QPen(c));
     }
 }
 
-void AnalyserPlot::onChannelAdded(QString /*name*/)   { rebuildTable(); redrawForActiveChannels(); }
+void AnalyserPlot::onChannelAdded(QString /*name*/) {
+    rebuildXyXCombo();
+    rebuildTable();
+    redrawForActiveChannels();
+}
 void AnalyserPlot::onChannelRemoved(QString name) {
-    if (graphs_.contains(name)) {
-        scope_->plot()->removeGraph(graphs_[name]);
-        graphs_.remove(name);
+    if (plotted_.contains(name)) {
+        scope_->plot()->removePlottable(plotted_[name]);
+        plotted_.remove(name);
+    }
+    if (name == xyChannel_) {
+        xyChannel_.clear();
+        rebuildXyXCombo();
+    } else {
+        rebuildXyXCombo();
     }
     rebuildTable();
     redrawForActiveChannels();
 }
 
+void AnalyserPlot::clearAllPlottables() {
+    auto* plot = scope_->plot();
+    for (auto it = plotted_.begin(); it != plotted_.end(); ++it) {
+        plot->removePlottable(it.value());
+    }
+    plotted_.clear();
+}
+
+void AnalyserPlot::rebuildXyXCombo() {
+    if (!xyXCombo_) return;
+    QSignalBlocker b(xyXCombo_);
+    const QString prev = xyXCombo_->currentData().toString().isEmpty()
+                            ? xyChannel_
+                            : xyXCombo_->currentData().toString();
+    xyXCombo_->clear();
+    xyXCombo_->addItem("— (choose) —", QString());
+    for (const auto& n : store_.channelNames()) {
+        auto s = store_.get(n);
+        if (!s) continue;
+        const QString unitTag =
+            s->meta().unit.isEmpty() ? QString()
+                                     : QString(" [%1]").arg(s->meta().unit);
+        const QString domainTag =
+            s->meta().domain == scope::core::Signal::Domain::Frequency
+                ? QString("  (freq)") : QString();
+        xyXCombo_->addItem(n + unitTag + domainTag, n);
+    }
+    const int idx = prev.isEmpty() ? 0 : xyXCombo_->findData(prev);
+    xyXCombo_->setCurrentIndex(idx >= 0 ? idx : 0);
+    xyChannel_ = xyXCombo_->currentData().toString();
+}
+
 void AnalyserPlot::redrawAll() { redrawForActiveChannels(); }
+
+namespace {
+
+// Linear interpolation of Y at time t, given Y's monotonic timestamp
+// array. Returns NaN outside Y's range so the curve simply skips that
+// X sample rather than extrapolating.
+double interpAt(const scope::core::TimestampNs* ts,
+                const std::vector<double>& vs,
+                std::size_t n,
+                scope::core::TimestampNs t) {
+    if (n == 0) return std::numeric_limits<double>::quiet_NaN();
+    if (t <= ts[0])    return vs.front();
+    if (t >= ts[n-1])  return vs.back();
+    auto* lo = std::lower_bound(ts, ts + n, t);
+    const std::size_t hi = lo - ts;
+    if (hi == 0) return vs[0];
+    const std::size_t loIdx = hi - 1;
+    const double dt = static_cast<double>(ts[hi] - ts[loIdx]);
+    if (dt == 0) return vs[loIdx];
+    const double frac = static_cast<double>(t - ts[loIdx]) / dt;
+    return vs[loIdx] + frac * (vs[hi] - vs[loIdx]);
+}
+
+}  // namespace
 
 void AnalyserPlot::redrawForActiveChannels() {
     const auto active = activeChannels();
     auto* plot = scope_->plot();
 
-    for (auto it = graphs_.begin(); it != graphs_.end(); ) {
+    // Drop plottables whose rows are no longer active (visibility toggled
+    // off, channel removed from current view).
+    for (auto it = plotted_.begin(); it != plotted_.end(); ) {
         if (!active.contains(it.key())) {
-            plot->removeGraph(it.value());
-            it = graphs_.erase(it);
+            plot->removePlottable(it.value());
+            it = plotted_.erase(it);
         } else { ++it; }
     }
 
     double xMin = std::numeric_limits<double>::infinity();
     double xMax = -std::numeric_limits<double>::infinity();
 
-    double base = std::numeric_limits<double>::infinity();
-    for (const auto& name : active) {
-        auto sig = store_.get(name);
-        if (!sig) continue;
-        auto view = sig->snapshotForRead();
-        if (view.count > 0) base = std::min(base, view.timestamps[0] / 1e9);
-    }
-    if (base == std::numeric_limits<double>::infinity()) base = 0;
-
-    for (int r = 0; r < table_->rowCount(); ++r) {
-        const QString name = table_->item(r, ColName)->text();
-        if (!active.contains(name)) continue;
-        auto sig = store_.get(name);
-        if (!sig) continue;
-
-        const int axisIndex = axisIndexForRow(r);
-
-        QCPGraph* graph = graphs_.value(name, nullptr);
-        if (!graph) {
-            graph = plot->addGraph(plot->xAxis, scope_->yAxis(axisIndex));
-            graph->setName(name);
-            // Adaptive sampling is left at its QCustomPlot default (true):
-            // it draws one min/max line per pixel column for dense data,
-            // which is essential for smooth pan/zoom on signals with
-            // hundreds of thousands of samples. The "histogram bars" the
-            // user once reported turned out to be a real comb pattern
-            // produced by the old central-difference Derivative on
-            // quantised data, not a rendering bug — the run-based
-            // Derivative no longer produces that pattern.
-            graphs_[name] = graph;
-            scope_->applyLineDisplayModeTo(graph);
-        } else if (graph->valueAxis() != scope_->yAxis(axisIndex)) {
-            scope_->setGraphYAxis(graph, axisIndex);
+    if (viewMode_ == ViewMode::XY) {
+        // ------------ XY: curves of one channel's values vs another -----
+        auto xSig = xyChannel_.isEmpty() ? nullptr : store_.get(xyChannel_);
+        if (xSig) {
+            const QString unit = xSig->meta().unit;
+            plot->xAxis->setLabel(
+                unit.isEmpty() ? xyChannel_
+                               : QString("%1 [%2]").arg(xyChannel_, unit));
+        } else {
+            plot->xAxis->setLabel("(choose an X channel)");
         }
 
-        auto view = sig->snapshotForRead();
-        auto values = sig->readAsDouble();
-        QVector<double> xs, ys;
-        xs.reserve(static_cast<int>(view.count));
-        ys.reserve(static_cast<int>(view.count));
-        for (std::size_t i = 0; i < view.count; ++i) {
-            const double x = view.timestamps[i] / 1e9 - base;
-            xs.push_back(x);
-            const double v = (i < values.size()) ? values[i] : 0.0;
-            ys.push_back(v);
-            xMin = std::min(xMin, x);
-            xMax = std::max(xMax, x);
+        for (int r = 0; r < table_->rowCount(); ++r) {
+            const QString name = table_->item(r, ColName)->text();
+            if (!active.contains(name)) continue;
+            if (!xSig) continue;
+            auto ySig = store_.get(name);
+            if (!ySig) continue;
+
+            const int axisIndex = axisIndexForRow(r);
+
+            // Wrong plottable type left over from a previous mode → drop.
+            auto* existing = plotted_.value(name, nullptr);
+            auto* curve = qobject_cast<QCPCurve*>(existing);
+            if (existing && !curve) {
+                plot->removePlottable(existing);
+                plotted_.remove(name);
+                existing = nullptr;
+            }
+            if (!curve) {
+                curve = new QCPCurve(plot->xAxis, scope_->yAxis(axisIndex));
+                curve->setName(name);
+                plotted_[name] = curve;
+            } else if (curve->valueAxis() != scope_->yAxis(axisIndex)) {
+                curve->setValueAxis(scope_->yAxis(axisIndex));
+            }
+
+            // Pair X-signal values with Y-signal values. If both have
+            // byte-identical timestamp arrays we can pair by index —
+            // fast-path with zero per-sample work. Otherwise we linearly
+            // interpolate Y onto X's grid.
+            auto xView = xSig->snapshotForRead();
+            auto yView = ySig->snapshotForRead();
+            auto xVals = xSig->readAsDouble();
+            auto yVals = ySig->readAsDouble();
+            const bool sameGrid =
+                xView.count == yView.count
+                && (xView.count == 0
+                    || std::memcmp(xView.timestamps, yView.timestamps,
+                                   xView.count * sizeof(scope::core::TimestampNs)) == 0);
+            QVector<double> xs, ys;
+            xs.reserve(static_cast<int>(xView.count));
+            ys.reserve(static_cast<int>(xView.count));
+            for (std::size_t i = 0; i < xView.count; ++i) {
+                const double xv = (i < xVals.size()) ? xVals[i] : 0.0;
+                const double yv = sameGrid
+                    ? ((i < yVals.size()) ? yVals[i] : 0.0)
+                    : interpAt(yView.timestamps, yVals, yView.count,
+                               xView.timestamps[i]);
+                xs.push_back(xv);
+                ys.push_back(yv);
+                xMin = std::min(xMin, xv);
+                xMax = std::max(xMax, xv);
+            }
+            curve->setData(xs, ys);
         }
-        graph->setData(xs, ys, /*alreadySorted=*/true);
+    } else {
+        // ------------ Time / Frequency: regular graphs ----------------
+        double base = std::numeric_limits<double>::infinity();
+        for (const auto& name : active) {
+            auto sig = store_.get(name);
+            if (!sig) continue;
+            auto view = sig->snapshotForRead();
+            if (view.count > 0) base = std::min(base, view.timestamps[0] / 1e9);
+        }
+        if (base == std::numeric_limits<double>::infinity()) base = 0;
+
+        for (int r = 0; r < table_->rowCount(); ++r) {
+            const QString name = table_->item(r, ColName)->text();
+            if (!active.contains(name)) continue;
+            auto sig = store_.get(name);
+            if (!sig) continue;
+
+            const int axisIndex = axisIndexForRow(r);
+
+            auto* existing = plotted_.value(name, nullptr);
+            auto* graph = qobject_cast<QCPGraph*>(existing);
+            if (existing && !graph) {
+                plot->removePlottable(existing);
+                plotted_.remove(name);
+                existing = nullptr;
+            }
+            if (!graph) {
+                graph = plot->addGraph(plot->xAxis, scope_->yAxis(axisIndex));
+                graph->setName(name);
+                // Adaptive sampling is left at its QCustomPlot default
+                // (true): one min/max line per pixel column for dense
+                // data, essential for smooth pan/zoom on signals with
+                // hundreds of thousands of samples.
+                plotted_[name] = graph;
+                scope_->applyLineDisplayModeTo(graph);
+            } else if (graph->valueAxis() != scope_->yAxis(axisIndex)) {
+                scope_->setGraphYAxis(graph, axisIndex);
+            }
+
+            auto view = sig->snapshotForRead();
+            auto values = sig->readAsDouble();
+            QVector<double> xs, ys;
+            xs.reserve(static_cast<int>(view.count));
+            ys.reserve(static_cast<int>(view.count));
+            for (std::size_t i = 0; i < view.count; ++i) {
+                const double x = view.timestamps[i] / 1e9 - base;
+                xs.push_back(x);
+                const double v = (i < values.size()) ? values[i] : 0.0;
+                ys.push_back(v);
+                xMin = std::min(xMin, x);
+                xMax = std::max(xMax, x);
+            }
+            graph->setData(xs, ys, /*alreadySorted=*/true);
+        }
     }
 
     recolorChannels();
