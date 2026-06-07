@@ -8,7 +8,13 @@ add_executable(scope_tests
     test_csv_writer.cpp
     test_mock_pipeline.cpp
     test_scope_plot.cpp
+    test_analyser_layout.cpp
 )
+
+# test_analyser_layout.cpp drives AnalyserPlot directly; its header lives in
+# the analyser target's private ui/ dir, so expose it to the test target.
+target_include_directories(scope_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/analyser/ui)
 
 target_link_libraries(scope_tests PRIVATE
     scope::scope_core

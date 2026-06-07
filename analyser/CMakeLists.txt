@@ -31,6 +31,7 @@ scope_add_library(scope_analyser
         qcustomplot::qcustomplot
     PRIVATE_LIBS
         spdlog::spdlog
+        Qt6::Concurrent
     FOLDER scope/analyser
 )
 

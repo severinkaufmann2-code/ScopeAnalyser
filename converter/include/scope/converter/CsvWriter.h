@@ -31,6 +31,15 @@ struct CsvExportOptions {
     // header heuristics. Most CSV consumers (NumPy / pandas / R) skip `#`
     // comment lines; Excel does not — it'll show the metadata as row 1.
     bool     includeMetadata{true};
+
+    // Optional PlotLayout JSON, embedded as the "layout" key of the
+    // scope-csv metadata blob. Set by the Analyser's Save chart… so a
+    // re-opened CSV restores per-domain Y axes / channel→axis assignments
+    // / view mode / XY-X channel automatically. Stored as a JSON string
+    // (via PlotLayout::toJsonString) to avoid leaking nlohmann/json into
+    // this public header. Empty → no "layout" key is written, foreign /
+    // non-Analyser CSVs are completely unaffected.
+    QString  layoutJson;
 };
 
 // Write the given signals to `path` according to `opts`. Returns false and

@@ -45,6 +45,13 @@ public:
     // Load every channel from a read-opened file into memory as Signal objects.
     std::vector<std::shared_ptr<Signal>> loadAllSignals(QString* errorOut = nullptr);
 
+    // Optional plot-layout blob, stored as a string attribute on a top-level
+    // "/metadata" group. The host (Analyser) hands down a PlotLayout JSON so a
+    // re-opened .h5 restores axes / view mode / channel assignments. Foreign
+    // files simply lack the attribute → readLayout() returns an empty string.
+    bool    writeLayout(const QString& json, QString* errorOut = nullptr);
+    QString readLayout() const;
+
     void flush();
 
 private:

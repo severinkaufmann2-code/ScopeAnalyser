@@ -31,4 +31,11 @@ Please elaborate this plan and make it more clear
 Think very hard make a deep research on the subject. Then give me your exact plans bevor you do anything.
 Maby you can take Flow CSV Editor as a basic example.
 
-    
+done
+________________________________________________________
+new
+what other algo there are for frequency analysis beside FFT. Is there a other algo which
+  is more accruate than FFT? 
+
+
+

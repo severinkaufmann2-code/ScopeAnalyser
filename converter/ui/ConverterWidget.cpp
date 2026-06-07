@@ -1,4 +1,5 @@
 #include "scope/converter/ConverterWidget.h"
+#include "scope/converter/BusyRunner.h"
 #include "scope/converter/ConverterProfile.h"
 #include "scope/converter/CsvSource.h"
 #include "scope/converter/CsvWriter.h"
@@ -486,7 +487,13 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     //      doesn't push to store until the user picks + Applies. ----
     auto openRecording = [this, saveActiveState, loadActiveState, addFileToList]
         (const QString& path) {
-        auto r = converter::loadFile(std::filesystem::path(path.toStdString()));
+        // Read off the GUI thread behind a busy dialog (shared with the
+        // Analyser) so a large .h5 / .mf4 doesn't look frozen.
+        auto r = converter::ui::runWithBusyDialog(this, "Opening file…",
+            [path] {
+                return converter::loadFile(
+                    std::filesystem::path(path.toStdString()));
+            });
         if (!r.ok && r.channels.empty()) {
             QMessageBox::critical(this, "Open failed",
                 r.error.isEmpty() ? QString("Unknown error") : r.error);
@@ -1161,21 +1168,37 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         converter::SaveOptions opts;
         opts.csv = dlg.csvOptions();
 
-        QStringList messages;
-        QString err;
-        const auto result = converter::saveChartFromStore(
-            sel.first(), store_, fmt, filters, opts, &messages, &err);
-        switch (result) {
+        // Write off the GUI thread behind a busy dialog (shared with the
+        // Analyser); saveChartFromStore reads the store via its
+        // concurrent-read path, so this is safe.
+        struct SaveOutcome {
+            converter::ChartSaveResult result{converter::ChartSaveResult::Failed};
+            QStringList messages;
+            QString error;
+        };
+        const QString target = sel.first();
+        const auto outcome = converter::ui::runWithBusyDialog(this, "Saving chart…",
+            [&]() -> SaveOutcome {
+                SaveOutcome o;
+                QStringList msgs;
+                QString err;
+                o.result   = converter::saveChartFromStore(
+                    target, store_, fmt, filters, opts, &msgs, &err);
+                o.messages = std::move(msgs);
+                o.error    = std::move(err);
+                return o;
+            });
+        switch (outcome.result) {
             case converter::ChartSaveResult::NothingMatchedFilters:
                 QMessageBox::warning(this, "Nothing to save",
                     "No channels matched the current filters / time range.");
                 return;
             case converter::ChartSaveResult::Failed:
-                QMessageBox::critical(this, "Save failed", err);
+                QMessageBox::critical(this, "Save failed", outcome.error);
                 return;
             case converter::ChartSaveResult::Ok:
-                impl_->statusLabel->setText("Saved: " + messages.join("; "));
-                QMessageBox::information(this, "Saved", messages.join("\n"));
+                impl_->statusLabel->setText("Saved: " + outcome.messages.join("; "));
+                QMessageBox::information(this, "Saved", outcome.messages.join("\n"));
                 return;
         }
     });

@@ -182,6 +182,18 @@ bool writeCsv(const std::filesystem::path& path,
             arr.push_back(std::move(j));
         }
         meta["columns"] = std::move(arr);
+        if (!opts.layoutJson.isEmpty()) {
+            // Splice the layout in as a nested object rather than as an
+            // opaque string so a reader can `root["layout"]` it directly.
+            // Malformed input falls through silently — we'd rather emit a
+            // chart without the optional layout than refuse to save.
+            try {
+                meta["layout"] = nlohmann::json::parse(
+                    opts.layoutJson.toStdString());
+            } catch (...) {
+                // intentionally swallowed — see comment above
+            }
+        }
         out << "# scope-csv: "
             << QString::fromStdString(meta.dump())
             << row;

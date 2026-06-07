@@ -5,6 +5,7 @@
 #include <mdf/mdfreader.h>
 #include <mdf/mdffile.h>
 #include <mdf/iheader.h>
+#include <mdf/imetadata.h>
 #include <mdf/idatagroup.h>
 #include <mdf/ichannelgroup.h>
 #include <mdf/ichannel.h>
@@ -358,6 +359,50 @@ std::vector<std::shared_ptr<Signal>> Mdf4Session::loadAllSignals(QString* errorO
     } catch (const std::exception& e) {
         if (errorOut) *errorOut = QString::fromUtf8(e.what());
         spdlog::error("Mdf4Session::loadAllSignals: {}", e.what());
+        return {};
+    }
+}
+
+bool Mdf4Session::writeLayout(const QString& json, QString* errorOut) {
+    if (!impl_->writable || !impl_->writer) {
+        if (errorOut) *errorOut = "File not open for write";
+        return false;
+    }
+    if (json.isEmpty()) return true;  // nothing to embed
+    try {
+        auto* header = impl_->writer->Header();
+        if (!header) {
+            if (errorOut) *errorOut = "Writer has no header";
+            return false;
+        }
+        auto* md = header->MetaData();
+        if (!md) md = header->CreateMetaData();
+        if (!md) {
+            if (errorOut) *errorOut = "Couldn't create header metadata";
+            return false;
+        }
+        md->StringProperty("plot_layout", json.toStdString());
+        return true;
+    } catch (const std::exception& e) {
+        if (errorOut) *errorOut = QString::fromUtf8(e.what());
+        spdlog::error("Mdf4Session::writeLayout: {}", e.what());
+        return false;
+    }
+}
+
+QString Mdf4Session::readLayout() const {
+    if (!impl_->reader) return {};
+    try {
+        impl_->reader->ReadEverythingButData();  // ensure HD/MD blocks are in
+        const auto* file = impl_->reader->GetFile();
+        if (!file) return {};
+        const auto* header = file->Header();
+        if (!header) return {};
+        const auto* md = header->MetaData();
+        if (!md) return {};
+        return QString::fromStdString(md->StringProperty("plot_layout"));
+    } catch (const std::exception& e) {
+        spdlog::warn("Mdf4Session::readLayout: {}", e.what());
         return {};
     }
 }

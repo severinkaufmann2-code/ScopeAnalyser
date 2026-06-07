@@ -49,7 +49,8 @@ void splitNameUnit(const QString& header, QString* name, QString* unit) {
 
 bool loadCsvChart(const std::filesystem::path& path,
                   std::vector<std::shared_ptr<Signal>>* out,
-                  QString* errorOut) {
+                  QString* errorOut,
+                  QString* layoutJsonOut = nullptr) {
     QFile f(QString::fromStdString(path.string()));
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (errorOut) *errorOut = "Couldn't open file.";
@@ -94,6 +95,13 @@ bool loadCsvChart(const std::filesystem::path& path,
         // ---- Metadata-driven mapping (authoritative) ----------------
         try {
             const auto root = nlohmann::json::parse(metaJson.toStdString());
+            // Hand the embedded PlotLayout up to the host (Analyser's
+            // openChartDialog feeds it through PlotLayout::fromJsonString).
+            // Missing key → leave layoutJsonOut empty so the host falls
+            // back to its existing behaviour.
+            if (layoutJsonOut && root.contains("layout")) {
+                *layoutJsonOut = QString::fromStdString(root["layout"].dump());
+            }
             const auto& arr = root.value("columns", nlohmann::json::array());
             std::vector<std::string> roles;
             std::vector<std::string> units;
@@ -239,6 +247,7 @@ bool loadCsvChart(const std::filesystem::path& path,
 
 bool writeHdf5(const std::filesystem::path& path,
                const std::vector<std::shared_ptr<Signal>>& chans,
+               const QString& layoutJson,
                QString* errorOut) {
     QString err;
     auto session = scope::core::Hdf5Session::create(path, &err);
@@ -261,12 +270,14 @@ bool writeHdf5(const std::filesystem::path& path,
                                    v.timestamps, v.values, v.count, &err);
         }
     }
+    if (!layoutJson.isEmpty()) session->writeLayout(layoutJson, &err);
     session->flush();
     return true;
 }
 
 bool writeMdf4(const std::filesystem::path& path,
                const std::vector<std::shared_ptr<Signal>>& chans,
+               const QString& layoutJson,
                QString* errorOut) {
     QString err;
     auto session = scope::core::Mdf4Session::create(path, &err);
@@ -282,6 +293,10 @@ bool writeMdf4(const std::filesystem::path& path,
         if (!s) continue;
         session->addChannel(s->meta(), &err);
     }
+    // Set header metadata before the first appendSamples — mdflib writes the
+    // HD/MD block lazily on InitMeasurement (triggered by the first sample, or
+    // by finalize() when there are none), after which it's no longer editable.
+    if (!layoutJson.isEmpty()) session->writeLayout(layoutJson, &err);
     for (const auto& s : chans) {
         if (!s) continue;
         auto v = s->snapshotForRead();
@@ -337,6 +352,7 @@ LoadResult loadFile(const std::filesystem::path& path, FileFormat fmt) {
             auto s = scope::core::Hdf5Session::openForRead(path, &err);
             if (!s) { r.error = err.isEmpty() ? "Couldn't open file." : err; return r; }
             r.channels = s->loadAllSignals(&err);
+            r.layoutJson = s->readLayout();
             r.error = err;
             r.ok = !r.channels.empty() || err.isEmpty();
             return r;
@@ -345,12 +361,13 @@ LoadResult loadFile(const std::filesystem::path& path, FileFormat fmt) {
             auto s = scope::core::Mdf4Session::openForRead(path, &err);
             if (!s) { r.error = err.isEmpty() ? "Couldn't open file." : err; return r; }
             r.channels = s->loadAllSignals(&err);
+            r.layoutJson = s->readLayout();
             r.error = err;
             r.ok = !r.channels.empty() || err.isEmpty();
             return r;
         }
         case FileFormat::Csv:
-            r.ok = loadCsvChart(path, &r.channels, &r.error);
+            r.ok = loadCsvChart(path, &r.channels, &r.error, &r.layoutJson);
             return r;
         case FileFormat::Auto:
         default:
@@ -366,9 +383,16 @@ bool saveFile(const std::filesystem::path& path,
               QString* errorOut) {
     if (fmt == FileFormat::Auto) fmt = detectFormatFromExtension(path);
     switch (fmt) {
-        case FileFormat::Hdf5: return writeHdf5(path, channels, errorOut);
-        case FileFormat::Mdf4: return writeMdf4(path, channels, errorOut);
-        case FileFormat::Csv:  return writeCsv (path, channels, opts.csv, errorOut);
+        case FileFormat::Hdf5: return writeHdf5(path, channels, opts.layoutJson, errorOut);
+        case FileFormat::Mdf4: return writeMdf4(path, channels, opts.layoutJson, errorOut);
+        case FileFormat::Csv: {
+            // Bridge the format-agnostic layout into the CSV writer's own
+            // knob. SaveOptions::layoutJson wins when set so all formats are
+            // driven from the same field.
+            CsvExportOptions csvOpts = opts.csv;
+            if (!opts.layoutJson.isEmpty()) csvOpts.layoutJson = opts.layoutJson;
+            return writeCsv(path, channels, csvOpts, errorOut);
+        }
         case FileFormat::Auto:
         default:
             if (errorOut) *errorOut = "Unsupported file format (couldn't detect from extension).";
@@ -452,22 +476,33 @@ ChartSaveResult saveChartFromStore(
     const bool haveBoth = !timeChans.empty() && !freqChans.empty();
     const bool reallySplit = filters.splitDomainsIntoTwoFiles && haveBoth;
 
+    // Each write gets its own layout string: a split single-domain file
+    // carries only that domain's layout (opts.layoutJsonByDomain), while a
+    // combined file keeps the full opts.layoutJson. Missing per-domain key
+    // falls back to the full layout.
     auto writeOne = [&](const QString& outPath,
                         const std::vector<std::shared_ptr<Signal>>& chans,
+                        const QString& layoutForFile,
                         QString* err) -> bool {
+        SaveOptions o = opts;
+        o.layoutJson = layoutForFile;
         return saveFile(std::filesystem::path(outPath.toStdString()),
-                        chans, fmt, opts, err);
+                        chans, fmt, o, err);
     };
 
     QString err;
     if (reallySplit) {
         const QString tPath = withSuffixBeforeExt(basePath, "_time");
         const QString fPath = withSuffixBeforeExt(basePath, "_frequency");
-        if (!writeOne(tPath, timeChans, &err)) {
+        if (!writeOne(tPath, timeChans,
+                      opts.layoutJsonByDomain.value("time", opts.layoutJson),
+                      &err)) {
             if (errorOut) *errorOut = err;
             return ChartSaveResult::Failed;
         }
-        if (!writeOne(fPath, freqChans, &err)) {
+        if (!writeOne(fPath, freqChans,
+                      opts.layoutJsonByDomain.value("frequency", opts.layoutJson),
+                      &err)) {
             if (errorOut) *errorOut = err;
             return ChartSaveResult::Failed;
         }
@@ -489,7 +524,7 @@ ChartSaveResult saveChartFromStore(
     all.reserve(timeChans.size() + freqChans.size());
     for (auto& s : timeChans) all.push_back(s);
     for (auto& s : freqChans) all.push_back(s);
-    if (!writeOne(basePath, all, &err)) {
+    if (!writeOne(basePath, all, opts.layoutJson, &err)) {
         if (errorOut) *errorOut = err;
         return ChartSaveResult::Failed;
     }

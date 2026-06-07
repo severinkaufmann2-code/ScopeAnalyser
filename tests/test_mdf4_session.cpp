@@ -1,6 +1,8 @@
 #include "scope/converter/SignalIO.h"
 #include "scope/core/Mdf4Session.h"
 #include "scope/core/Signal.h"
+#include "scope/core/SignalStore.h"
+#include "scope/plot/PlotLayout.h"
 
 #include <gtest/gtest.h>
 
@@ -378,6 +380,122 @@ TEST(Mdf4Session, SignalIORoundTripMatchesAnalyserPath) {
             if (::testing::Test::HasFailure()) break;
         }
     }
+
+    std::filesystem::remove(path);
+}
+
+// Reproduce the EXACT Analyser save path: saveChartFromStore() (not the
+// lower-level saveFile) for each format, then loadFile() and confirm the
+// embedded layout survives. This is the function saveChartDialog calls.
+TEST(ChartLayoutIO, SaveChartFromStoreRoundTripsLayoutAllFormats) {
+    using namespace scope::converter;
+    using namespace scope::core;
+
+    SignalStore store;
+    auto mk = [&](const char* name, const char* unit, Signal::Domain dom) {
+        Signal::Meta m; m.name = name; m.unit = unit;
+        m.dataType = DataType::Float64; m.domain = dom;
+        std::vector<TimestampNs> ts{0, 1'000'000LL, 2'000'000LL};
+        std::vector<double> vs{1.0, 2.0, 3.0};
+        auto s = std::make_shared<Signal>(m);
+        s->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), ts.size());
+        store.add(s);
+    };
+    mk("speed",  "rpm", Signal::Domain::Time);
+    mk("torque", "Nm",  Signal::Domain::Time);
+
+    // A layout like currentLayout() would build for a time-domain chart.
+    scope::plot::PlotLayout lay;
+    lay.viewMode = "time";
+    QList<scope::plot::PlotLayoutAxis> axes;
+    axes.append({"rpm", "left",  true, 0.0, 6000.0});
+    axes.append({"Nm",  "right", true, 0.0, 500.0});
+    lay.axesByDomain.insert("time", axes);
+    QList<scope::plot::PlotLayoutChannel> chans;
+    { scope::plot::PlotLayoutChannel c; c.name = "speed";  c.axisIndex = 0; c.domain = "time"; chans.append(c); }
+    { scope::plot::PlotLayoutChannel c; c.name = "torque"; c.axisIndex = 1; c.domain = "time"; chans.append(c); }
+    lay.channelsByDomain.insert("time", chans);
+    lay.axes = axes; lay.channels = chans;
+
+    SaveOptions opts;
+    opts.layoutJson = lay.toJsonString();
+    ASSERT_FALSE(opts.layoutJson.isEmpty());
+
+    struct Case { FileFormat fmt; const char* ext; };
+    for (const Case& cs : {Case{FileFormat::Csv,  "csv"},
+                           Case{FileFormat::Hdf5, "h5"},
+                           Case{FileFormat::Mdf4, "mf4"}}) {
+        auto path = std::filesystem::temp_directory_path()
+                  / (std::string("scope_chart_layout.") + cs.ext);
+        std::filesystem::remove(path);
+
+        QStringList msgs; QString err;
+        const auto res = saveChartFromStore(
+            QString::fromStdString(path.string()), store, cs.fmt,
+            ChartSaveFilters{}, opts, &msgs, &err);
+        ASSERT_EQ(res, ChartSaveResult::Ok)
+            << cs.ext << " save failed: " << err.toStdString();
+
+        auto r = loadFile(path, cs.fmt);
+        ASSERT_TRUE(r.ok) << cs.ext << ": " << r.error.toStdString();
+        ASSERT_FALSE(r.layoutJson.isEmpty())
+            << cs.ext << ": layout was NOT embedded by saveChartFromStore";
+
+        const auto back = scope::plot::PlotLayout::fromJsonString(r.layoutJson);
+        EXPECT_EQ(back.viewMode, "time") << cs.ext;
+        ASSERT_TRUE(back.axesByDomain.contains("time")) << cs.ext;
+        ASSERT_EQ(back.axesByDomain["time"].size(), 2) << cs.ext;
+        EXPECT_EQ(back.axesByDomain["time"][1].label, "Nm") << cs.ext;
+        ASSERT_TRUE(back.channelsByDomain.contains("time")) << cs.ext;
+        ASSERT_EQ(back.channelsByDomain["time"].size(), 2) << cs.ext;
+        EXPECT_EQ(back.channelsByDomain["time"][1].axisIndex, 1) << cs.ext;
+
+        std::filesystem::remove(path);
+    }
+}
+
+// End-to-end via SignalIO: a saved .mf4 carries the embedded PlotLayout in
+// its header metadata; a plain save without a layout reads back empty.
+TEST(Mdf4Session, SignalIOEmbedsLayout) {
+    auto path = std::filesystem::temp_directory_path() / "scope_mdf4_layout.mf4";
+
+    Signal::Meta m; m.name = "speed"; m.unit = "rpm"; m.dataType = DataType::Float64;
+    std::vector<TimestampNs> ts{0, 1'000'000LL, 2'000'000LL};
+    std::vector<double> vs{1.0, 2.0, 3.0};
+    auto sig = std::make_shared<Signal>(m);
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), ts.size());
+    std::vector<std::shared_ptr<Signal>> chans{sig};
+
+    using namespace scope::converter;
+
+    // No layout → empty on read.
+    std::filesystem::remove(path);
+    QString err;
+    ASSERT_TRUE(saveFile(path, chans, FileFormat::Mdf4, {}, &err)) << err.toStdString();
+    EXPECT_TRUE(loadFile(path, FileFormat::Mdf4).layoutJson.isEmpty());
+
+    // With layout → round-trips through the MDF4 header metadata.
+    scope::plot::PlotLayout lay;
+    lay.viewMode = "frequency";
+    QList<scope::plot::PlotLayoutAxis> a; a.append({"rpm", "left", true, 0.0, 6000.0});
+    lay.axesByDomain.insert("time", a);
+    QList<scope::plot::PlotLayoutChannel> c;
+    { scope::plot::PlotLayoutChannel ch; ch.name = "speed"; ch.axisIndex = 0; ch.domain = "time"; c.append(ch); }
+    lay.channelsByDomain.insert("time", c);
+
+    SaveOptions opts; opts.layoutJson = lay.toJsonString();
+    std::filesystem::remove(path);
+    ASSERT_TRUE(saveFile(path, chans, FileFormat::Mdf4, opts, &err)) << err.toStdString();
+
+    auto r = loadFile(path, FileFormat::Mdf4);
+    ASSERT_TRUE(r.ok) << r.error.toStdString();
+    ASSERT_FALSE(r.layoutJson.isEmpty());
+    const auto back = scope::plot::PlotLayout::fromJsonString(r.layoutJson);
+    EXPECT_EQ(back.viewMode, "frequency");
+    ASSERT_TRUE(back.axesByDomain.contains("time"));
+    EXPECT_EQ(back.axesByDomain["time"][0].label, "rpm");
+    ASSERT_TRUE(back.channelsByDomain.contains("time"));
+    EXPECT_EQ(back.channelsByDomain["time"][0].name, "speed");
 
     std::filesystem::remove(path);
 }

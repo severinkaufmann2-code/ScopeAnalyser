@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace scope::core;
@@ -24,6 +25,50 @@ std::shared_ptr<Signal> makeRamp(QString name, std::size_t n, double dtSec, doub
         vs[i] = startVal + static_cast<double>(i);
     }
     sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), n);
+    return sig;
+}
+
+// A sine of amplitude `amp` at `freq` Hz, sampled at `fs` Hz. fs is chosen in
+// tests to divide 1e9 so timestamps are exact integer nanoseconds.
+std::shared_ptr<Signal> makeSine(QString name, std::size_t n, double fs,
+                                 double freq, double amp) {
+    Signal::Meta m;
+    m.name = std::move(name);
+    m.dataType = DataType::Float64;
+    m.sampleRateHz = fs;
+    auto sig = std::make_shared<Signal>(m);
+    std::vector<TimestampNs> ts(n);
+    std::vector<double> vs(n);
+    const double dt = 1.0 / fs;
+    for (std::size_t i = 0; i < n; ++i) {
+        ts[i] = static_cast<TimestampNs>(std::llround(i * dt * 1e9));
+        vs[i] = amp * std::sin(2.0 * M_PI * freq * i * dt);
+    }
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), n);
+    return sig;
+}
+
+double peakValue(const std::shared_ptr<Signal>& s) {
+    auto v = s->readAsDouble();
+    double m = 0.0;
+    for (double x : v) m = std::max(m, x);
+    return m;
+}
+
+// Arbitrary value series at `fs` Hz (fs divides 1e9 in tests → exact ts).
+std::shared_ptr<Signal> makeSeries(QString name, const std::vector<double>& vals,
+                                   double fs) {
+    Signal::Meta m;
+    m.name = std::move(name);
+    m.dataType = DataType::Float64;
+    m.sampleRateHz = fs;
+    auto sig = std::make_shared<Signal>(m);
+    std::vector<TimestampNs> ts(vals.size());
+    const double dt = 1.0 / fs;
+    for (std::size_t i = 0; i < vals.size(); ++i)
+        ts[i] = static_cast<TimestampNs>(std::llround(i * dt * 1e9));
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vals.data()),
+                vals.size());
     return sig;
 }
 }
@@ -580,4 +625,169 @@ TEST(FormulaEngine, ForwardFillTolerantMatchesNearbyValues) {
     const std::vector<double> want = {100, 100, 100, 200, 200, 300};
     ASSERT_EQ(vs.size(), want.size());
     for (std::size_t i = 0; i < want.size(); ++i) EXPECT_DOUBLE_EQ(vs[i], want[i]);
+}
+
+// ---- FFT amplitude calibration + windows + PeakHz interpolation ----------
+
+// Default (Hann) FFT now reports true single-sided amplitude: an on-bin tone
+// of amplitude 2.0 peaks at ~2.0. (1024 samples @ 2 kHz → bins at k·1.953 Hz;
+// 125 Hz = bin 64 exactly.)
+TEST(FormulaEngine, FftHannCalibratedAmplitudeOnBin) {
+    SignalStore store;
+    store.add(makeSine("S", 1024, 2000.0, 125.0, 2.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("F = FFT(S)", &err)) << err.toStdString();
+    auto f = store.get("F");
+    ASSERT_TRUE(f);
+    EXPECT_EQ(f->meta().domain, Signal::Domain::Frequency);
+    EXPECT_NEAR(peakValue(f), 2.0, 0.02);   // within 1%
+}
+
+// Flat-top (window=1) keeps amplitude accurate even for an OFF-bin tone,
+// where Hann would scallop-loss ~15% low. 125.97 Hz sits between bins 64/65.
+TEST(FormulaEngine, FftFlatTopAmplitudeAccurateOffBin) {
+    SignalStore store;
+    store.add(makeSine("S", 1024, 2000.0, 125.97, 2.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("Fh = FFT(S, 1)", &err)) << err.toStdString();
+    EXPECT_NEAR(peakValue(store.get("Fh")), 2.0, 0.06);   // flat-top within ~3%
+}
+
+// PeakHz refines the peak between bins. 2 s @ 2 kHz → N=4096, df≈0.488 Hz, so
+// the raw nearest bin is up to 0.244 Hz off; interpolation gets well inside it.
+TEST(FormulaEngine, PeakHzInterpolatesBetweenBins) {
+    SignalStore store;
+    store.add(makeSine("S", 4000, 2000.0, 125.3, 1.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("pk = PeakHz(S)", &err)) << err.toStdString();
+    auto v = store.get("pk")->readAsDouble();
+    ASSERT_EQ(v.size(), 1u);                 // scalar result
+    EXPECT_NEAR(v[0], 125.3, 0.1);           // ≪ half a bin (0.244 Hz)
+}
+
+TEST(FormulaEngine, PeakHzAcceptsWindowArg) {
+    SignalStore store;
+    store.add(makeSine("S", 4000, 2000.0, 311.7, 1.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("pk = PeakHz(S, 1)", &err)) << err.toStdString();
+    EXPECT_NEAR(store.get("pk")->readAsDouble().at(0), 311.7, 0.2);
+}
+
+TEST(FormulaEngine, FftRejectsBadWindowCode) {
+    SignalStore store;
+    store.add(makeSine("S", 256, 2000.0, 100.0, 1.0));
+    FormulaEngine engine(store);
+    QString err;
+    EXPECT_FALSE(engine.evaluate("F = FFT(S, 5)", &err));
+    EXPECT_FALSE(err.isEmpty());
+}
+
+// ---- Gate(signal, gate, low, high [, min_length [, mode]]) + FFTWelch -----
+
+// Smash (default): keep in-range samples, close the gaps into one contiguous
+// uniformly-spaced signal.
+TEST(FormulaEngine, GateSmashClosesGaps) {
+    SignalStore store;
+    std::vector<double> sv(100), gv(100, 0.0);
+    for (std::size_t i = 0; i < 100; ++i) sv[i] = static_cast<double>(i);
+    for (std::size_t i = 20; i < 40; ++i) gv[i] = 1.0;   // window 1
+    for (std::size_t i = 60; i < 80; ++i) gv[i] = 1.0;   // window 2
+    store.add(makeSeries("S", sv, 100.0));
+    store.add(makeSeries("G", gv, 100.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("out = Gate(S, G, 0.5, 1.5)", &err)) << err.toStdString();
+    auto vs = store.get("out")->readAsDouble();
+    ASSERT_EQ(vs.size(), 40u);
+    for (std::size_t i = 0; i < 20; ++i) EXPECT_DOUBLE_EQ(vs[i], 20.0 + i);
+    for (std::size_t i = 0; i < 20; ++i) EXPECT_DOUBLE_EQ(vs[20 + i], 60.0 + i);
+    auto view = store.get("out")->snapshotForRead();
+    for (std::size_t i = 1; i < view.count; ++i)
+        EXPECT_EQ(view.timestamps[i] - view.timestamps[i - 1], 10'000'000);
+}
+
+// min_length drops a brief blip but keeps a sustained window — exactly the
+// "data point in the middle of the gap" case.
+TEST(FormulaEngine, GateMinLengthDropsBlips) {
+    SignalStore store;
+    std::vector<double> sv(20), gv(20, 0.0);
+    for (std::size_t i = 0; i < 20; ++i) sv[i] = static_cast<double>(i);
+    for (std::size_t i = 4; i < 9; ++i) gv[i] = 1.0;     // window: idx 4..8 (0.4 s @ 10 Hz)
+    gv[14] = 1.0;                                        // lone 1-sample blip (0 s span)
+    store.add(makeSeries("S", sv, 10.0));
+    store.add(makeSeries("G", gv, 10.0));
+    FormulaEngine engine(store);
+    QString err;
+    // No min_length → blip kept (5 + 1 = 6 samples).
+    ASSERT_TRUE(engine.evaluate("a = Gate(S, G, 0.5, 1.5)", &err)) << err.toStdString();
+    EXPECT_EQ(store.get("a")->sampleCount(), 6u);
+    // min_length 0.1 s → blip (0 s) dropped, window (0.4 s) kept → 5 samples.
+    ASSERT_TRUE(engine.evaluate("b = Gate(S, G, 0.5, 1.5, 0.1)", &err)) << err.toStdString();
+    auto vs = store.get("b")->readAsDouble();
+    ASSERT_EQ(vs.size(), 5u);
+    for (std::size_t i = 0; i < 5; ++i) EXPECT_DOUBLE_EQ(vs[i], 4.0 + i);
+}
+
+// Real-time mode (mode 1) keeps the original timestamps; the gap is preserved.
+TEST(FormulaEngine, GateRealTimeKeepsTimestamps) {
+    SignalStore store;
+    std::vector<double> sv(20), gv(20, 0.0);
+    for (std::size_t i = 0; i < 20; ++i) sv[i] = static_cast<double>(i);
+    for (std::size_t i = 4; i < 9;  ++i) gv[i] = 1.0;    // window 1: idx 4..8
+    for (std::size_t i = 14; i < 17; ++i) gv[i] = 1.0;   // window 2: idx 14..16
+    store.add(makeSeries("S", sv, 10.0));                // dt = 0.1 s (1e8 ns)
+    store.add(makeSeries("G", gv, 10.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("out = Gate(S, G, 0.5, 1.5, 0, 1)", &err)) << err.toStdString();
+    auto out = store.get("out");
+    auto vs = out->readAsDouble();
+    auto view = out->snapshotForRead();
+    ASSERT_EQ(vs.size(), 8u);                            // 5 + 3
+    EXPECT_DOUBLE_EQ(vs[0], 4.0);
+    EXPECT_DOUBLE_EQ(vs[5], 14.0);
+    EXPECT_EQ(view.timestamps[0], 4 * 100'000'000);      // idx 4 at its real time
+    EXPECT_EQ(view.timestamps[5] - view.timestamps[4], 6 * 100'000'000);  // real gap idx 8→14
+}
+
+// FFTWelch averages a separate FFT per event window — recovers the event
+// frequency with no concatenation seam.
+TEST(FormulaEngine, FFTWelchRecoversEventFrequency) {
+    SignalStore store;
+    store.add(makeSine("vib", 4000, 2000.0, 125.0, 1.0));
+    std::vector<double> pos(4000, 0.0);
+    for (std::size_t i = 500;  i < 1500; ++i) pos[i] = 1.0;
+    for (std::size_t i = 2500; i < 3500; ++i) pos[i] = 1.0;
+    store.add(makeSeries("pos", pos, 2000.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("spec = FFTWelch(vib, pos, 0.5, 1.5)", &err)) << err.toStdString();
+    auto spec = store.get("spec");
+    ASSERT_TRUE(spec);
+    EXPECT_EQ(spec->meta().domain, Signal::Domain::Frequency);
+
+    auto vs = spec->readAsDouble();
+    auto view = spec->snapshotForRead();
+    std::size_t kmax = 1;
+    double best = -1.0;
+    for (std::size_t k = 1; k < vs.size(); ++k)
+        if (vs[k] > best) { best = vs[k]; kmax = k; }
+    const double hz = static_cast<double>(view.timestamps[kmax]) * 1e-9;
+    EXPECT_NEAR(hz, 125.0, 2.0);
+    EXPECT_GT(best, 0.3);                                // a real peak, calibrated-ish
+}
+
+TEST(FormulaEngine, GateRejectsBadArgs) {
+    SignalStore store;
+    store.add(makeSeries("S", {1, 2, 3}, 10.0));
+    store.add(makeSeries("G", {0, 1, 0}, 10.0));
+    FormulaEngine engine(store);
+    QString err;
+    EXPECT_FALSE(engine.evaluate("a = Gate(S, G, 0.5)", &err));            // too few args
+    EXPECT_FALSE(engine.evaluate("b = Gate(S, G, 0.5, 1.5, 0, 2)", &err)); // bad mode
+    EXPECT_FALSE(engine.evaluate("c = Gate(S, G, 0.5, 1.5, 0, 1, 9)", &err)); // too many args
 }

@@ -54,6 +54,14 @@ public:
     // Load every channel from a read-opened file into memory as Signal objects.
     std::vector<std::shared_ptr<Signal>> loadAllSignals(QString* errorOut = nullptr);
 
+    // Optional plot-layout blob, stored as a custom "plot_layout" string
+    // property on the file header's metadata (HD/MD block). Mirrors
+    // Hdf5Session: the Analyser embeds a PlotLayout JSON so a re-opened .mf4
+    // restores axes / view mode / channel assignments. Must be called before
+    // finalize(). Foreign files lack the property → readLayout() returns "".
+    bool    writeLayout(const QString& json, QString* errorOut = nullptr);
+    QString readLayout() const;
+
 private:
     Mdf4Session();
     struct Impl;

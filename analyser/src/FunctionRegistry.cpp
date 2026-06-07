@@ -8,6 +8,7 @@
 #include <complex>
 #include <cstring>
 #include <deque>
+#include <limits>
 
 namespace scope::analyser {
 
@@ -563,15 +564,15 @@ std::shared_ptr<Signal> impl_Slice(const FunctionArgs& a, QString* err) {
                             signal->meta().domain);
 }
 
-// ---- FFT(signal) — magnitude spectrum ----
+// ---- FFT(signal [, window]) — single-sided amplitude spectrum ----
 //
-// Resamples to a uniform grid using the intersection-resample logic
-// (so non-uniform CSV imports work), applies a Hann window, zero-pads
-// to the next power of 2, runs an in-place radix-2 Cooley-Tukey FFT,
-// and returns the magnitude of the first N/2 + 1 bins. The output's
-// "timestamps" encode frequency: bin k → k × df nanoseconds (so a
-// 50 Hz peak appears at timestamp 50e9 — the plot's X axis numerically
-// matches Hz). Right-click the X axis label to rename "t [s]" → "f [Hz]".
+// Windows the samples (Hann by default; flat-top for accurate peak
+// amplitude; or none), zero-pads to the next power of 2, runs an in-place
+// radix-2 Cooley-Tukey FFT, and returns the gain-corrected single-sided
+// amplitude of the first N/2 + 1 bins. The output's "timestamps" encode
+// frequency: bin k → k × df nanoseconds (so a 50 Hz peak appears at
+// timestamp 50e9 — the plot's X axis numerically matches Hz). Right-click
+// the X axis label to rename "t [s]" → "f [Hz]".
 namespace {
 void fftRadix2(std::vector<std::complex<double>>& x) {
     const std::size_t N = x.size();
@@ -603,52 +604,160 @@ void fftRadix2(std::vector<std::complex<double>>& x) {
 }
 }  // namespace
 
-std::shared_ptr<Signal> impl_FFT(const FunctionArgs& a, QString* err) {
-    if (!ensureN(a, 1, err, "FFT")) return nullptr;
-    auto signal = a[0];
+// FFT analysis window. code: 0 = Hann (default), 1 = flat-top, 2 = none.
+double windowCoeff(int code, std::size_t i, std::size_t n) {
+    if (n <= 1) return 1.0;
+    const double x = 2.0 * M_PI * static_cast<double>(i)
+                   / static_cast<double>(n - 1);
+    switch (code) {
+        case 1:  // flat-top — wide flat main lobe → accurate peak amplitude
+            return 0.21557895
+                 - 0.41663158  * std::cos(x)
+                 + 0.277263158 * std::cos(2.0 * x)
+                 - 0.083578947 * std::cos(3.0 * x)
+                 + 0.006947368 * std::cos(4.0 * x);
+        case 2:  // rectangular / none
+            return 1.0;
+        default: // 0 = Hann
+            return 0.5 * (1.0 - std::cos(x));
+    }
+}
+
+// Parse the optional window argument shared by FFT / PeakHz (arg index
+// `idx`). Absent → Hann (0). Returns false + sets *err on a bad code.
+bool parseWindowArg(const FunctionArgs& a, std::size_t idx, int& win,
+                    QString* err, const char* who) {
+    win = 0;
+    if (a.size() <= idx) return true;
+    double wd = 0;
+    if (!asScalar(a[idx], wd) || wd < 0 || wd > 2 ||
+        wd != std::floor(wd)) {
+        if (err) *err = QString("%1: window must be 0 (Hann), 1 (flat-top) "
+                                "or 2 (none)").arg(who);
+        return false;
+    }
+    win = static_cast<int>(wd);
+    return true;
+}
+
+// Shared FFT front-end: window the samples, zero-pad to a power of two,
+// transform, and return the raw |X[k]| for bins 0..N/2. Also reports the
+// sample rate, transform length N, and Σ window (coherent gain) so callers
+// can amplitude-calibrate. Returns false + sets *err on bad input.
+bool fftMagnitude(const std::shared_ptr<Signal>& signal, int win,
+                  std::vector<double>& mag, double& fs, std::size_t& N,
+                  double& windowSum, QString* err, const char* who) {
     auto view = signal->snapshotForRead();
     if (view.count < 2) {
-        if (err) *err = "FFT: signal must have at least 2 samples.";
-        return nullptr;
+        if (err) *err = QString("%1: signal must have at least 2 samples.").arg(who);
+        return false;
     }
     auto src = signal->readAsDouble();
 
-    // Average dt to define the sample rate. Non-uniform grids get a
-    // single representative dt; for badly non-uniform data the user
-    // should resample first.
+    // Average dt to define the sample rate. Non-uniform grids get a single
+    // representative dt; for badly non-uniform data, Resample first.
     const double durationSec =
         (view.timestamps[view.count - 1] - view.timestamps[0]) * 1e-9;
     const double dt = durationSec / static_cast<double>(view.count - 1);
     if (dt <= 0) {
-        if (err) *err = "FFT: non-monotonic / zero-duration time grid.";
-        return nullptr;
+        if (err) *err = QString("%1: non-monotonic / zero-duration time grid.").arg(who);
+        return false;
     }
-    const double fs = 1.0 / dt;
+    fs = 1.0 / dt;
 
-    // Pad to next power of 2.
-    std::size_t N = 1;
+    N = 1;
     while (N < view.count) N <<= 1;
     if (N < 2) N = 2;
     std::vector<std::complex<double>> buf(N, {0.0, 0.0});
-    // Hann window applied across the actual samples; padding stays zero.
+    windowSum = 0.0;
     for (std::size_t i = 0; i < view.count; ++i) {
-        const double w = 0.5 * (1.0 - std::cos(2.0 * M_PI * i
-                                  / static_cast<double>(view.count - 1)));
+        const double w = windowCoeff(win, i, view.count);
+        windowSum += w;
         buf[i] = {src[i] * w, 0.0};
     }
     fftRadix2(buf);
 
-    // Magnitude spectrum, first N/2 + 1 bins.
-    const double df = fs / static_cast<double>(N);
     const std::size_t outN = N / 2 + 1;
+    mag.resize(outN);
+    for (std::size_t k = 0; k < outN; ++k) mag[k] = std::abs(buf[k]);
+    return true;
+}
+
+std::shared_ptr<Signal> impl_FFT(const FunctionArgs& a, QString* err) {
+    if (a.empty() || a.size() > 2) {
+        if (err) *err = QString("FFT expects 1..2 args, got %1").arg(a.size());
+        return nullptr;
+    }
+    int win = 0;
+    if (!parseWindowArg(a, 1, win, err, "FFT")) return nullptr;
+
+    std::vector<double> mag;
+    double fs = 0.0, windowSum = 0.0;
+    std::size_t N = 0;
+    if (!fftMagnitude(a[0], win, mag, fs, N, windowSum, err, "FFT")) return nullptr;
+
+    // Calibrate to true single-sided amplitude: a tone of amplitude A reads
+    // ~A at its peak, independent of the window. DC and Nyquist are already
+    // one-sided, so they skip the ×2.
+    const double scaleMid = (windowSum > 0.0) ? 2.0 / windowSum : 0.0;
+    const double scaleEnd = (windowSum > 0.0) ? 1.0 / windowSum : 0.0;
+    const double df = fs / static_cast<double>(N);
+    const std::size_t outN = mag.size();
     std::vector<TimestampNs> outTs(outN);
     std::vector<double> outVs(outN);
     for (std::size_t k = 0; k < outN; ++k) {
         outTs[k] = static_cast<TimestampNs>(k * df * 1e9);
-        outVs[k] = std::abs(buf[k]) / static_cast<double>(view.count);
+        const double s = (k == 0 || k == N / 2) ? scaleEnd : scaleMid;
+        outVs[k] = mag[k] * s;
     }
     return makeDoubleSignal("FFT", outTs, outVs, "magnitude",
                             Signal::Domain::Frequency);
+}
+
+// ---- PeakHz(signal [, window]) — interpolated dominant peak frequency ----
+//
+// Finds the largest magnitude bin (excluding DC) and refines its location
+// with 3-point parabolic interpolation on the log-magnitude, so the result
+// is accurate to a small fraction of a bin instead of ± half a bin. Returns
+// a single Hz value (a 1-sample constant) for read-out or further math. A
+// strong DC offset / trend can bias it toward low frequency — subtract the
+// mean first (e.g. PeakHz(speed - Mean(speed, 1))) if that bites.
+std::shared_ptr<Signal> impl_PeakHz(const FunctionArgs& a, QString* err) {
+    if (a.empty() || a.size() > 2) {
+        if (err) *err = QString("PeakHz expects 1..2 args, got %1").arg(a.size());
+        return nullptr;
+    }
+    int win = 0;
+    if (!parseWindowArg(a, 1, win, err, "PeakHz")) return nullptr;
+
+    std::vector<double> mag;
+    double fs = 0.0, windowSum = 0.0;
+    std::size_t N = 0;
+    if (!fftMagnitude(a[0], win, mag, fs, N, windowSum, err, "PeakHz")) return nullptr;
+
+    const std::size_t outN = mag.size();
+    // Largest bin above DC.
+    std::size_t kmax = 1;
+    double best = -1.0;
+    for (std::size_t k = 1; k < outN; ++k) {
+        if (mag[k] > best) { best = mag[k]; kmax = k; }
+    }
+    // Parabolic peak interpolation on log-magnitude (guards spectrum edges).
+    double delta = 0.0;
+    if (kmax >= 1 && kmax + 1 < outN) {
+        const double am = std::log(mag[kmax - 1] + 1e-300);
+        const double bm = std::log(mag[kmax]     + 1e-300);
+        const double gm = std::log(mag[kmax + 1] + 1e-300);
+        const double denom = am - 2.0 * bm + gm;
+        if (denom != 0.0) delta = 0.5 * (am - gm) / denom;
+        delta = std::clamp(delta, -0.5, 0.5);
+    }
+    const double df = fs / static_cast<double>(N);
+    const double hz = (static_cast<double>(kmax) + delta) * df;
+
+    std::vector<TimestampNs> ts{0};
+    std::vector<double>      vals{hz};
+    return makeDoubleSignal("PeakHz", ts, vals, "Hz");
 }
 
 // Helpers for Resample.
@@ -720,6 +829,244 @@ std::shared_ptr<Signal> impl_Resample(const FunctionArgs& a, QString* err) {
             interpAtHere(srcView.timestamps, srcVals, srcView.count, t, cursor));
     }
     return makeDoubleSignal("Resample", outTs, outVals, src->meta().unit);
+}
+
+// Shared by Gate / FFTWelch: find the event windows. Walk `signal`, mark where
+// the (interpolated) `gate` is within [low, high], group into contiguous runs,
+// and keep only runs lasting >= minLengthSec. Returns [start, end) index pairs
+// into the signal. minLengthSec <= 0 keeps every run (even 1-sample blips).
+std::vector<std::pair<std::size_t, std::size_t>>
+findGateWindows(const Signal::ReadView& sView,
+                const Signal::ReadView& gView,
+                const std::vector<double>& gVals,
+                double low, double high, double minLengthSec) {
+    std::vector<std::pair<std::size_t, std::size_t>> runs;
+    std::size_t cursor = 0;
+    bool in = false;
+    std::size_t start = 0;
+    for (std::size_t i = 0; i < sView.count; ++i) {
+        const double g = interpAtHere(gView.timestamps, gVals, gView.count,
+                                      sView.timestamps[i], cursor);
+        const bool here = (g >= low && g <= high);
+        if (here && !in)       { in = true; start = i; }
+        else if (!here && in)  { in = false; runs.emplace_back(start, i); }
+    }
+    if (in) runs.emplace_back(start, sView.count);
+
+    if (minLengthSec > 0.0) {
+        const TimestampNs minNs = static_cast<TimestampNs>(minLengthSec * 1e9);
+        std::vector<std::pair<std::size_t, std::size_t>> kept;
+        for (const auto& r : runs) {
+            const TimestampNs dur =
+                sView.timestamps[r.second - 1] - sView.timestamps[r.first];
+            if (dur >= minNs) kept.push_back(r);
+        }
+        runs.swap(kept);
+    }
+    return runs;
+}
+
+// ---- Gate(signal, gate, low, high [, min_length [, mode]]) ----
+//
+// Keep `signal` only where `gate` is within [low, high]; cut the rest.
+//   min_length — drop in-range stretches shorter than this many SECONDS
+//                (default 0 = keep all). Removes brief blips / transits.
+//   mode 0 (default) — SMASH: kept windows closed up back-to-back (compact).
+//   mode 1           — REAL TIME: keep original timestamps, drop the rest.
+//
+// `gate` may be sampled differently from `signal` (linearly interpolated onto
+// it). Bounds inclusive; low/high swapped if backwards. Note: smash still joins
+// consecutive windows with a connecting line — use FFTWelch for a seam-free
+// spectrum.
+std::shared_ptr<Signal> impl_Gate(const FunctionArgs& a, QString* err) {
+    if (a.size() < 4 || a.size() > 6) {
+        if (err) *err = QString("Gate expects 4..6 args "
+            "(signal, gate, low, high [, min_length [, mode]]), got %1").arg(a.size());
+        return nullptr;
+    }
+    auto signal = a[0];
+    auto gate   = a[1];
+    double low = 0.0, high = 0.0;
+    if (!asScalar(a[2], low) || !asScalar(a[3], high)) {
+        if (err) *err = "Gate: low and high must be scalars";
+        return nullptr;
+    }
+    if (low > high) std::swap(low, high);
+    double minLen = 0.0;
+    if (a.size() >= 5 && !asScalar(a[4], minLen)) {
+        if (err) *err = "Gate: min_length must be a scalar (seconds)";
+        return nullptr;
+    }
+    if (minLen < 0.0) minLen = 0.0;
+    int mode = 0;
+    if (a.size() == 6) {
+        double md = 0.0;
+        if (!asScalar(a[5], md) || (md != 0.0 && md != 1.0)) {
+            if (err) *err = "Gate: mode must be 0 (smash) or 1 (real time)";
+            return nullptr;
+        }
+        mode = static_cast<int>(md);
+    }
+
+    auto sView = signal->snapshotForRead();
+    auto sVals = signal->readAsDouble();
+    auto gView = gate->snapshotForRead();
+    auto gVals = gate->readAsDouble();
+    if (gView.count == 0) {
+        if (err) *err = "Gate: gate signal is empty";
+        return nullptr;
+    }
+
+    const auto runs = findGateWindows(sView, gView, gVals, low, high, minLen);
+
+    std::vector<TimestampNs> outTs;
+    std::vector<double>      outVs;
+    outTs.reserve(sView.count);
+    outVs.reserve(sView.count);
+
+    if (mode == 1) {
+        // REAL TIME — keep original timestamps.
+        for (const auto& r : runs)
+            for (std::size_t i = r.first; i < r.second; ++i) {
+                outTs.push_back(sView.timestamps[i]);
+                outVs.push_back(sVals[i]);
+            }
+    } else {
+        // SMASH — close the gaps between windows (nominalDt across each join).
+        TimestampNs nominalDt = 1;
+        if (sView.count >= 2) {
+            std::vector<TimestampNs> diffs;
+            diffs.reserve(sView.count - 1);
+            for (std::size_t i = 1; i < sView.count; ++i)
+                diffs.push_back(sView.timestamps[i] - sView.timestamps[i - 1]);
+            std::nth_element(diffs.begin(), diffs.begin() + diffs.size() / 2, diffs.end());
+            nominalDt = diffs[diffs.size() / 2];
+            if (nominalDt <= 0) nominalDt = 1;
+        }
+        TimestampNs outT = 0;
+        bool have = false;
+        for (const auto& r : runs) {
+            for (std::size_t i = r.first; i < r.second; ++i) {
+                if (!have) {
+                    outT = sView.timestamps[i];
+                    have = true;
+                } else {
+                    TimestampNs step = (i == r.first)
+                        ? nominalDt                                         // join
+                        : sView.timestamps[i] - sView.timestamps[i - 1];   // within run
+                    if (step <= 0) step = nominalDt;
+                    outT += step;
+                }
+                outTs.push_back(outT);
+                outVs.push_back(sVals[i]);
+            }
+        }
+    }
+
+    return makeDoubleSignal("Gate", outTs, outVs,
+                            signal->meta().unit, signal->meta().domain);
+}
+
+// ---- FFTWelch(signal, gate, low, high [, min_length [, window]]) ----
+//
+// Welch-style averaged amplitude spectrum of the gated events: find each event
+// window (gate in [low, high], lasting >= min_length seconds), FFT each one
+// SEPARATELY (windowed, zero-padded to a common length), and average the
+// magnitudes. No concatenation → no seam — the clean way to get the frequency
+// of an event that recurs across a long capture.
+// window: 0 = Hann (default), 1 = flat-top, 2 = none.
+std::shared_ptr<Signal> impl_FFTWelch(const FunctionArgs& a, QString* err) {
+    if (a.size() < 4 || a.size() > 6) {
+        if (err) *err = QString("FFTWelch expects 4..6 args "
+            "(signal, gate, low, high [, min_length [, window]]), got %1").arg(a.size());
+        return nullptr;
+    }
+    auto signal = a[0];
+    auto gate   = a[1];
+    double low = 0.0, high = 0.0;
+    if (!asScalar(a[2], low) || !asScalar(a[3], high)) {
+        if (err) *err = "FFTWelch: low and high must be scalars";
+        return nullptr;
+    }
+    if (low > high) std::swap(low, high);
+    double minLen = 0.0;
+    if (a.size() >= 5 && !asScalar(a[4], minLen)) {
+        if (err) *err = "FFTWelch: min_length must be a scalar (seconds)";
+        return nullptr;
+    }
+    if (minLen < 0.0) minLen = 0.0;
+    int win = 0;
+    if (!parseWindowArg(a, 5, win, err, "FFTWelch")) return nullptr;
+
+    auto sView = signal->snapshotForRead();
+    auto sVals = signal->readAsDouble();
+    auto gView = gate->snapshotForRead();
+    auto gVals = gate->readAsDouble();
+    if (gView.count == 0) {
+        if (err) *err = "FFTWelch: gate signal is empty";
+        return nullptr;
+    }
+
+    const auto runs = findGateWindows(sView, gView, gVals, low, high, minLen);
+
+    // Sample rate from a window's internal spacing (the signal's native rate),
+    // and the common transform length from the longest window.
+    double dtNs = 0.0;
+    std::size_t maxLen = 0;
+    for (const auto& r : runs) {
+        const std::size_t L = r.second - r.first;
+        maxLen = std::max(maxLen, L);
+        if (dtNs <= 0.0 && L >= 2)
+            dtNs = static_cast<double>(sView.timestamps[r.first + 1]
+                                       - sView.timestamps[r.first]);
+    }
+    if (maxLen < 2 || dtNs <= 0.0) {
+        if (err) *err = "FFTWelch: no event window long enough to transform "
+                        "(check low/high and min_length).";
+        return nullptr;
+    }
+    const double fs = 1e9 / dtNs;
+
+    std::size_t N = 1;
+    while (N < maxLen) N <<= 1;
+    if (N < 2) N = 2;
+    const std::size_t outN = N / 2 + 1;
+
+    std::vector<double> avg(outN, 0.0);
+    int used = 0;
+    for (const auto& r : runs) {
+        const std::size_t L = r.second - r.first;
+        if (L < 2) continue;
+        std::vector<std::complex<double>> buf(N, {0.0, 0.0});
+        double windowSum = 0.0;
+        for (std::size_t k = 0; k < L; ++k) {
+            const double w = windowCoeff(win, k, L);
+            windowSum += w;
+            buf[k] = {sVals[r.first + k] * w, 0.0};
+        }
+        fftRadix2(buf);
+        const double scaleMid = (windowSum > 0.0) ? 2.0 / windowSum : 0.0;
+        const double scaleEnd = (windowSum > 0.0) ? 1.0 / windowSum : 0.0;
+        for (std::size_t k = 0; k < outN; ++k) {
+            const double s = (k == 0 || k == N / 2) ? scaleEnd : scaleMid;
+            avg[k] += std::abs(buf[k]) * s;
+        }
+        ++used;
+    }
+    if (used == 0) {
+        if (err) *err = "FFTWelch: no usable event windows.";
+        return nullptr;
+    }
+
+    const double df = fs / static_cast<double>(N);
+    std::vector<TimestampNs> outTs(outN);
+    std::vector<double>      outVs(outN);
+    for (std::size_t k = 0; k < outN; ++k) {
+        outTs[k] = static_cast<TimestampNs>(k * df * 1e9);
+        outVs[k] = avg[k] / static_cast<double>(used);
+    }
+    return makeDoubleSignal("FFTWelch", outTs, outVs, "magnitude",
+                            Signal::Domain::Frequency);
 }
 
 }  // namespace
@@ -831,11 +1178,34 @@ void FunctionRegistry::registerBuiltins() {
         "Keep only samples whose timestamp falls in [t_start, t_end] seconds. "
         "Inclusive bounds.",
         3, 3, &impl_Slice);
-    add("FFT",        "FFT(signal)",
-        "Magnitude spectrum via Hann-windowed, zero-padded radix-2 FFT. "
-        "Output X axis is frequency in Hz (numerically; the chart label still "
-        "shows 't [s]' — right-click to rename).",
-        1, 1, &impl_FFT);
+    add("Gate",       "Gate(signal, gate, low, high [, min_length [, mode]])",
+        "Keep `signal` only where `gate` is in [low, high]; cut the rest. "
+        "min_length = drop in-range stretches shorter than this many SECONDS "
+        "(default 0) — removes brief blips/transits. mode 0 = smash (default): "
+        "close the gaps so windows sit back-to-back; mode 1 = real time: keep "
+        "the original timestamps. `gate` may be on a different sample rate "
+        "(interpolated onto `signal`); bounds inclusive.",
+        4, 6, &impl_Gate);
+    add("FFTWelch",   "FFTWelch(signal, gate, low, high [, min_length [, window]])",
+        "Welch-averaged amplitude spectrum of the gated events: FFT each event "
+        "window (gate in [low,high], lasting >= min_length s) separately and "
+        "average them — no concatenation, so no seam. The clean way to get the "
+        "frequency of an event that recurs across a long capture. window: "
+        "0 = Hann (default), 1 = flat-top, 2 = none.",
+        4, 6, &impl_FFTWelch);
+    add("FFT",        "FFT(signal [, window])",
+        "Single-sided amplitude spectrum via a windowed, zero-padded radix-2 "
+        "FFT. window: 0 = Hann (default), 1 = flat-top (accurate peak "
+        "amplitude), 2 = none. Magnitudes are gain-corrected so a tone reads "
+        "its true amplitude. Output X axis is frequency in Hz (numerically; "
+        "the chart label still shows 't [s]' — right-click to rename).",
+        1, 2, &impl_FFT);
+    add("PeakHz",     "PeakHz(signal [, window])",
+        "Dominant peak frequency in Hz, refined by parabolic interpolation "
+        "between FFT bins — far more accurate than the raw bin spacing fs/N. "
+        "window: 0 = Hann (default), 1 = flat-top, 2 = none. Returns a single "
+        "value you can read in the table or use in further formulas.",
+        1, 2, &impl_PeakHz);
     add("Resample",   "Resample(signal, rate_Hz_or_reference_signal)",
         "Linear-interpolate signal onto a new time grid. Pass a positive scalar "
         "for the target rate in Hz, or another signal to copy its timestamps.",

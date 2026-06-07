@@ -231,6 +231,43 @@ std::vector<std::shared_ptr<Signal>> Hdf5Session::loadAllSignals(QString* errorO
     }
 }
 
+bool Hdf5Session::writeLayout(const QString& json, QString* errorOut) {
+    if (!impl_->writable) {
+        if (errorOut) *errorOut = "File opened read-only";
+        return false;
+    }
+    if (json.isEmpty()) return true;  // nothing to embed
+    try {
+        auto group = impl_->file->exist("/metadata")
+                         ? impl_->file->getGroup("/metadata")
+                         : impl_->file->createGroup("/metadata");
+        // Fresh files (we always create with Overwrite) won't have it yet;
+        // the guard keeps writeLayout idempotent if ever called twice.
+        if (!group.hasAttribute("plot_layout"))
+            group.createAttribute<std::string>("plot_layout", json.toStdString());
+        else
+            group.getAttribute("plot_layout").write(json.toStdString());
+        return true;
+    } catch (const std::exception& e) {
+        if (errorOut) *errorOut = QString::fromUtf8(e.what());
+        spdlog::error("Hdf5Session::writeLayout: {}", e.what());
+        return false;
+    }
+}
+
+QString Hdf5Session::readLayout() const {
+    try {
+        if (!impl_->file || !impl_->file->exist("/metadata")) return {};
+        auto group = impl_->file->getGroup("/metadata");
+        if (!group.hasAttribute("plot_layout")) return {};
+        return QString::fromStdString(
+            group.getAttribute("plot_layout").read<std::string>());
+    } catch (const std::exception& e) {
+        spdlog::warn("Hdf5Session::readLayout: {}", e.what());
+        return {};
+    }
+}
+
 void Hdf5Session::flush() {
     if (impl_->file) impl_->file->flush();
 }

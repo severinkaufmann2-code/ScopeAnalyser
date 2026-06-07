@@ -7,6 +7,7 @@
 #include "scope/plot/ScopePlot.h"
 #include "scope/plot/PlotLayout.h"
 #include "scope/converter/SignalIO.h"
+#include "scope/converter/BusyRunner.h"
 
 #include <qcustomplot.h>
 
@@ -31,6 +32,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <utility>
 
 namespace scope::analyser::ui {
 
@@ -82,17 +84,17 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
 
     auto* viewRow = new QHBoxLayout();
     viewRow->addWidget(new QLabel("View:", this));
-    auto* viewCombo = new QComboBox(this);
-    viewCombo->addItem("Time  (t [s])");
-    viewCombo->addItem("Frequency  (f [Hz])");
-    viewCombo->addItem("XY  (channel vs channel)");
-    viewCombo->setToolTip(
+    viewCombo_ = new QComboBox(this);
+    viewCombo_->addItem("Time  (t [s])");
+    viewCombo_->addItem("Frequency  (f [Hz])");
+    viewCombo_->addItem("XY  (channel vs channel)");
+    viewCombo_->setToolTip(
         "Time: show only time-domain channels (recorded / imported / "
         "derived from time-domain).\n"
         "Frequency: show only frequency-domain channels (FFT).\n"
         "XY: pick one channel as the X axis; Y candidates are filtered "
         "to channels with the same domain as X.");
-    viewRow->addWidget(viewCombo, /*stretch=*/1);
+    viewRow->addWidget(viewCombo_, /*stretch=*/1);
 
     // X-channel selector for XY view. Sits directly under the View combo
     // and is hidden in Time / Frequency mode.
@@ -126,22 +128,32 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     connect(editChBtn,    &QPushButton::clicked, this, &AnalyserPlot::editChannelDialog);
     connect(saveChartBtn, &QPushButton::clicked, this, &AnalyserPlot::saveChartDialog);
     connect(openChartBtn, &QPushButton::clicked, this, &AnalyserPlot::openChartDialog);
-    connect(viewCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+    connect(viewCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int idx){
+        const auto oldDomain = activeDomain();
         viewMode_ = (idx == 2) ? ViewMode::XY
                   : (idx == 1) ? ViewMode::Frequency
                                : ViewMode::Time;
         xyXRow_->setVisible(viewMode_ == ViewMode::XY);
         if (viewMode_ == ViewMode::XY) {
             rebuildXyXCombo();
-            // Mirror the combo's data() back into xyChannel_ so the
-            // first paint picks up the user's previous choice (or empty
-            // if there's nothing selected yet).
             xyChannel_ = xyXCombo_->currentData().toString();
         }
+        const auto newDomain = activeDomain();
+
         // Plottable type differs across modes (Graph vs Curve), so the
         // map can't just be repurposed.
         clearAllPlottables();
+
+        // If the new view lives in a different domain than the old one,
+        // swap out the Y-axis configuration too: snapshot the current
+        // axes / row state into the old domain, then restore the new
+        // domain's previously-saved set.
+        if (oldDomain != newDomain) {
+            snapshotIntoDomain(oldDomain);
+            applyFromDomain(newDomain);
+        }
+
         // Reset the X axis label for non-XY; XY sets it from the chosen
         // channel inside redrawForActiveChannels.
         if (viewMode_ == ViewMode::Time) {
@@ -150,13 +162,20 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
             scope_->plot()->xAxis->setLabel("f [Hz]");
         }
         rebuildTable();
-        hasDrawnYet_ = false;     // re-fit X for the new data shape
+        hasDrawnYet_ = false;
         redrawForActiveChannels();
     });
     connect(xyXCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int){
+        const auto oldDomain = activeDomain();
         xyChannel_ = xyXCombo_->currentData().toString();
+        const auto newDomain = activeDomain();
+
         clearAllPlottables();
+        if (oldDomain != newDomain) {
+            snapshotIntoDomain(oldDomain);
+            applyFromDomain(newDomain);
+        }
         rebuildTable();
         hasDrawnYet_ = false;
         redrawForActiveChannels();
@@ -254,17 +273,14 @@ QSet<QString> AnalyserPlot::activeChannels() const {
 }
 
 void AnalyserPlot::rebuildTable() {
-    // Snapshot whatever's currently shown into the sticky cache so we
-    // don't lose user-set visibility / axis when the View combo flips
-    // between Time and Frequency.
-    for (int r = 0; r < table_->rowCount(); ++r) {
-        const QString name = table_->item(r, ColName) ? table_->item(r, ColName)->text() : QString();
-        if (name.isEmpty()) continue;
-        bool vis = false; int axis = 0;
-        if (auto* cb = qobject_cast<QCheckBox*>(table_->cellWidget(r, ColVis))) vis = cb->isChecked();
-        if (auto* co = qobject_cast<QComboBox*>(table_->cellWidget(r, ColAxis))) axis = co->currentIndex();
-        savedRowState_[name] = {vis, axis};
-    }
+    // savedRowState_ is kept continuously up-to-date by the per-row
+    // handlers (onAxisComboChanged / onVisibilityChanged) and by the
+    // per-domain snapshot/restore in the View / XY-X combo handlers.
+    // The old "snapshot current widgets into the sticky cache" prelude
+    // that used to live here is now redundant — and in the load path
+    // it actively clobbered the layout's restored axis assignments by
+    // overwriting them with stale widget values. So just trust the
+    // sticky cache and rebuild.
     auto& prev = savedRowState_;
 
     table_->setRowCount(0);
@@ -355,14 +371,28 @@ void AnalyserPlot::rebuildAxisCombos() {
 void AnalyserPlot::onAxisComboChanged(int row, int axisIndex) {
     if (row < 0 || row >= table_->rowCount()) return;
     const QString name = table_->item(row, ColName)->text();
+    // Keep savedRowState_ in lockstep with the live combo so the next
+    // domain-snapshot picks up the change. Without this the user's axis
+    // pick lives only in the widget; the next View-combo flip would
+    // snapshot a stale value into stateByDomain_ and the assignment
+    // would silently disappear when the user came back.
+    auto& st = savedRowState_[name];
+    st.second = axisIndex;
     auto* p = plotted_.value(name, nullptr);
-    if (!p) return;
-    p->setValueAxis(scope_->yAxis(axisIndex));
+    if (p) p->setValueAxis(scope_->yAxis(axisIndex));
     recolorChannels();
     scope_->plot()->replot(QCustomPlot::rpQueuedReplot);
 }
 
-void AnalyserPlot::onVisibilityChanged(int /*row*/) {
+void AnalyserPlot::onVisibilityChanged(int row) {
+    // Mirror the visibility checkbox into savedRowState_ — same reason
+    // as onAxisComboChanged.
+    if (row >= 0 && row < table_->rowCount()) {
+        const QString name = table_->item(row, ColName)->text();
+        if (auto* cb = qobject_cast<QCheckBox*>(table_->cellWidget(row, ColVis))) {
+            savedRowState_[name].first = cb->isChecked();
+        }
+    }
     redrawForActiveChannels();
 }
 
@@ -430,6 +460,94 @@ void AnalyserPlot::rebuildXyXCombo() {
     const int idx = prev.isEmpty() ? 0 : xyXCombo_->findData(prev);
     xyXCombo_->setCurrentIndex(idx >= 0 ? idx : 0);
     xyChannel_ = xyXCombo_->currentData().toString();
+}
+
+// ---- Per-domain Y-axis machinery --------------------------------------
+
+scope::core::Signal::Domain AnalyserPlot::activeDomain() const {
+    using Domain = scope::core::Signal::Domain;
+    switch (viewMode_) {
+        case ViewMode::Time:      return Domain::Time;
+        case ViewMode::Frequency: return Domain::Frequency;
+        case ViewMode::XY:
+            if (auto s = store_.get(xyChannel_)) return s->meta().domain;
+            return Domain::Time;
+    }
+    return Domain::Time;
+}
+
+void AnalyserPlot::snapshotIntoDomain(scope::core::Signal::Domain d) {
+    PerDomainState& st = stateByDomain_[static_cast<int>(d)];
+
+    // 1. Y axes — pull label / side / current range from ScopePlot.
+    st.axes.clear();
+    for (int i = 0; i < scope_->yAxisCount(); ++i) {
+        auto* ax = scope_->yAxis(i);
+        if (!ax) continue;
+        scope::plot::PlotLayoutAxis a;
+        a.label    = ax->label();
+        a.side     = (ax->axisType() == QCPAxis::atRight) ? "right" : "left";
+        a.hasRange = true;
+        a.min      = ax->range().lower;
+        a.max      = ax->range().upper;
+        st.axes.append(std::move(a));
+    }
+
+    // 2. Per-row vis+axis snapshot. Pull from the LIVE table widgets,
+    //    not just savedRowState_ — if the user toggled something
+    //    between the last rebuildTable and now, savedRowState_ would
+    //    still be stale and we'd persist the wrong assignment.
+    for (int r = 0; r < table_->rowCount(); ++r) {
+        const QString name = table_->item(r, ColName)
+                                 ? table_->item(r, ColName)->text() : QString();
+        if (name.isEmpty()) continue;
+        bool vis = true; int axis = 0;
+        if (auto* cb = qobject_cast<QCheckBox*>(table_->cellWidget(r, ColVis)))
+            vis = cb->isChecked();
+        if (auto* co = qobject_cast<QComboBox*>(table_->cellWidget(r, ColAxis)))
+            axis = co->currentIndex();
+        savedRowState_[name] = {vis, axis};
+    }
+    st.rowState = savedRowState_;
+}
+
+void AnalyserPlot::applyFromDomain(scope::core::Signal::Domain d) {
+    PerDomainState& st = stateByDomain_[static_cast<int>(d)];
+
+    // 1. Strip the plot down to a single Y0 axis. clearAllPlottables()
+    //    should run first so we don't try to remove an axis that has
+    //    plottables bound to it.
+    while (scope_->yAxisCount() > 1) {
+        QString err;
+        if (!scope_->removeYAxis(scope_->yAxisCount() - 1, &err)) {
+            // If we can't remove, just stop — leftover axes will be
+            // hidden by rebuildTable's filter rather than removed.
+            break;
+        }
+    }
+
+    // 2. Restore the saved axis set. If the per-domain state is empty
+    //    (first time entering this domain), leave the current Y0
+    //    in place as a sensible default.
+    if (!st.axes.isEmpty()) {
+        const auto& first = st.axes[0];
+        if (auto* y0 = scope_->yAxis(0)) {
+            y0->setLabel(first.label);
+            if (first.hasRange) y0->setRange(first.min, first.max);
+        }
+        for (int i = 1; i < st.axes.size(); ++i) {
+            const auto& a = st.axes[i];
+            const Qt::Alignment side =
+                (a.side == "right") ? Qt::AlignRight : Qt::AlignLeft;
+            const int idx = scope_->addYAxis(a.label, side);
+            if (a.hasRange) scope_->yAxis(idx)->setRange(a.min, a.max);
+        }
+    }
+
+    // 3. Restore per-row sticky state. rebuildTable reads from this map.
+    savedRowState_ = st.rowState;
+
+    rebuildAxisCombos();
 }
 
 void AnalyserPlot::redrawAll() { redrawForActiveChannels(); }
@@ -620,6 +738,77 @@ void AnalyserPlot::redrawForActiveChannels() {
     plot->replot(QCustomPlot::rpQueuedReplot);
 }
 
+scope::plot::PlotLayout AnalyserPlot::currentLayout() {
+    // Capture the live table state into the active domain so the
+    // returned layout reflects what's on screen. snapshotIntoDomain
+    // reads directly from the table widgets, so the active domain
+    // gets the most recent edits; other domains were snapshot when
+    // we last switched away from them.
+    snapshotIntoDomain(activeDomain());
+
+    scope::plot::PlotLayout layout;
+    layout.viewMode  = (viewMode_ == ViewMode::XY)        ? "xy"
+                     : (viewMode_ == ViewMode::Frequency) ? "frequency"
+                                                          : "time";
+    layout.xyChannel = xyChannel_;
+
+    auto channelDomainKey = [](const std::shared_ptr<scope::core::Signal>& sig) {
+        return sig->meta().domain == scope::core::Signal::Domain::Frequency
+                   ? QString("frequency") : QString("time");
+    };
+    using Domain = scope::core::Signal::Domain;
+    for (Domain d : {Domain::Time, Domain::Frequency}) {
+        const QString key = (d == Domain::Frequency) ? "frequency" : "time";
+        const auto& st = stateByDomain_.value(static_cast<int>(d));
+        QList<scope::plot::PlotLayoutAxis> axes = st.axes;
+        if (axes.isEmpty() && d == activeDomain()) {
+            // Fallback — should never trigger because we just snapshot
+            // the active domain, but kept defensive.
+            for (int i = 0; i < scope_->yAxisCount(); ++i) {
+                auto* ax = scope_->yAxis(i);
+                if (!ax) continue;
+                scope::plot::PlotLayoutAxis a;
+                a.label    = ax->label();
+                a.side     = (ax->axisType() == QCPAxis::atRight) ? "right" : "left";
+                a.hasRange = true;
+                a.min      = ax->range().lower;
+                a.max      = ax->range().upper;
+                axes.append(std::move(a));
+            }
+        }
+        layout.axesByDomain.insert(key, axes);
+
+        QList<scope::plot::PlotLayoutChannel> chans;
+        for (const auto& name : store_.channelNames()) {
+            auto sig = store_.get(name);
+            if (!sig) continue;
+            if (channelDomainKey(sig) != key) continue;
+            scope::plot::PlotLayoutChannel c;
+            c.name      = name;
+            c.axisIndex = st.rowState.value(name, {true, 0}).second;
+            c.domain    = key;
+            const QString src = sig->meta().sourceSymbol;
+            const int eq = src.indexOf('=');
+            if (eq > 0) {
+                const QString lhs = src.left(eq).trimmed();
+                if (lhs == name) c.formula = src.mid(eq + 1).trimmed();
+            }
+            chans.append(std::move(c));
+        }
+        layout.channelsByDomain.insert(key, chans);
+    }
+
+    // v1 mirror — populate the flat lists from the active domain so an
+    // older binary still sees a coherent (if partial) view.
+    {
+        const QString activeKey =
+            (activeDomain() == Domain::Frequency) ? "frequency" : "time";
+        layout.axes     = layout.axesByDomain.value(activeKey);
+        layout.channels = layout.channelsByDomain.value(activeKey);
+    }
+    return layout;
+}
+
 void AnalyserPlot::saveLayoutDialog() {
     QFileDialog dlg(this, "Save plot layout");
     dlg.setAcceptMode(QFileDialog::AcceptSave);
@@ -631,56 +820,90 @@ void AnalyserPlot::saveLayoutDialog() {
     QString path = sel.first();
     if (!path.endsWith(".scolayout", Qt::CaseInsensitive)) path += ".scolayout";
 
-    scope::plot::PlotLayout layout;
-    for (int i = 0; i < scope_->yAxisCount(); ++i) {
-        auto* ax = scope_->yAxis(i);
-        scope::plot::PlotLayoutAxis a;
-        a.label = ax->label();
-        a.side  = (ax->axisType() == QCPAxis::atRight) ? "right" : "left";
-        a.hasRange = true;
-        a.min = ax->range().lower;
-        a.max = ax->range().upper;
-        layout.axes.append(a);
-    }
-    // Flush whatever's currently in the table into the sticky cache so
-    // the latest user edits aren't missed for the channels currently
-    // visible. Then walk EVERY channel in the store — the table only
-    // shows the current View (Time or Frequency); we want to persist
-    // all of them.
-    for (int r = 0; r < table_->rowCount(); ++r) {
-        const QString name = table_->item(r, ColName)
-                                 ? table_->item(r, ColName)->text()
-                                 : QString();
-        if (name.isEmpty()) continue;
-        bool vis = false; int axis = 0;
-        if (auto* cb = qobject_cast<QCheckBox*>(table_->cellWidget(r, ColVis))) vis = cb->isChecked();
-        if (auto* co = qobject_cast<QComboBox*>(table_->cellWidget(r, ColAxis))) axis = co->currentIndex();
-        savedRowState_[name] = {vis, axis};
-    }
-
-    for (const auto& name : store_.channelNames()) {
-        auto sig = store_.get(name);
-        if (!sig) continue;
-        scope::plot::PlotLayoutChannel c;
-        c.name = name;
-        c.axisIndex = savedRowState_.value(name, {true, 0}).second;
-        c.domain = (sig->meta().domain == scope::core::Signal::Domain::Frequency)
-                       ? "frequency" : "time";
-        // For formula-derived channels, FormulaEngine::evaluate stamps
-        // "<name> = <expr>" into sourceSymbol. Extract just the
-        // right-hand side so reload can re-evaluate it.
-        const QString src = sig->meta().sourceSymbol;
-        const int eq = src.indexOf('=');
-        if (eq > 0) {
-            const QString lhs = src.left(eq).trimmed();
-            if (lhs == name) c.formula = src.mid(eq + 1).trimmed();
-        }
-        layout.channels.append(c);
-    }
     QString err;
-    if (!layout.saveToFile(std::filesystem::path(path.toStdString()), &err)) {
+    if (!currentLayout().saveToFile(
+            std::filesystem::path(path.toStdString()), &err)) {
         QMessageBox::critical(this, "Save failed", err);
     }
+}
+
+void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout) {
+    // ---- Hydrate stateByDomain_ from the layout ----------------------
+    using Domain = scope::core::Signal::Domain;
+    auto loadDomain = [&](Domain d, const QString& key) {
+        PerDomainState st;
+        st.axes = layout.axesByDomain.value(key);
+        // Channels → per-channel axis assignment. Visibility defaults to
+        // true (layout doesn't persist visibility — it's transient UI).
+        for (const auto& c : layout.channelsByDomain.value(key)) {
+            st.rowState[c.name] = {true, c.axisIndex};
+        }
+        stateByDomain_[static_cast<int>(d)] = std::move(st);
+    };
+    loadDomain(Domain::Time,      "time");
+    loadDomain(Domain::Frequency, "frequency");
+
+    // ---- Re-evaluate formula channels --------------------------------
+    QStringList formulaErrors;
+    const auto allLayoutChans = [&] {
+        QList<scope::plot::PlotLayoutChannel> all;
+        for (const auto& list : layout.channelsByDomain) all.append(list);
+        return all;
+    }();
+    for (const auto& c : allLayoutChans) {
+        if (c.formula.isEmpty()) continue;
+        if (store_.contains(c.name)) continue;
+        QString fErr;
+        if (!engine_.evaluate(c.name + " = " + c.formula, &fErr)) {
+            formulaErrors << QString("%1: %2").arg(c.name, fErr);
+        }
+    }
+    if (!formulaErrors.isEmpty()) {
+        QMessageBox::warning(this, "Some formulas failed",
+            "Couldn't re-evaluate:\n" + formulaErrors.join("\n"));
+    }
+    pendingAssignments_.clear();
+    for (const auto& c : allLayoutChans) {
+        if (!store_.contains(c.name))
+            pendingAssignments_.insert(c.name, c.axisIndex);
+    }
+
+    // ---- Restore viewMode + XY channel + active-domain axes ----------
+    if (layout.viewMode == "xy")             viewMode_ = ViewMode::XY;
+    else if (layout.viewMode == "frequency") viewMode_ = ViewMode::Frequency;
+    else                                     viewMode_ = ViewMode::Time;
+    xyChannel_ = layout.xyChannel;
+
+    // Sync the View combo without re-triggering its slot — the slot
+    // would otherwise try to snapshot/restore on top of the state we
+    // just hydrated.
+    {
+        QSignalBlocker b(viewCombo_);
+        viewCombo_->setCurrentIndex(viewMode_ == ViewMode::XY        ? 2
+                                  : viewMode_ == ViewMode::Frequency ? 1 : 0);
+    }
+    xyXRow_->setVisible(viewMode_ == ViewMode::XY);
+    if (viewMode_ == ViewMode::XY) {
+        rebuildXyXCombo();
+        if (!xyChannel_.isEmpty()) {
+            QSignalBlocker b(xyXCombo_);
+            const int idx = xyXCombo_->findData(xyChannel_);
+            if (idx >= 0) xyXCombo_->setCurrentIndex(idx);
+        }
+    }
+
+    clearAllPlottables();
+    applyFromDomain(activeDomain());
+
+    // X axis label for non-XY views — XY sets its own from the channel.
+    if (viewMode_ == ViewMode::Time)
+        scope_->plot()->xAxis->setLabel("t [s]");
+    else if (viewMode_ == ViewMode::Frequency)
+        scope_->plot()->xAxis->setLabel("f [Hz]");
+
+    rebuildTable();
+    hasDrawnYet_ = false;
+    redrawForActiveChannels();
 }
 
 void AnalyserPlot::loadLayoutDialog() {
@@ -698,64 +921,7 @@ void AnalyserPlot::loadLayoutDialog() {
         QMessageBox::critical(this, "Load failed", err);
         return;
     }
-
-    // Remove extra axes (keep Y1).
-    while (scope_->yAxisCount() > 1) {
-        QString rmErr;
-        // Move any graphs off the to-be-removed axis to Y1 first.
-        const int idx = scope_->yAxisCount() - 1;
-        for (int g = 0; g < scope_->plot()->graphCount(); ++g) {
-            if (scope_->plot()->graph(g)->valueAxis() == scope_->yAxis(idx))
-                scope_->setGraphYAxis(scope_->plot()->graph(g), 0);
-        }
-        if (!scope_->removeYAxis(idx, &rmErr)) break;
-    }
-    // Add axes from the layout (Y1 already exists at index 0).
-    for (int i = 0; i < layout.axes.size(); ++i) {
-        const auto& la = layout.axes[i];
-        const Qt::Alignment side = (la.side == "right") ? Qt::AlignRight : Qt::AlignLeft;
-        if (i == 0) {
-            scope_->yAxis(0)->setLabel(la.label);
-            if (la.hasRange) scope_->yAxis(0)->setRange(la.min, la.max);
-        } else {
-            const int newIdx = scope_->addYAxis(la.label, side);
-            if (la.hasRange) scope_->yAxis(newIdx)->setRange(la.min, la.max);
-        }
-    }
-    rebuildAxisCombos();
-
-    // First pass: re-evaluate any formula-derived channels that aren't
-    // already in the store. Doing this before the assignment loop means
-    // the channel rows already exist (via the store's channelAdded
-    // signal → rebuildTable) when we look them up below.
-    QStringList formulaErrors;
-    for (const auto& c : layout.channels) {
-        if (c.formula.isEmpty()) continue;
-        if (store_.contains(c.name)) continue;
-        QString err;
-        if (!engine_.evaluate(c.name + " = " + c.formula, &err)) {
-            formulaErrors << QString("%1: %2").arg(c.name, err);
-        }
-    }
-    if (!formulaErrors.isEmpty()) {
-        QMessageBox::warning(this, "Some formulas failed",
-            "Couldn't re-evaluate:\n" + formulaErrors.join("\n"));
-    }
-
-    // Apply channel assignments; remember pending for unknown channels.
-    pendingAssignments_.clear();
-    for (const auto& c : layout.channels) {
-        bool found = false;
-        for (int r = 0; r < table_->rowCount(); ++r) {
-            if (table_->item(r, ColName)->text() == c.name) {
-                setAxisIndexForRow(r, c.axisIndex);
-                found = true;
-                break;
-            }
-        }
-        if (!found) pendingAssignments_.insert(c.name, c.axisIndex);
-    }
-    redrawForActiveChannels();
+    applyLayout(layout);
 }
 
 void AnalyserPlot::addChannelDialog() {
@@ -833,21 +999,54 @@ void AnalyserPlot::saveChartDialog() {
 
     converter::SaveOptions opts;
     opts.csv = dlg.csvOptions();
+    // Embed the layout for every format (CSV scope-csv header, HDF5
+    // /metadata attribute, MDF4 header metadata) so re-opening an exported
+    // chart restores per-domain Y-axis assignments / view mode / XY-X
+    // channel without a separate Load layout… step.
+    const auto fullLayout = currentLayout();
+    opts.layoutJson = fullLayout.toJsonString();
+    // On a split export each single-domain file should carry only its own
+    // domain's layout. Precompute the restricted variants; saveChartFromStore
+    // picks the matching one per file (and falls back to the full layout for
+    // a combined write).
+    if (filters.splitDomainsIntoTwoFiles) {
+        opts.layoutJsonByDomain.insert(
+            "time", fullLayout.restrictedToDomain("time").toJsonString());
+        opts.layoutJsonByDomain.insert(
+            "frequency", fullLayout.restrictedToDomain("frequency").toJsonString());
+    }
 
-    QStringList messages;
-    QString err;
-    const auto result = converter::saveChartFromStore(
-        sel.first(), store_, fmt, filters, opts, &messages, &err);
-    switch (result) {
+    // Run the (potentially slow) write off the GUI thread behind a busy
+    // dialog. saveChartFromStore reads the store via its concurrent-read
+    // path, so this is safe.
+    struct SaveOutcome {
+        converter::ChartSaveResult result{converter::ChartSaveResult::Failed};
+        QStringList messages;
+        QString error;
+    };
+    const QString target = sel.first();
+    const auto outcome = converter::ui::runWithBusyDialog(this, tr("Saving chart…"),
+        [&]() -> SaveOutcome {
+            SaveOutcome o;
+            QStringList msgs;
+            QString err;
+            o.result   = converter::saveChartFromStore(
+                target, store_, fmt, filters, opts, &msgs, &err);
+            o.messages = std::move(msgs);
+            o.error    = std::move(err);
+            return o;
+        });
+
+    switch (outcome.result) {
         case converter::ChartSaveResult::NothingMatchedFilters:
             QMessageBox::warning(this, "Nothing to save",
                 "No channels matched the current filters / time range.");
             return;
         case converter::ChartSaveResult::Failed:
-            QMessageBox::critical(this, "Save failed", err);
+            QMessageBox::critical(this, "Save failed", outcome.error);
             return;
         case converter::ChartSaveResult::Ok:
-            QMessageBox::information(this, "Saved", messages.join("\n"));
+            QMessageBox::information(this, "Saved", outcome.messages.join("\n"));
             return;
     }
 }
@@ -874,7 +1073,13 @@ void AnalyserPlot::openChartDialog() {
     if (sel.isEmpty()) return;
     const QString path = sel.first();
 
-    auto r = converter::loadFile(std::filesystem::path(path.toStdString()));
+    // Read off the GUI thread behind a busy dialog — loadFile touches no
+    // shared state (it builds brand-new Signals), so this is fully safe.
+    const auto r = converter::ui::runWithBusyDialog(this, tr("Opening chart…"),
+        [path]() {
+            return converter::loadFile(
+                std::filesystem::path(path.toStdString()));
+        });
     if (!r.ok && r.channels.empty()) {
         QMessageBox::critical(this, "Open failed",
             r.error.isEmpty() ? QString("Couldn't open file.") : r.error);
@@ -892,6 +1097,21 @@ void AnalyserPlot::openChartDialog() {
         s->setMeta(meta);
         store_.add(s);
     }
+
+    // If the file carried an embedded PlotLayout (Analyser-written CSV /
+    // HDF5 / MDF4), apply it now that the channels are in the store.
+    // applyLayout will also re-evaluate any formula channels it referenced.
+    // Foreign / pre-layout files leave layoutJson empty — fall through
+    // silently.
+    if (!r.layoutJson.isEmpty()) {
+        QString lerr;
+        auto layout = scope::plot::PlotLayout::fromJsonString(
+            r.layoutJson, &lerr);
+        if (lerr.isEmpty()) {
+            applyLayout(layout);
+        }
+    }
+
     QMessageBox::information(this, "Opened",
         QString("Loaded %1 channel(s) from %2")
             .arg(r.channels.size()).arg(QFileInfo(path).fileName()));

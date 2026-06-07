@@ -6,6 +6,7 @@ set(CONVERTER_HEADERS
     include/scope/converter/CsvWriter.h
     include/scope/converter/SignalIO.h
     include/scope/converter/SaveChartDialog.h
+    include/scope/converter/BusyRunner.h
     include/scope/converter/ConverterWidget.h
     ui/MappingPanel.h
     ui/ChannelEditDialog.h
@@ -34,6 +35,7 @@ scope_add_library(scope_converter
         scope::scope_core
         Qt6::Widgets
         Qt6::Gui
+        Qt6::Concurrent
     PRIVATE_LIBS
         spdlog::spdlog
         nlohmann_json::nlohmann_json

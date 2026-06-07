@@ -1,8 +1,10 @@
 #pragma once
 
 #include "scope/core/SignalStore.h"
+#include "scope/plot/PlotLayout.h"
 
 #include <QHash>
+#include <QList>
 #include <QString>
 #include <QWidget>
 
@@ -75,6 +77,28 @@ private:
     // new mode.
     void clearAllPlottables();
 
+    // Per-domain Y-axis machinery. Each domain (Time / Frequency)
+    // remembers its own QList<PlotLayoutAxis> + per-channel vis+axis
+    // map. When the user flips the View combo, if the new view's
+    // effective domain differs from the current one we snapshot the
+    // current Y axes + row state into stateByDomain_[oldDomain] and
+    // restore stateByDomain_[newDomain]. XY borrows whichever domain
+    // matches its chosen X channel's domain — there's no separate
+    // "xy" entry.
+    scope::core::Signal::Domain activeDomain() const;
+    void snapshotIntoDomain(scope::core::Signal::Domain d);
+    void applyFromDomain(scope::core::Signal::Domain d);
+
+    // Pure builders / appliers used by both the dedicated layout dialogs
+    // and the chart save/open path (which embeds the layout JSON inside
+    // the scope-csv metadata block). currentLayout() snapshots the
+    // active domain first so the result reflects what's on screen.
+    // applyLayout() does everything loadLayoutDialog does after the
+    // file has been parsed — hydrate stateByDomain_, re-eval formulas,
+    // switch viewMode, rebuild the table.
+    scope::plot::PlotLayout currentLayout();
+    void applyLayout(const scope::plot::PlotLayout& layout);
+
     scope::core::SignalStore& store_;
     FormulaEngine&            engine_;
     QTableWidget*             table_{nullptr};
@@ -85,7 +109,9 @@ private:
     // can hold either; the redraw branches cast as needed.
     QHash<QString, QCPAbstractPlottable*> plotted_;
 
-    // XY-only X-axis selector row, hidden in other modes.
+    // View / XY UI handles kept so loadLayoutDialog can re-sync them
+    // without re-triggering their slots.
+    QComboBox* viewCombo_{nullptr};
     QWidget*   xyXRow_{nullptr};
     QComboBox* xyXCombo_{nullptr};
 
@@ -95,9 +121,24 @@ private:
     QHash<QString, int> pendingAssignments_;
 
     // Per-channel sticky table state (visibility + axis index). Persists
-    // across rebuildTable() calls so that toggling the View combo
-    // (Time / Frequency / XY) doesn't lose the user's per-channel choices.
+    // across rebuildTable() calls. Mirrors stateByDomain_[activeDomain].
+    // rowState; kept here so the per-row table handlers don't have to
+    // recompute the active domain every time.
     QHash<QString, std::pair<bool, int>> savedRowState_;
+
+    // Domain → axes + row state. Switching domains snapshots into one
+    // entry and restores from another. See activeDomain() for how a
+    // ViewMode maps to a domain.
+    struct PerDomainState {
+        QList<scope::plot::PlotLayoutAxis>   axes;
+        QHash<QString, std::pair<bool, int>> rowState;
+    };
+    QHash<int /* Signal::Domain */, PerDomainState> stateByDomain_;
+
+    // Test access: the widget-level layout round-trip (currentLayout /
+    // applyLayout) can't be driven through the modal Save/Open dialogs, so a
+    // gtest fixture befriends us to call them directly.
+    friend class AnalyserPlotLayoutTest;
 };
 
 }  // namespace scope::analyser::ui

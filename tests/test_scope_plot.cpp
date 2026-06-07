@@ -9,6 +9,7 @@
 #include <QSignalSpy>
 
 #include <filesystem>
+#include <fstream>
 #include <memory>
 
 namespace {
@@ -456,6 +457,134 @@ TEST(ScopePlot, ClosestYAxisToPosByPixelDistance) {
     // Mouse far right → the right-side axis we just added.
     EXPECT_EQ(sp.closestYAxisToPos(QPointF(ar.right() + 5, ar.center().y())),
               rightIdx);
+}
+
+TEST(ScopePlot, LayoutV2RoundTripsXyAndPerDomainAxes) {
+    auto path = std::filesystem::temp_directory_path() / "scope_layout_v2.scolayout";
+
+    scope::plot::PlotLayout layout;
+    layout.viewMode  = "xy";
+    layout.xyChannel = "speed";
+
+    QList<scope::plot::PlotLayoutAxis> tAxes;
+    tAxes.append({"Volts", "left",  true,   -5.0,  5.0});
+    tAxes.append({"rpm",   "right", true,    0.0, 6000.0});
+    layout.axesByDomain.insert("time", tAxes);
+
+    QList<scope::plot::PlotLayoutAxis> fAxes;
+    fAxes.append({"mag",   "left",  true,    0.0,   1.0});
+    layout.axesByDomain.insert("frequency", fAxes);
+
+    QList<scope::plot::PlotLayoutChannel> tCh;
+    {
+        scope::plot::PlotLayoutChannel c;
+        c.name = "speed";  c.axisIndex = 1;  c.domain = "time"; tCh.append(c);
+        c.name = "torque"; c.axisIndex = 0;  c.domain = "time"; tCh.append(c);
+    }
+    layout.channelsByDomain.insert("time", tCh);
+
+    QList<scope::plot::PlotLayoutChannel> fCh;
+    {
+        scope::plot::PlotLayoutChannel c;
+        c.name = "FFT_speed"; c.axisIndex = 0; c.domain = "frequency";
+        c.formula = "FFT(speed)";
+        fCh.append(c);
+    }
+    layout.channelsByDomain.insert("frequency", fCh);
+
+    // v1 mirror — for the test, mirror "time" since viewMode=xy maps to
+    // its X's domain (here, "speed" → time). The file ought to keep
+    // both representations.
+    layout.axes     = tAxes;
+    layout.channels = tCh;
+
+    QString err;
+    ASSERT_TRUE(layout.saveToFile(path, &err)) << err.toStdString();
+
+    auto loaded = scope::plot::PlotLayout::loadFromFile(path, &err);
+    ASSERT_TRUE(err.isEmpty()) << err.toStdString();
+
+    EXPECT_EQ(loaded.viewMode, "xy");
+    EXPECT_EQ(loaded.xyChannel, "speed");
+    ASSERT_TRUE(loaded.axesByDomain.contains("time"));
+    ASSERT_TRUE(loaded.axesByDomain.contains("frequency"));
+    EXPECT_EQ(loaded.axesByDomain["time"].size(), 2);
+    EXPECT_EQ(loaded.axesByDomain["time"][1].label, "rpm");
+    EXPECT_EQ(loaded.axesByDomain["frequency"].size(), 1);
+    ASSERT_TRUE(loaded.channelsByDomain.contains("time"));
+    ASSERT_TRUE(loaded.channelsByDomain.contains("frequency"));
+    EXPECT_EQ(loaded.channelsByDomain["time"].size(),       2);
+    EXPECT_EQ(loaded.channelsByDomain["frequency"].size(),  1);
+    EXPECT_EQ(loaded.channelsByDomain["frequency"][0].formula, "FFT(speed)");
+
+    std::filesystem::remove(path);
+}
+
+TEST(ScopePlot, LayoutV1FileLoadsAsTimeDomain) {
+    // A bare-bones v1 layout (no per-domain maps, no viewMode field)
+    // should land in axesByDomain["time"] / channelsByDomain["time"]
+    // so callers can read uniformly.
+    auto path = std::filesystem::temp_directory_path() / "scope_layout_v1.scolayout";
+    {
+        std::ofstream f(path);
+        f << R"({"version":1,)"
+          << R"("axes":[{"label":"Volts","side":"left","min":-1,"max":1}],)"
+          << R"("channels":[{"name":"speed","axis":0,"domain":"time"}]})";
+    }
+
+    QString err;
+    auto loaded = scope::plot::PlotLayout::loadFromFile(path, &err);
+    ASSERT_TRUE(err.isEmpty()) << err.toStdString();
+    EXPECT_EQ(loaded.viewMode, "time");
+    EXPECT_TRUE(loaded.xyChannel.isEmpty());
+    ASSERT_TRUE(loaded.axesByDomain.contains("time"));
+    EXPECT_EQ(loaded.axesByDomain["time"].size(), 1);
+    ASSERT_TRUE(loaded.channelsByDomain.contains("time"));
+    EXPECT_EQ(loaded.channelsByDomain["time"][0].name, "speed");
+
+    std::filesystem::remove(path);
+}
+
+TEST(ScopePlot, RestrictedToDomainKeepsOnlyThatDomain) {
+    scope::plot::PlotLayout layout;
+    layout.viewMode  = "xy";
+    layout.xyChannel = "speed";          // a time-domain channel
+
+    QList<scope::plot::PlotLayoutAxis> tAxes;
+    tAxes.append({"Volts", "left", true, -5.0, 5.0});
+    layout.axesByDomain.insert("time", tAxes);
+    QList<scope::plot::PlotLayoutAxis> fAxes;
+    fAxes.append({"mag", "left", true, 0.0, 1.0});
+    layout.axesByDomain.insert("frequency", fAxes);
+
+    QList<scope::plot::PlotLayoutChannel> tCh;
+    { scope::plot::PlotLayoutChannel c; c.name = "speed";  c.axisIndex = 0; c.domain = "time"; tCh.append(c); }
+    layout.channelsByDomain.insert("time", tCh);
+    QList<scope::plot::PlotLayoutChannel> fCh;
+    { scope::plot::PlotLayoutChannel c; c.name = "FFT_speed"; c.axisIndex = 0; c.domain = "frequency"; fCh.append(c); }
+    layout.channelsByDomain.insert("frequency", fCh);
+
+    // Restrict to time: only the time domain survives. The XY view is kept
+    // because its X channel ("speed") is a time channel still present.
+    const auto t = layout.restrictedToDomain("time");
+    EXPECT_TRUE(t.axesByDomain.contains("time"));
+    EXPECT_FALSE(t.axesByDomain.contains("frequency"));
+    EXPECT_FALSE(t.channelsByDomain.contains("frequency"));
+    EXPECT_EQ(t.channelsByDomain["time"].size(), 1);
+    EXPECT_EQ(t.viewMode, "xy");
+    EXPECT_EQ(t.xyChannel, "speed");
+    EXPECT_EQ(t.axes.size(), 1);                  // v1 mirror = time axes
+    EXPECT_EQ(t.axes[0].label, "Volts");
+
+    // Restrict to frequency: only frequency survives, and viewMode falls
+    // back to the domain (the XY's X channel isn't here), xyChannel cleared.
+    const auto f = layout.restrictedToDomain("frequency");
+    EXPECT_TRUE(f.axesByDomain.contains("frequency"));
+    EXPECT_FALSE(f.axesByDomain.contains("time"));
+    EXPECT_FALSE(f.channelsByDomain.contains("time"));
+    EXPECT_EQ(f.channelsByDomain["frequency"].size(), 1);
+    EXPECT_EQ(f.viewMode, "frequency");
+    EXPECT_TRUE(f.xyChannel.isEmpty());
 }
 
 TEST(ScopePlot, LayoutFileRoundTrip) {

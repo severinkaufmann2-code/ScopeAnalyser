@@ -5,6 +5,7 @@
 #include "scope/core/Signal.h"
 #include "scope/core/SignalStore.h"
 
+#include <QHash>
 #include <QString>
 #include <QStringList>
 
@@ -40,6 +41,21 @@ QString     defaultSuffix(FileFormat fmt);
 // format is consulted; other fields are ignored.
 struct SaveOptions {
     CsvExportOptions csv{};
+
+    // Format-agnostic PlotLayout JSON to embed in the saved file. Empty →
+    // nothing embedded (foreign / non-Analyser saves are unaffected). For
+    // HDF5 / MDF4 it's written to a file-level metadata slot; for CSV it's
+    // spliced into the scope-csv header (saveFile bridges it into
+    // CsvExportOptions::layoutJson). Stored as a string to keep nlohmann
+    // and PlotLayout out of this public header.
+    QString layoutJson;
+
+    // Per-domain restricted layouts, consulted ONLY when a split export
+    // writes a single-domain file: key "time" / "frequency" picks which
+    // JSON that file carries instead of the full `layoutJson`. Absent key
+    // → falls back to `layoutJson`. Lets each split file embed only the
+    // axes / channels for the domain it actually contains.
+    QHash<QString, QString> layoutJsonByDomain;
 };
 
 struct LoadResult {
@@ -49,6 +65,14 @@ struct LoadResult {
     std::vector<std::shared_ptr<scope::core::Signal>> channels;
     QString error;
     bool ok{false};
+
+    // Compact PlotLayout JSON pulled from a CSV's "# scope-csv: ..."
+    // metadata block when its `layout` key is present. Empty otherwise
+    // (non-CSV sources, foreign CSVs without the key). The host (e.g.
+    // AnalyserPlot::openChartDialog) feeds this into
+    // PlotLayout::fromJsonString to restore axes / view mode / channel
+    // assignments.
+    QString layoutJson;
 };
 
 // Load all signals from a single file. CSV import here handles the
