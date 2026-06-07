@@ -10,6 +10,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QRadioButton>
+#include <QStackedWidget>
 #include <QVBoxLayout>
 
 #include <array>
@@ -59,12 +60,17 @@ QString formatRowRange(int start, int end) {
 
 int indexFromRole(ColumnMapping::Role r) {
     switch (r) {
-        case ColumnMapping::Role::XTime:  return 1;
+        case ColumnMapping::Role::XTime:      return 1;
+        case ColumnMapping::Role::XFrequency: return 2;
         default: return 0;  // signal (default)
     }
 }
 ColumnMapping::Role roleFromIndex(int i) {
-    return (i == 1) ? ColumnMapping::Role::XTime : ColumnMapping::Role::Signal;
+    switch (i) {
+        case 1: return ColumnMapping::Role::XTime;
+        case 2: return ColumnMapping::Role::XFrequency;
+        default: return ColumnMapping::Role::Signal;
+    }
 }
 
 struct RateUnit { const char* label; double m; };
@@ -118,21 +124,36 @@ ChannelEditDialog::ChannelEditDialog(QWidget* parent) : QDialog(parent) {
     roleCombo_ = new QComboBox(this);
     roleCombo_->addItem("Y signal");
     roleCombo_->addItem("X-axis (time)");
+    roleCombo_->addItem("X-axis (frequency)");
     connect(roleCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int){ onRoleChanged(); });
 
     nameEdit_ = new QLineEdit(this);
     nameEdit_->setPlaceholderText("Signal name (Y only)");
 
+    // Free-form unit for Y signals.
     unitEdit_ = new QLineEdit(this);
-    unitEdit_->setPlaceholderText("Unit (e.g. V, rpm, s)");
+    unitEdit_->setPlaceholderText("Unit (e.g. V, rpm, °C)");
+
+    // Locked-down ladders for X-axis units — these are the ONLY strings
+    // the CSV parser actually recognises. Putting them in a dropdown
+    // means the user can't type "qws" any more and silently get seconds.
+    unitTimeCombo_ = new QComboBox(this);
+    unitTimeCombo_->addItems({"s", "ms", "µs", "ns"});
+    unitFreqCombo_ = new QComboBox(this);
+    unitFreqCombo_->addItems({"Hz", "kHz", "MHz"});
+
+    unitStack_ = new QStackedWidget(this);
+    unitStack_->addWidget(unitEdit_);       // 0
+    unitStack_->addWidget(unitTimeCombo_);  // 1
+    unitStack_->addWidget(unitFreqCombo_);  // 2
 
     auto* form = new QFormLayout();
     form->addRow("Column:", colEdit_);
     form->addRow("Rows:",   rowsEdit_);
     form->addRow("Role:",   roleCombo_);
     form->addRow("Name:",   nameEdit_);
-    form->addRow("Unit:",   unitEdit_);
+    form->addRow("Unit:",   unitStack_);
 
     // X-source group: only shown for Y signals.
     xSourceGroup_   = new QGroupBox("X-axis source (for this Y signal)", this);
@@ -265,9 +286,12 @@ void ChannelEditDialog::rebuildXSourceCombo() {
 }
 
 void ChannelEditDialog::onRoleChanged() {
-    const bool isSignal = (roleCombo_->currentIndex() == 0);
+    const int idx = roleCombo_->currentIndex();
+    const bool isSignal = (idx == 0);
     nameEdit_->setEnabled(isSignal);
     xSourceGroup_->setVisible(isSignal);
+    // Map combo index → unit-stack page: Y=0 (free-form), XTime=1, XFreq=2.
+    unitStack_->setCurrentIndex(idx);
     adjustSize();
 }
 
@@ -286,7 +310,18 @@ void ChannelEditDialog::setMapping(const ColumnMapping& m) {
     rowsEdit_->setText(formatRowRange(m.rowStart, m.rowEnd));
     roleCombo_->setCurrentIndex(indexFromRole(m.role));
     nameEdit_->setText(m.signalName);
-    unitEdit_->setText(m.unit);
+    // Route the loaded unit string to the right widget for the role.
+    if (m.role == ColumnMapping::Role::XTime) {
+        int idx = unitTimeCombo_->findText(m.unit, Qt::MatchFixedString);
+        if (idx < 0) idx = 0;   // unknown → "s"
+        unitTimeCombo_->setCurrentIndex(idx);
+    } else if (m.role == ColumnMapping::Role::XFrequency) {
+        int idx = unitFreqCombo_->findText(m.unit, Qt::MatchFixedString);
+        if (idx < 0) idx = 0;   // unknown → "Hz"
+        unitFreqCombo_->setCurrentIndex(idx);
+    } else {
+        unitEdit_->setText(m.unit);
+    }
 
     if (m.useSampleRate || (m.xSourceColumn.isEmpty() && m.sampleRateHz > 0)) {
         useRateRadio_->setChecked(true);
@@ -337,7 +372,13 @@ bool ChannelEditDialog::getMapping(ColumnMapping* out, QString* errorOut) const 
     out->columnId   = col;
     out->role       = roleFromIndex(roleCombo_->currentIndex());
     out->signalName = nameEdit_->text().trimmed();
-    out->unit       = unitEdit_->text().trimmed();
+    if (out->role == ColumnMapping::Role::XTime) {
+        out->unit = unitTimeCombo_->currentText();
+    } else if (out->role == ColumnMapping::Role::XFrequency) {
+        out->unit = unitFreqCombo_->currentText();
+    } else {
+        out->unit = unitEdit_->text().trimmed();
+    }
     out->rowStart   = startRow;
     out->rowEnd     = endRow;
 

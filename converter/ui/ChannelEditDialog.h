@@ -11,6 +11,7 @@ class QRadioButton;
 class QDoubleSpinBox;
 class QGroupBox;
 class QCheckBox;
+class QStackedWidget;
 class QWidget;
 
 namespace scope::converter::ui {
@@ -37,7 +38,14 @@ private:
     QLineEdit*    rowsEdit_;
     QComboBox*    roleCombo_;
     QLineEdit*    nameEdit_;
-    QLineEdit*    unitEdit_;
+    // Unit input: a stacked widget so the parser-supported X-axis unit
+    // ladders are enforced via a dropdown (no more silent fallback when
+    // the user types a bogus string), while Y signals stay free-form
+    // (V / rpm / °C / whatever).
+    QStackedWidget* unitStack_{nullptr};
+    QLineEdit*      unitEdit_{nullptr};      // index 0 — Y signal
+    QComboBox*      unitTimeCombo_{nullptr}; // index 1 — X-axis (time)
+    QComboBox*      unitFreqCombo_{nullptr}; // index 2 — X-axis (frequency)
 
     // X-source group (visible only for Y signals)
     QGroupBox*    xSourceGroup_;

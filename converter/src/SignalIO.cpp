@@ -3,6 +3,8 @@
 #include "scope/core/Hdf5Session.h"
 #include "scope/core/Mdf4Session.h"
 
+#include <nlohmann/json.hpp>
+
 #include <QFile>
 #include <QStringList>
 #include <QTextStream>
@@ -54,10 +56,24 @@ bool loadCsvChart(const std::filesystem::path& path,
         return false;
     }
     QTextStream ts(&f);
+
+    // ---- Optional scope-csv metadata block --------------------------
+    // A line like  "# scope-csv: {...json...}"  at the top of the file
+    // is authoritative — column roles, units, names and refX come from
+    // it and the header-string heuristics below are skipped.
+    QString metaJson;
     QString headerLine;
-    do {
+    while (true) {
         headerLine = ts.readLine();
-    } while (!headerLine.isNull() && headerLine.trimmed().isEmpty());
+        if (headerLine.isNull()) break;
+        const QString trimmed = headerLine.trimmed();
+        if (trimmed.isEmpty()) continue;
+        if (trimmed.startsWith("# scope-csv:")) {
+            metaJson = trimmed.mid(QString("# scope-csv:").size()).trimmed();
+            continue;
+        }
+        break;   // first non-blank, non-metadata line is the column header
+    }
     if (headerLine.isNull()) {
         if (errorOut) *errorOut = "Empty file.";
         return false;
@@ -70,48 +86,111 @@ bool loadCsvChart(const std::filesystem::path& path,
         return false;
     }
 
-    auto isSharedX = [](const QString& h){
-        const QString t = h.trimmed();
-        return t == "t" || t == "f"
-            || t.startsWith("t ") || t.startsWith("f ")
-            || t.startsWith("t[") || t.startsWith("f[");
-    };
-    const bool shared = isSharedX(headers[0])
-                     && (headers.size() < 3
-                         || (!headers[2].trimmed().startsWith("t_")
-                          && !headers[2].trimmed().startsWith("f_")));
-
-    auto isFreqHeader = [](const QString& h){
-        const QString t = h.trimmed();
-        return t == "f" || t.startsWith("f ") || t.startsWith("f[")
-            || t.startsWith("f_");
-    };
-
     struct Target { QString name, unit; int tCol{-1}, vCol{-1};
                     Signal::Domain domain{Signal::Domain::Time}; };
     std::vector<Target> targets;
-    if (shared) {
-        const Signal::Domain d0 = isFreqHeader(headers[0])
-            ? Signal::Domain::Frequency : Signal::Domain::Time;
-        for (int i = 1; i < headers.size(); ++i) {
-            Target t;
-            splitNameUnit(headers[i], &t.name, &t.unit);
-            t.tCol = 0;
-            t.vCol = i;
-            t.domain = d0;
-            if (!t.name.isEmpty()) targets.push_back(std::move(t));
-        }
-    } else {
-        for (int i = 0; i + 1 < headers.size(); i += 2) {
-            Target t;
-            splitNameUnit(headers[i + 1], &t.name, &t.unit);
-            t.tCol = i;
-            t.vCol = i + 1;
-            t.domain = isFreqHeader(headers[i])
-                ? Signal::Domain::Frequency : Signal::Domain::Time;
-            if (!t.name.isEmpty()) targets.push_back(std::move(t));
+
+    if (!metaJson.isEmpty()) {
+        // ---- Metadata-driven mapping (authoritative) ----------------
+        try {
+            const auto root = nlohmann::json::parse(metaJson.toStdString());
+            const auto& arr = root.value("columns", nlohmann::json::array());
+            std::vector<std::string> roles;
+            std::vector<std::string> units;
+            std::vector<std::string> names;
+            std::vector<int>         refX;
+            roles.reserve(arr.size());
+            units.reserve(arr.size());
+            names.reserve(arr.size());
+            refX.reserve(arr.size());
+            for (const auto& jc : arr) {
+                roles.push_back(jc.value("role", std::string("signal")));
+                units.push_back(jc.value("unit", std::string{}));
+                names.push_back(jc.value("name", std::string{}));
+                refX.push_back(jc.value("refX", -1));
+            }
+            for (std::size_t i = 0; i < roles.size(); ++i) {
+                if (roles[i] != "signal") continue;
+                Target t;
+                t.name = QString::fromStdString(names[i]);
+                t.unit = QString::fromStdString(units[i]);
+                // Fall back to the column header's name if metadata
+                // didn't carry one (e.g. third-party file).
+                if (t.name.isEmpty() && i < static_cast<std::size_t>(headers.size())) {
+                    QString hName, hUnit;
+                    splitNameUnit(headers[i], &hName, &hUnit);
+                    if (t.name.isEmpty()) t.name = hName;
+                    if (t.unit.isEmpty()) t.unit = hUnit;
+                }
+                t.vCol = static_cast<int>(i);
+                t.tCol = refX[i];
+                if (t.tCol >= 0 && t.tCol < static_cast<int>(roles.size())) {
+                    t.domain = (roles[t.tCol] == "x_frequency")
+                        ? Signal::Domain::Frequency
+                        : Signal::Domain::Time;
+                }
+                if (!t.name.isEmpty() && t.tCol >= 0) targets.push_back(std::move(t));
+            }
+        } catch (...) {
+            // Malformed metadata → silently fall through to heuristics.
+            targets.clear();
         }
     }
+
+    if (targets.empty()) {
+        // ---- Heuristic mapping (legacy / third-party files) ----------
+        auto isSharedX = [](const QString& h){
+            const QString t = h.trimmed();
+            return t == "t" || t == "f"
+                || t.startsWith("t ") || t.startsWith("f ")
+                || t.startsWith("t[") || t.startsWith("f[");
+        };
+        const bool shared = isSharedX(headers[0])
+                         && (headers.size() < 3
+                             || (!headers[2].trimmed().startsWith("t_")
+                              && !headers[2].trimmed().startsWith("f_")));
+
+        auto isFreqHeader = [](const QString& h){
+            const QString t = h.trimmed();
+            return t == "f" || t.startsWith("f ") || t.startsWith("f[")
+                || t.startsWith("f_");
+        };
+
+        if (shared) {
+            // Walk left→right, remember the most-recent X column. Each
+            // Y inherits its domain from that X. This correctly handles
+            // mixed files written before metadata existed where the
+            // layout is "t [s], time_signals…, f [Hz], freq_signals…".
+            int curX = -1;
+            Signal::Domain curD = Signal::Domain::Time;
+            for (int i = 0; i < headers.size(); ++i) {
+                if (isSharedX(headers[i])) {
+                    curX = i;
+                    curD = isFreqHeader(headers[i]) ? Signal::Domain::Frequency
+                                                    : Signal::Domain::Time;
+                    continue;
+                }
+                if (curX < 0) continue;   // Y before any X column
+                Target t;
+                splitNameUnit(headers[i], &t.name, &t.unit);
+                t.tCol   = curX;
+                t.vCol   = i;
+                t.domain = curD;
+                if (!t.name.isEmpty()) targets.push_back(std::move(t));
+            }
+        } else {
+            for (int i = 0; i + 1 < headers.size(); i += 2) {
+                Target t;
+                splitNameUnit(headers[i + 1], &t.name, &t.unit);
+                t.tCol = i;
+                t.vCol = i + 1;
+                t.domain = isFreqHeader(headers[i])
+                    ? Signal::Domain::Frequency : Signal::Domain::Time;
+                if (!t.name.isEmpty()) targets.push_back(std::move(t));
+            }
+        }
+    }
+
     if (targets.empty()) {
         if (errorOut) *errorOut = "No data columns found.";
         return false;

@@ -1,5 +1,7 @@
 #include "scope/converter/CsvWriter.h"
 
+#include <nlohmann/json.hpp>
+
 #include <QFile>
 #include <QTextStream>
 
@@ -113,6 +115,77 @@ bool writeCsv(const std::filesystem::path& path,
         if (c->view.count > 0)
             timeOriginNs = std::min(timeOriginNs, c->view.timestamps[0]);
     if (timeOriginNs == std::numeric_limits<TimestampNs>::max()) timeOriginNs = 0;
+
+    // ----- Build the column-descriptor list ---------------------------
+    //
+    // One entry per column we're about to write, in column order. The
+    // metadata line carries this as authoritative info on read so the
+    // loader doesn't need to guess from header strings.
+    struct ColDesc {
+        std::string role;       // "x_time" | "x_frequency" | "signal"
+        std::string unit;
+        std::string name;       // signal-only
+        std::string src;        // signal-only (sourceSymbol)
+        int         refX{-1};   // signal-only: index of its X column
+    };
+    std::vector<ColDesc> cols;
+    if (opts.timeMode == CsvExportOptions::TimeMode::Shared) {
+        if (!timeC.empty()) {
+            cols.push_back({"x_time", "s", "", "", -1});
+            const int xIdx = static_cast<int>(cols.size()) - 1;
+            for (const auto* c : timeC) {
+                cols.push_back({"signal",
+                                c->sig->meta().unit.toStdString(),
+                                c->sig->meta().name.toStdString(),
+                                c->sig->meta().sourceSymbol.toStdString(),
+                                xIdx});
+            }
+        }
+        if (!freqC.empty()) {
+            cols.push_back({"x_frequency", "Hz", "", "", -1});
+            const int xIdx = static_cast<int>(cols.size()) - 1;
+            for (const auto* c : freqC) {
+                cols.push_back({"signal",
+                                c->sig->meta().unit.toStdString(),
+                                c->sig->meta().name.toStdString(),
+                                c->sig->meta().sourceSymbol.toStdString(),
+                                xIdx});
+            }
+        }
+    } else {
+        for (const auto& c : caches) {
+            const bool freq = isFreq(c.sig);
+            cols.push_back({freq ? "x_frequency" : "x_time",
+                            freq ? "Hz" : "s", "", "", -1});
+            const int xIdx = static_cast<int>(cols.size()) - 1;
+            cols.push_back({"signal",
+                            c.sig->meta().unit.toStdString(),
+                            c.sig->meta().name.toStdString(),
+                            c.sig->meta().sourceSymbol.toStdString(),
+                            xIdx});
+        }
+    }
+
+    if (opts.includeMetadata) {
+        nlohmann::json meta;
+        meta["v"] = 1;
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& c : cols) {
+            nlohmann::json j;
+            j["role"] = c.role;
+            j["unit"] = c.unit;
+            if (c.role == "signal") {
+                if (!c.name.empty()) j["name"] = c.name;
+                if (!c.src.empty())  j["src"]  = c.src;
+                j["refX"] = c.refX;
+            }
+            arr.push_back(std::move(j));
+        }
+        meta["columns"] = std::move(arr);
+        out << "# scope-csv: "
+            << QString::fromStdString(meta.dump())
+            << row;
+    }
 
     if (opts.timeMode == CsvExportOptions::TimeMode::Shared) {
         // ----- Build per-domain shared grids -----

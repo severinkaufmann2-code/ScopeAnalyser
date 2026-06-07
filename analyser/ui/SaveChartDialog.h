@@ -54,6 +54,7 @@ private:
 
     QGroupBox*  csvGroup_{nullptr};
     QCheckBox*  headerCheck_{nullptr};
+    QCheckBox*  metadataCheck_{nullptr};
     QComboBox*  colSepCombo_{nullptr};
     QLineEdit*  colSepCustom_{nullptr};
     QComboBox*  rowSepCombo_{nullptr};

@@ -108,20 +108,28 @@ CsvSource::CsvSource(const std::filesystem::path& path,
 
     const QChar colChar = columnDelimiter_.isEmpty() ? QChar(',') : columnDelimiter_[0];
 
+    // Lines starting with `#` are treated as comments and skipped — this
+    // matches the `# scope-csv: …` metadata header written by writeCsv
+    // and the convention pandas / NumPy / R use. Avoids polluting the
+    // mapping panel's preview with a meaningless first row.
+    auto isComment = [](const QString& s) {
+        const QString t = s.trimmed();
+        return !t.isEmpty() && t[0] == QChar('#');
+    };
+
     QTextStream ts(&f);
     if (rowDelimiter_ == "\n" || rowDelimiter_ == "\r\n") {
-        // Standard line-based parsing — QTextStream::readLine handles both
-        // \n and \r\n. Empty trailing lines are ignored.
         while (!ts.atEnd()) {
             const QString line = ts.readLine();
             if (line.isEmpty() && ts.atEnd()) break;
+            if (isComment(line)) continue;
             rows_.push_back(splitCsv(line, colChar));
         }
     } else {
-        // Custom row delimiter — read whole file then split.
         const QString all = ts.readAll();
         const auto parts = all.split(rowDelimiter_, Qt::SkipEmptyParts);
         for (const auto& part : parts) {
+            if (isComment(part)) continue;
             rows_.push_back(splitCsv(part, colChar));
         }
     }
@@ -151,7 +159,8 @@ std::unique_ptr<QAbstractItemModel> CsvSource::previewModel(const QString& /*reg
 }
 
 std::vector<std::shared_ptr<Signal>> CsvSource::apply(
-    const ConverterProfile& profile, QString* errorOut) {
+    const ConverterProfile& profile, QString* errorOut,
+    QStringList* warningsOut) {
 
     std::vector<std::shared_ptr<Signal>> out;
     if (rows_.empty()) {
@@ -159,22 +168,74 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
         return out;
     }
 
-    // Index X-axis columns by letter. There can be multiple.
+    // Index X-axis columns by letter. There can be multiple, of either
+    // time or frequency role. The same xByLabel table services both
+    // kinds — they just convert to the int64 storage differently below.
     std::unordered_map<QString, ColumnMapping> xByLabel;
     QString firstXLabel;
+    bool haveTimeX = false, haveFreqX = false;
     std::vector<std::pair<int, ColumnMapping>> ySpecs;
     for (const auto& c : profile.columns) {
         const int col = labelToCol(c.columnId);
         if (col < 0) continue;
-        if (c.role == ColumnMapping::Role::XTime) {
+        if (c.role == ColumnMapping::Role::XTime
+            || c.role == ColumnMapping::Role::XFrequency) {
             xByLabel[c.columnId] = c;
             if (firstXLabel.isEmpty()) firstXLabel = c.columnId;
+            haveTimeX = haveTimeX || c.role == ColumnMapping::Role::XTime;
+            haveFreqX = haveFreqX || c.role == ColumnMapping::Role::XFrequency;
         }
         if (c.role == ColumnMapping::Role::Signal) ySpecs.emplace_back(col, c);
     }
     if (ySpecs.empty()) {
         if (errorOut) *errorOut = "Profile has no Y-signal channels";
         return out;
+    }
+    // Mixed time + frequency X columns: forcing a fallback would silently
+    // assign one of them to every Y signal that doesn't pin xSourceColumn,
+    // and which one is "first" depends on column-letter sort order. Refuse
+    // the ambiguity outright — the user pins each Y to its X explicitly.
+    if (haveTimeX && haveFreqX) {
+        for (const auto& [_, ySpec] : ySpecs) {
+            if (ySpec.xSourceColumn.isEmpty() && !ySpec.useSampleRate) {
+                if (errorOut) *errorOut = QString(
+                    "Channel '%1' must pin its X column when the profile mixes "
+                    "time- and frequency-axis X columns.").arg(ySpec.signalName);
+                return {};
+            }
+        }
+    }
+
+    // Validate X-column units against the recognised ladder. The parser
+    // silently treats unknown units as seconds (XTime) or Hz (XFrequency)
+    // for back-compat with legacy/hand-rolled profiles; warn the caller
+    // so a user-facing tool can surface it. The new dropdown UI in
+    // ChannelEditDialog can't produce an off-ladder value, so this fires
+    // only for old `.scaconv` files or hand-edited JSON.
+    if (warningsOut) {
+        static const QStringList kTimeLadder = {"s","ms","us","µs","ns"};
+        static const QStringList kFreqLadder = {"Hz","kHz","MHz"};
+        auto inLadder = [](const QString& u, const QStringList& ladder) {
+            for (const auto& v : ladder)
+                if (u.compare(v, Qt::CaseInsensitive) == 0) return true;
+            return false;
+        };
+        for (const auto& [_, x] : xByLabel) {
+            if (x.role == ColumnMapping::Role::XTime
+                && !x.unit.isEmpty() && !inLadder(x.unit, kTimeLadder)) {
+                *warningsOut << QString(
+                    "Column %1: unit \"%2\" is not a recognised time unit "
+                    "(s / ms / µs / ns). The parser will treat values as "
+                    "seconds.").arg(x.columnId, x.unit);
+            }
+            if (x.role == ColumnMapping::Role::XFrequency
+                && !x.unit.isEmpty() && !inLadder(x.unit, kFreqLadder)) {
+                *warningsOut << QString(
+                    "Column %1: unit \"%2\" is not a recognised frequency unit "
+                    "(Hz / kHz / MHz). The parser will treat values as Hz.")
+                    .arg(x.columnId, x.unit);
+            }
+        }
     }
 
     auto toVal = [&](const QString& s) -> double {
@@ -192,6 +253,16 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
             || unit == QString::fromUtf8("µs")) return static_cast<TimestampNs>(v * 1e3);
         if (unit.compare("ns", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v);
         return static_cast<TimestampNs>(v * 1e9);  // default: seconds
+    };
+
+    // Frequency-axis values are stored in the same int64 "ns" field the
+    // Signal uses for timestamps, scaled as Hz × 1e9 — same convention
+    // the in-app FFT output uses. Unit ladders: Hz / kHz / MHz, default Hz.
+    auto toFreqStorage = [&](const QString& s, const QString& unit) -> TimestampNs {
+        const double v = toVal(s);
+        if (unit.compare("kHz", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v * 1e12);
+        if (unit.compare("MHz", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v * 1e15);
+        return static_cast<TimestampNs>(v * 1e9);  // default: Hz
     };
 
     const int defaultStart = std::max(0, profile.headerRow);
@@ -277,10 +348,12 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
                                     : std::pair{yLo, yHi};
             const int lo = std::max(xLo, yLo);
             const int hi = std::min(xHi, yHi);
+            const bool freqX = xMap.role == ColumnMapping::Role::XFrequency;
             for (int row = lo; row <= hi; ++row) {
                 const auto& r = rows_[row];
                 if (yCol >= r.size() || xCol >= r.size()) continue;
-                ts.push_back(toNs(r[xCol], xMap.unit));
+                ts.push_back(freqX ? toFreqStorage(r[xCol], xMap.unit)
+                                   : toNs        (r[xCol], xMap.unit));
                 vs.push_back(toVal(r[yCol]));
             }
         }
@@ -375,6 +448,8 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
         m.sourceSymbol = QString::fromStdString(path_.filename().string())
                        + ":" + colLabel(yCol);
         if (useRate) m.sampleRateHz = rateHz;
+        if (!useRate && xMap.role == ColumnMapping::Role::XFrequency)
+            m.domain = Signal::Domain::Frequency;
         auto sig = std::make_shared<Signal>(m);
         sig->append(ts.data(),
                     reinterpret_cast<const std::byte*>(vs.data()),

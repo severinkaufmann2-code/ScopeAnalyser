@@ -13,11 +13,16 @@ namespace scope::converter {
 // For Y signals, the X source is per-channel:
 //   useSampleRate=true  → synthesise timestamps from sampleRateHz
 //   xSourceColumn != "" → take timestamps from that column (must also exist
-//                          in the profile with role==XTime)
+//                          in the profile with role==XTime or XFrequency)
 //   neither set         → fall back to profile-level useSampleRate, or the
-//                          first XTime column in the profile (back-compat).
+//                          first X column in the profile (back-compat).
+//
+// XTime treats the column's values as seconds (or ms/us/ns per `unit`).
+// XFrequency treats them as Hz (or kHz/MHz per `unit`) and tags the
+// resulting Y signal with Signal::Domain::Frequency so the Analyser's
+// Frequency view picks it up automatically.
 struct ColumnMapping {
-    enum class Role { Ignore, XTime, Signal };
+    enum class Role { Ignore, XTime, XFrequency, Signal };
     QString columnId;
     Role    role{Role::Ignore};
     QString signalName;

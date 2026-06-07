@@ -107,8 +107,19 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     timeModeCombo_->addItem("Shared time column (interpolated)");
     timeModeCombo_->addItem("Per-signal time columns (exact)");
 
+    metadataCheck_ = new QCheckBox(
+        "Include scope metadata header (# scope-csv: …)", csvGroup_);
+    metadataCheck_->setChecked(true);
+    metadataCheck_->setToolTip(
+        "Embed a commented JSON line on top of the file describing each\n"
+        "column's role (X-time / X-frequency / signal), unit and name.\n"
+        "Lets the loader round-trip the file losslessly — frequency-domain\n"
+        "channels go back into the Frequency view, etc. Most CSV consumers\n"
+        "skip '#' comment lines; Excel does not.");
+
     auto* csvForm = new QFormLayout(csvGroup_);
     csvForm->addRow(headerCheck_);
+    csvForm->addRow(metadataCheck_);
     auto* colSepRow = new QHBoxLayout();
     colSepRow->addWidget(colSepCombo_); colSepRow->addWidget(colSepCustom_); colSepRow->addStretch();
     auto* colSepWrap = new QWidget(csvGroup_);
@@ -201,6 +212,7 @@ bool SaveChartDialog::splitDomainsIntoTwoFiles() const { return splitFilesCheck_
 scope::converter::CsvExportOptions SaveChartDialog::csvOptions() const {
     scope::converter::CsvExportOptions o;
     o.includeHeader = headerCheck_->isChecked();
+    o.includeMetadata = metadataCheck_->isChecked();
     o.columnDelimiter = (colSepCombo_->currentIndex() == kCustomColIdx)
         ? (colSepCustom_->text().isEmpty() ? QString(",") : colSepCustom_->text())
         : colSepCombo_->currentData().toString();

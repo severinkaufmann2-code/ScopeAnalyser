@@ -12,7 +12,7 @@ ExcelSource::~ExcelSource() = default;
 QStringList ExcelSource::listRegions() { return {}; }
 std::unique_ptr<QAbstractItemModel> ExcelSource::previewModel(const QString&) { return {}; }
 std::vector<std::shared_ptr<scope::core::Signal>> ExcelSource::apply(
-    const ConverterProfile&, QString* errorOut) {
+    const ConverterProfile&, QString* errorOut, QStringList*) {
     if (errorOut) *errorOut = "ExcelSource::apply: Phase 4";
     return {};
 }

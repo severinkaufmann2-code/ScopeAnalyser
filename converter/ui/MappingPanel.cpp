@@ -75,9 +75,10 @@ QString xSourceLabel(const ColumnMapping& m) {
 
 const char* roleName(ColumnMapping::Role r) {
     switch (r) {
-        case ColumnMapping::Role::Ignore: return "Ignore";
-        case ColumnMapping::Role::XTime:  return "X-axis";
-        case ColumnMapping::Role::Signal: return "Y signal";
+        case ColumnMapping::Role::Ignore:     return "Ignore";
+        case ColumnMapping::Role::XTime:      return "X-axis (time)";
+        case ColumnMapping::Role::XFrequency: return "X-axis (frequency)";
+        case ColumnMapping::Role::Signal:     return "Y signal";
     }
     return "?";
 }
@@ -337,7 +338,8 @@ void MappingPanel::onAddChannel() {
     QStringList xCols;
     for (int r = 0; r < channelTable_->rowCount(); ++r) {
         const auto m = rowToMapping(r);
-        if (m.role == ColumnMapping::Role::XTime) xCols << m.columnId;
+        if (m.role == ColumnMapping::Role::XTime
+            || m.role == ColumnMapping::Role::XFrequency) xCols << m.columnId;
     }
     dlg.setAvailableXColumns(xCols);
     while (dlg.exec() == QDialog::Accepted) {
@@ -360,7 +362,8 @@ void MappingPanel::onEditChannel() {
     for (int r = 0; r < channelTable_->rowCount(); ++r) {
         if (r == row) continue;
         const auto m = rowToMapping(r);
-        if (m.role == ColumnMapping::Role::XTime) xCols << m.columnId;
+        if (m.role == ColumnMapping::Role::XTime
+            || m.role == ColumnMapping::Role::XFrequency) xCols << m.columnId;
     }
     dlg.setAvailableXColumns(xCols);
     dlg.setMapping(rowToMapping(row));

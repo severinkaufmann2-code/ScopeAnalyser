@@ -31,7 +31,9 @@ public:
     QStringList listRegions() override { return {"file"}; }
     std::unique_ptr<QAbstractItemModel> previewModel(const QString& region) override;
     std::vector<std::shared_ptr<scope::core::Signal>> apply(
-        const ConverterProfile& profile, QString* errorOut) override;
+        const ConverterProfile& profile,
+        QString* errorOut,
+        QStringList* warningsOut = nullptr) override;
 
     int columnCount() const;
     int rowCount() const;

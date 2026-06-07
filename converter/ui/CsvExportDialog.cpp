@@ -39,6 +39,16 @@ CsvExportDialog::CsvExportDialog(QWidget* parent) : QDialog(parent) {
     headerCheck_ = new QCheckBox("Include header row", this);
     headerCheck_->setChecked(true);
 
+    metadataCheck_ = new QCheckBox(
+        "Include scope metadata header (# scope-csv: …)", this);
+    metadataCheck_->setChecked(true);
+    metadataCheck_->setToolTip(
+        "Embed a commented JSON line on top of the file describing each\n"
+        "column's role, unit and signal name. Lets the loader round-trip\n"
+        "the file losslessly (frequency-domain channels go back into the\n"
+        "Frequency view, etc.). Most consumers skip '#' lines; Excel does\n"
+        "not.");
+
     colSepCombo_ = new QComboBox(this);
     for (const auto& opt : kColSepOptions)
         colSepCombo_->addItem(opt.label, QString::fromUtf8(opt.value));
@@ -65,6 +75,7 @@ CsvExportDialog::CsvExportDialog(QWidget* parent) : QDialog(parent) {
 
     auto* form = new QFormLayout();
     form->addRow(headerCheck_);
+    form->addRow(metadataCheck_);
 
     auto* colSepRow = new QHBoxLayout();
     colSepRow->addWidget(colSepCombo_);
@@ -103,7 +114,8 @@ CsvExportDialog::CsvExportDialog(QWidget* parent) : QDialog(parent) {
 
 CsvExportOptions CsvExportDialog::options() const {
     CsvExportOptions o;
-    o.includeHeader = headerCheck_->isChecked();
+    o.includeHeader   = headerCheck_->isChecked();
+    o.includeMetadata = metadataCheck_->isChecked();
 
     o.columnDelimiter = (colSepCombo_->currentIndex() == kCustomColIdx)
         ? (colSepCustom_->text().isEmpty() ? QString(",") : colSepCustom_->text())

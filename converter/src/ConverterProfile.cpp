@@ -11,15 +11,17 @@ using json = nlohmann::json;
 namespace {
 const char* roleName(ColumnMapping::Role r) {
     switch (r) {
-        case ColumnMapping::Role::Ignore: return "ignore";
-        case ColumnMapping::Role::XTime:  return "x_time";
-        case ColumnMapping::Role::Signal: return "signal";
+        case ColumnMapping::Role::Ignore:     return "ignore";
+        case ColumnMapping::Role::XTime:      return "x_time";
+        case ColumnMapping::Role::XFrequency: return "x_frequency";
+        case ColumnMapping::Role::Signal:     return "signal";
     }
     return "ignore";
 }
 ColumnMapping::Role roleFromString(const std::string& s) {
-    if (s == "x_time") return ColumnMapping::Role::XTime;
-    if (s == "signal") return ColumnMapping::Role::Signal;
+    if (s == "x_time")      return ColumnMapping::Role::XTime;
+    if (s == "x_frequency") return ColumnMapping::Role::XFrequency;
+    if (s == "signal")      return ColumnMapping::Role::Signal;
     return ColumnMapping::Role::Ignore;
 }
 }

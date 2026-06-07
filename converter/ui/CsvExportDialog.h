@@ -22,6 +22,7 @@ public:
 
 private:
     QCheckBox* headerCheck_;
+    QCheckBox* metadataCheck_;
     QComboBox* colSepCombo_;
     QLineEdit* colSepCustom_;
     QComboBox* rowSepCombo_;

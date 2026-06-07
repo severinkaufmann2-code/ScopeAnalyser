@@ -580,7 +580,13 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             return 0;
         }
         QString err;
-        auto sigs = f.csv->apply(profile, &err);
+        QStringList warnings;
+        auto sigs = f.csv->apply(profile, &err, &warnings);
+        if (!warnings.isEmpty()) {
+            QMessageBox::warning(this, "Unit fallback",
+                "The parser fell back to a default for the following "
+                "X-axis unit(s):\n\n• " + warnings.join("\n• "));
+        }
         if (sigs.empty()) {
             if (errOut) *errOut = err.isEmpty() ? "No signals produced." : err;
             return 0;

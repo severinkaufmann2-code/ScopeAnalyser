@@ -1,6 +1,7 @@
 #include "scope/converter/CsvWriter.h"
 #include "scope/converter/CsvSource.h"
 #include "scope/converter/ConverterProfile.h"
+#include "scope/converter/SignalIO.h"
 #include "scope/core/Signal.h"
 
 #include <gtest/gtest.h>
@@ -162,6 +163,9 @@ TEST(CsvWriter, PerSignalUsesFHzForFrequencyDomain) {
 
     CsvExportOptions opts;
     opts.timeMode = CsvExportOptions::TimeMode::PerSignal;
+    // Disable metadata so the column-header line is at line 0 — easier
+    // to inspect without skipping the # comment.
+    opts.includeMetadata = false;
     auto path = std::filesystem::temp_directory_path() / "scope_test_csv_fhz_persig.csv";
     QString err;
     ASSERT_TRUE(writeCsv(path, {sig}, opts, &err)) << err.toStdString();
@@ -198,6 +202,9 @@ TEST(CsvWriter, SharedMixedDomainGetsTwoXColumns) {
 
     CsvExportOptions opts;
     opts.timeMode = CsvExportOptions::TimeMode::Shared;
+    // Keep this test focused on the data-column layout — disable the
+    // separate metadata-header line.
+    opts.includeMetadata = false;
     auto path = std::filesystem::temp_directory_path() / "scope_test_csv_mixed.csv";
     QString err;
     ASSERT_TRUE(writeCsv(path, {tsig, fsig}, opts, &err)) << err.toStdString();
@@ -214,5 +221,135 @@ TEST(CsvWriter, SharedMixedDomainGetsTwoXColumns) {
     std::string r;
     while (std::getline(in, r)) { if (!r.empty()) ++dataRows; }
     EXPECT_EQ(dataRows, 5);
+    std::filesystem::remove(path);
+}
+
+// Verifies the # scope-csv metadata header is emitted by default and
+// describes each column. Independent of the data-row format.
+TEST(CsvWriter, MetadataHeaderEmittedByDefault) {
+    Signal::Meta tm; tm.name = "speed"; tm.unit = "rpm";
+    tm.dataType = DataType::Float64; tm.domain = Signal::Domain::Time;
+    tm.sourceSymbol = "MAIN.fSpeed";
+    auto t = std::make_shared<Signal>(tm);
+    std::vector<TimestampNs> tts{0, 1'000'000'000LL};
+    std::vector<double>      tvs{0, 10};
+    t->append(tts.data(), reinterpret_cast<const std::byte*>(tvs.data()), 2);
+
+    Signal::Meta fm; fm.name = "FFT_speed"; fm.unit = "mag";
+    fm.dataType = DataType::Float64; fm.domain = Signal::Domain::Frequency;
+    auto f = std::make_shared<Signal>(fm);
+    std::vector<TimestampNs> fts{0, 50LL * 1'000'000'000LL};
+    std::vector<double>      fvs{1, 2};
+    f->append(fts.data(), reinterpret_cast<const std::byte*>(fvs.data()), 2);
+
+    auto path = std::filesystem::temp_directory_path() / "scope_csv_meta_default.csv";
+    QString err;
+    ASSERT_TRUE(writeCsv(path, {t, f}, CsvExportOptions{}, &err))
+        << err.toStdString();
+
+    std::ifstream in(path);
+    std::string firstLine; std::getline(in, firstLine);
+    EXPECT_EQ(firstLine.substr(0, 13), "# scope-csv: ") << firstLine;
+    EXPECT_NE(firstLine.find("\"x_time\""), std::string::npos);
+    EXPECT_NE(firstLine.find("\"x_frequency\""), std::string::npos);
+    EXPECT_NE(firstLine.find("\"FFT_speed\""), std::string::npos);
+    EXPECT_NE(firstLine.find("\"MAIN.fSpeed\""), std::string::npos);
+    std::filesystem::remove(path);
+}
+
+// Reproduces the user-reported bug: a mixed time + frequency shared-X CSV
+// previously loaded with EVERY signal tagged time-domain, dropping the
+// FFT into the wrong view. With the metadata header on, each signal
+// round-trips its domain.
+TEST(CsvWriter, MixedDomainRoundTripsDomainsViaMetadata) {
+    Signal::Meta tm; tm.name = "speed"; tm.unit = "rpm";
+    tm.dataType = DataType::Float64; tm.domain = Signal::Domain::Time;
+    auto tsig = std::make_shared<Signal>(tm);
+    std::vector<TimestampNs> tts{0, 1'000'000'000LL, 2'000'000'000LL};
+    std::vector<double>      tvs{0, 10, 20};
+    tsig->append(tts.data(), reinterpret_cast<const std::byte*>(tvs.data()), 3);
+
+    Signal::Meta fm; fm.name = "FFT_speed"; fm.unit = "mag";
+    fm.dataType = DataType::Float64; fm.domain = Signal::Domain::Frequency;
+    auto fsig = std::make_shared<Signal>(fm);
+    std::vector<TimestampNs> fts{0, 50LL * 1'000'000'000LL, 100LL * 1'000'000'000LL};
+    std::vector<double>      fvs{1, 2, 3};
+    fsig->append(fts.data(), reinterpret_cast<const std::byte*>(fvs.data()), 3);
+
+    auto path = std::filesystem::temp_directory_path() / "scope_csv_mixed_round_trip.csv";
+    CsvExportOptions opts; opts.timeMode = CsvExportOptions::TimeMode::Shared;
+    QString err;
+    ASSERT_TRUE(writeCsv(path, {tsig, fsig}, opts, &err)) << err.toStdString();
+
+    auto r = loadFile(path, FileFormat::Csv);
+    ASSERT_TRUE(r.ok) << r.error.toStdString();
+    ASSERT_EQ(r.channels.size(), 2u);
+
+    std::shared_ptr<Signal> speed, fft;
+    for (auto& s : r.channels) {
+        if (s->meta().name == "speed")     speed = s;
+        if (s->meta().name == "FFT_speed") fft   = s;
+    }
+    ASSERT_TRUE(speed);
+    ASSERT_TRUE(fft);
+    EXPECT_EQ(speed->meta().domain, Signal::Domain::Time);
+    EXPECT_EQ(fft  ->meta().domain, Signal::Domain::Frequency);
+    EXPECT_EQ(speed->meta().unit,   "rpm");
+    EXPECT_EQ(fft  ->meta().unit,   "mag");
+    std::filesystem::remove(path);
+}
+
+// Legacy file written before the metadata feature (or with the
+// checkbox unticked): the heuristic fallback in loadCsvChart must still
+// correctly route mixed-X data — the prior bug was assigning every Y
+// to column 0.
+TEST(CsvWriter, MixedDomainHeuristicFallbackTagsCorrectly) {
+    Signal::Meta tm; tm.name = "speed"; tm.unit = "rpm";
+    tm.dataType = DataType::Float64; tm.domain = Signal::Domain::Time;
+    auto tsig = std::make_shared<Signal>(tm);
+    std::vector<TimestampNs> tts{0, 1'000'000'000LL};
+    std::vector<double>      tvs{0, 10};
+    tsig->append(tts.data(), reinterpret_cast<const std::byte*>(tvs.data()), 2);
+
+    Signal::Meta fm; fm.name = "FFT_speed"; fm.unit = "mag";
+    fm.dataType = DataType::Float64; fm.domain = Signal::Domain::Frequency;
+    auto fsig = std::make_shared<Signal>(fm);
+    std::vector<TimestampNs> fts{0, 50LL * 1'000'000'000LL};
+    std::vector<double>      fvs{1, 2};
+    fsig->append(fts.data(), reinterpret_cast<const std::byte*>(fvs.data()), 2);
+
+    auto path = std::filesystem::temp_directory_path() / "scope_csv_mixed_legacy.csv";
+    CsvExportOptions opts;
+    opts.timeMode = CsvExportOptions::TimeMode::Shared;
+    opts.includeMetadata = false;          // simulate legacy file
+    QString err;
+    ASSERT_TRUE(writeCsv(path, {tsig, fsig}, opts, &err)) << err.toStdString();
+
+    auto r = loadFile(path, FileFormat::Csv);
+    ASSERT_TRUE(r.ok) << r.error.toStdString();
+    ASSERT_EQ(r.channels.size(), 2u);
+    std::shared_ptr<Signal> speed, fft;
+    for (auto& s : r.channels) {
+        if (s->meta().name == "speed")     speed = s;
+        if (s->meta().name == "FFT_speed") fft   = s;
+    }
+    ASSERT_TRUE(speed);
+    ASSERT_TRUE(fft);
+    EXPECT_EQ(speed->meta().domain, Signal::Domain::Time);
+    EXPECT_EQ(fft  ->meta().domain, Signal::Domain::Frequency);
+    std::filesystem::remove(path);
+}
+
+TEST(CsvWriter, MetadataHeaderCanBeDisabled) {
+    auto sig = makeRamp("speed", 3, 0.1, 0.0, 1.0, "rpm");
+    CsvExportOptions opts;
+    opts.includeMetadata = false;
+    auto path = std::filesystem::temp_directory_path() / "scope_csv_meta_off.csv";
+    QString err;
+    ASSERT_TRUE(writeCsv(path, {sig}, opts, &err)) << err.toStdString();
+    std::ifstream in(path);
+    std::string firstLine; std::getline(in, firstLine);
+    // No metadata line — first line is the column header.
+    EXPECT_NE(firstLine.find("t [s]"), std::string::npos) << firstLine;
     std::filesystem::remove(path);
 }

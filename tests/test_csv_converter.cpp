@@ -59,6 +59,179 @@ TEST(CsvConverter, ImportsHeaderedFile) {
     std::filesystem::remove(path);
 }
 
+TEST(CsvConverter, FrequencyXAxisStampsDomainAndScalesHz) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_xfreq.csv";
+    {
+        std::ofstream f(path);
+        f << "f_Hz,magnitude\n";
+        f << "0,1.0\n";
+        f << "50,2.0\n";
+        f << "100,3.0\n";
+        f << "200,4.0\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.sourceType = "csv";
+    p.headerRow  = 1;
+    p.decimalSeparator = ".";
+    p.columns = {
+        {"A", ColumnMapping::Role::XFrequency, "",   "Hz"},
+        {"B", ColumnMapping::Role::Signal,     "FFT","magnitude"},
+    };
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+
+    auto fft = sigs[0];
+    EXPECT_EQ(fft->meta().domain, Signal::Domain::Frequency);
+    auto view = fft->snapshotForRead();
+    ASSERT_EQ(view.count, 4u);
+    // Stored as Hz × 1e9 in the int64 master field — same convention
+    // the in-app FFT output uses.
+    EXPECT_EQ(view.timestamps[0],         0);
+    EXPECT_EQ(view.timestamps[1],   50'000'000'000LL);
+    EXPECT_EQ(view.timestamps[2],  100'000'000'000LL);
+    EXPECT_EQ(view.timestamps[3],  200'000'000'000LL);
+    auto vs = fft->readAsDouble();
+    EXPECT_DOUBLE_EQ(vs[2], 3.0);
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, FrequencyXAxisScalesKHz) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_xfreq_khz.csv";
+    {
+        std::ofstream f(path);
+        f << "f,mag\n";
+        f << "1.5,10.0\n";   // 1.5 kHz
+        f << "2.5,20.0\n";   // 2.5 kHz
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.sourceType = "csv";
+    p.headerRow  = 1;
+    p.decimalSeparator = ".";
+    p.columns = {
+        {"A", ColumnMapping::Role::XFrequency, "",   "kHz"},
+        {"B", ColumnMapping::Role::Signal,     "FFT","magnitude"},
+    };
+    QString err;
+    auto sigs = src.apply(p, &err);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    auto view = sigs[0]->snapshotForRead();
+    ASSERT_EQ(view.count, 2u);
+    EXPECT_EQ(view.timestamps[0], 1'500'000'000'000LL);  // 1.5 kHz × 1e9
+    EXPECT_EQ(view.timestamps[1], 2'500'000'000'000LL);  // 2.5 kHz × 1e9
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, BogusUnitOnXTimeProducesWarning) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_bogus_unit.csv";
+    {
+        std::ofstream f(path);
+        f << "t_qws,v\n0.1,1.0\n0.2,2.0\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.sourceType = "csv";
+    p.headerRow  = 1;
+    p.columns = {
+        {"A", ColumnMapping::Role::XTime,  "",  "qws"},
+        {"B", ColumnMapping::Role::Signal, "V", "V"},
+    };
+    QString err;
+    QStringList warnings;
+    auto sigs = src.apply(p, &err, &warnings);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    ASSERT_EQ(warnings.size(), 1);
+    EXPECT_TRUE(warnings[0].contains("Column A"))    << warnings[0].toStdString();
+    EXPECT_TRUE(warnings[0].contains("\"qws\""))     << warnings[0].toStdString();
+    EXPECT_TRUE(warnings[0].contains("seconds"))     << warnings[0].toStdString();
+    // Parser still ran; values landed as seconds (0.1 s = 1e8 ns).
+    auto view = sigs[0]->snapshotForRead();
+    EXPECT_EQ(view.timestamps[0], 100'000'000);
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, BogusUnitOnXFrequencyProducesWarning) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_bogus_freq.csv";
+    {
+        std::ofstream f(path);
+        f << "f_bogus,m\n10,1.0\n20,2.0\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.sourceType = "csv";
+    p.headerRow  = 1;
+    p.columns = {
+        {"A", ColumnMapping::Role::XFrequency, "",  "bogus"},
+        {"B", ColumnMapping::Role::Signal,     "M", "m"},
+    };
+    QString err;
+    QStringList warnings;
+    auto sigs = src.apply(p, &err, &warnings);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    ASSERT_EQ(warnings.size(), 1);
+    EXPECT_TRUE(warnings[0].contains("Column A"))   << warnings[0].toStdString();
+    EXPECT_TRUE(warnings[0].contains("\"bogus\"")) << warnings[0].toStdString();
+    EXPECT_TRUE(warnings[0].contains("Hz"))         << warnings[0].toStdString();
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, KnownUnitsProduceNoWarning) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_clean_units.csv";
+    {
+        std::ofstream f(path);
+        f << "t_ms,v\n0,1.0\n100,2.0\n";
+    }
+    CsvSource src(path);
+    ConverterProfile p;
+    p.sourceType = "csv";
+    p.headerRow  = 1;
+    p.columns = {
+        {"A", ColumnMapping::Role::XTime,  "",  "ms"},
+        {"B", ColumnMapping::Role::Signal, "V", "V"},
+    };
+    QString err;
+    QStringList warnings;
+    auto sigs = src.apply(p, &err, &warnings);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    EXPECT_TRUE(warnings.isEmpty()) << warnings.join(", ").toStdString();
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, MixedTimeAndFrequencyXRequiresExplicitXSource) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_mixed_x.csv";
+    {
+        std::ofstream f(path);
+        f << "t_s,f_Hz,v,m\n";
+        f << "0.0,0,1.0,10\n";
+        f << "0.1,50,2.0,20\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.sourceType = "csv";
+    p.headerRow  = 1;
+    p.decimalSeparator = ".";
+    // Y signals pin no xSourceColumn — ambiguous given two X kinds.
+    p.columns = {
+        {"A", ColumnMapping::Role::XTime,      "",  "s"},
+        {"B", ColumnMapping::Role::XFrequency, "",  "Hz"},
+        {"C", ColumnMapping::Role::Signal,     "V", "V"},
+        {"D", ColumnMapping::Role::Signal,     "M", "magnitude"},
+    };
+    QString err;
+    auto sigs = src.apply(p, &err);
+    EXPECT_TRUE(sigs.empty());
+    EXPECT_TRUE(err.contains("pin its X column"))
+        << err.toStdString();
+    std::filesystem::remove(path);
+}
+
 TEST(CsvConverter, SampleRateXAxisDefaultMs) {
     auto path = std::filesystem::temp_directory_path() / "scope_test_csv_rate.csv";
     {

@@ -24,6 +24,13 @@ struct CsvExportOptions {
     TimeMode timeMode{TimeMode::Shared};
     // Format precision for double values. -1 → "g" with 15 digits (round-trip).
     int      decimalDigits{-1};
+
+    // Emit a "# scope-csv: {json}" line as the very first line of the file.
+    // The reader uses this when present to round-trip column roles (X-time,
+    // X-frequency, signal), units, and signal names without relying on
+    // header heuristics. Most CSV consumers (NumPy / pandas / R) skip `#`
+    // comment lines; Excel does not — it'll show the metadata as row 1.
+    bool     includeMetadata{true};
 };
 
 // Write the given signals to `path` according to `opts`. Returns false and

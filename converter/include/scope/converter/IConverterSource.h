@@ -26,9 +26,15 @@ public:
     // Returns a model that displays the given region for the user to map.
     virtual std::unique_ptr<QAbstractItemModel> previewModel(const QString& region) = 0;
 
-    // Apply a profile and return the resulting signals.
+    // Apply a profile and return the resulting signals. If `warningsOut`
+    // is non-null, the source appends non-fatal messages there (e.g. an
+    // X-axis unit that doesn't match the recognised ladder, which the
+    // parser still consumes but with a silent fallback default). The
+    // caller decides whether to surface them.
     virtual std::vector<std::shared_ptr<scope::core::Signal>> apply(
-        const ConverterProfile& profile, QString* errorOut = nullptr) = 0;
+        const ConverterProfile& profile,
+        QString* errorOut = nullptr,
+        QStringList* warningsOut = nullptr) = 0;
 };
 
 }  // namespace scope::converter
