@@ -238,31 +238,53 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
         }
     }
 
-    auto toVal = [&](const QString& s) -> double {
-        QString t = s;
+    // Parses a cell as a double. Returns whether the cell was actually
+    // numeric — the value is still written to `*out` (0.0 on failure)
+    // so callers can keep the silent-zero behaviour while telling us
+    // when they did. Empty cells are treated as "skip, don't flag":
+    // they're a common sparse-data convention, not a parse error.
+    auto tryVal = [&](const QString& s, double* out, bool* wasNumeric) -> bool {
+        const QString trimmed = s.trimmed();
+        if (trimmed.isEmpty()) { *out = 0.0; *wasNumeric = true; return true; }
+        QString t = trimmed;
         if (profile.decimalSeparator != ".") t.replace(profile.decimalSeparator, ".");
         bool ok = false;
         const double v = t.toDouble(&ok);
-        return ok ? v : 0.0;
+        *out = ok ? v : 0.0;
+        *wasNumeric = ok;
+        return ok;
     };
 
-    auto toNs = [&](const QString& s, const QString& unit) -> TimestampNs {
-        const double v = toVal(s);
-        if (unit.compare("ms", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v * 1e6);
-        if (unit.compare("us", Qt::CaseInsensitive) == 0
-            || unit == QString::fromUtf8("µs")) return static_cast<TimestampNs>(v * 1e3);
-        if (unit.compare("ns", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v);
-        return static_cast<TimestampNs>(v * 1e9);  // default: seconds
+    auto tryNs = [&](const QString& s, const QString& unit,
+                     TimestampNs* out, bool* wasNumeric) -> bool {
+        double v = 0.0;
+        const bool ok = tryVal(s, &v, wasNumeric);
+        if (unit.compare("ms", Qt::CaseInsensitive) == 0)
+            *out = static_cast<TimestampNs>(v * 1e6);
+        else if (unit.compare("us", Qt::CaseInsensitive) == 0
+            || unit == QString::fromUtf8("µs"))
+            *out = static_cast<TimestampNs>(v * 1e3);
+        else if (unit.compare("ns", Qt::CaseInsensitive) == 0)
+            *out = static_cast<TimestampNs>(v);
+        else
+            *out = static_cast<TimestampNs>(v * 1e9);  // default: seconds
+        return ok;
     };
 
     // Frequency-axis values are stored in the same int64 "ns" field the
     // Signal uses for timestamps, scaled as Hz × 1e9 — same convention
     // the in-app FFT output uses. Unit ladders: Hz / kHz / MHz, default Hz.
-    auto toFreqStorage = [&](const QString& s, const QString& unit) -> TimestampNs {
-        const double v = toVal(s);
-        if (unit.compare("kHz", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v * 1e12);
-        if (unit.compare("MHz", Qt::CaseInsensitive) == 0) return static_cast<TimestampNs>(v * 1e15);
-        return static_cast<TimestampNs>(v * 1e9);  // default: Hz
+    auto tryFreqStorage = [&](const QString& s, const QString& unit,
+                              TimestampNs* out, bool* wasNumeric) -> bool {
+        double v = 0.0;
+        const bool ok = tryVal(s, &v, wasNumeric);
+        if (unit.compare("kHz", Qt::CaseInsensitive) == 0)
+            *out = static_cast<TimestampNs>(v * 1e12);
+        else if (unit.compare("MHz", Qt::CaseInsensitive) == 0)
+            *out = static_cast<TimestampNs>(v * 1e15);
+        else
+            *out = static_cast<TimestampNs>(v * 1e9);  // default: Hz
+        return ok;
     };
 
     const int defaultStart = std::max(0, profile.headerRow);
@@ -313,6 +335,24 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
         return false;
     };
 
+    // Aggregates "this column's cell wasn't a number, parsed as 0" events
+    // so we can show one warning per X column instead of N (once per Y
+    // signal sharing it). Keyed by X column letter.
+    struct BadCellStats {
+        int     count{0};
+        QString firstExample;
+        int     firstRow{-1};
+    };
+    std::unordered_map<QString, BadCellStats> badXStats;
+
+    auto bumpBad = [](BadCellStats& s, const QString& example, int row) {
+        if (s.count == 0) {
+            s.firstExample = example;
+            s.firstRow     = row;
+        }
+        ++s.count;
+    };
+
     for (std::size_t k = 0; k < ySpecs.size(); ++k) {
         const auto& ySpec = ySpecs[k].second;
         const auto [yLo, yHi] = resolveRange(ySpec);
@@ -334,13 +374,18 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
         ts.reserve(yHi - yLo + 1);
         vs.reserve(yHi - yLo + 1);
 
+        BadCellStats yBad;   // per Y signal — no cross-signal sharing
+
         if (useRate) {
             const double dtNs = (rateHz > 0) ? 1e9 / rateHz : 0;
             for (int row = yLo; row <= yHi; ++row) {
                 const auto& r = rows_[row];
                 if (yCol >= r.size()) continue;
                 ts.push_back(static_cast<TimestampNs>((row - yLo) * dtNs));
-                vs.push_back(toVal(r[yCol]));
+                double v = 0.0; bool ok = true;
+                tryVal(r[yCol], &v, &ok);
+                vs.push_back(v);
+                if (!ok) bumpBad(yBad, r[yCol].trimmed(), row);
             }
         } else {
             const auto [xLo, xHi] = (xMap.rowStart >= 0 || xMap.rowEnd >= 0)
@@ -349,13 +394,33 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
             const int lo = std::max(xLo, yLo);
             const int hi = std::min(xHi, yHi);
             const bool freqX = xMap.role == ColumnMapping::Role::XFrequency;
+            auto& xBad = badXStats[xMap.columnId];
             for (int row = lo; row <= hi; ++row) {
                 const auto& r = rows_[row];
                 if (yCol >= r.size() || xCol >= r.size()) continue;
-                ts.push_back(freqX ? toFreqStorage(r[xCol], xMap.unit)
-                                   : toNs        (r[xCol], xMap.unit));
-                vs.push_back(toVal(r[yCol]));
+                TimestampNs t = 0; double v = 0.0;
+                bool xOk = true, yOk = true;
+                if (freqX) tryFreqStorage(r[xCol], xMap.unit, &t, &xOk);
+                else       tryNs        (r[xCol], xMap.unit, &t, &xOk);
+                tryVal(r[yCol], &v, &yOk);
+                ts.push_back(t);
+                vs.push_back(v);
+                if (!xOk) bumpBad(xBad, r[xCol].trimmed(), row);
+                if (!yOk) bumpBad(yBad, r[yCol].trimmed(), row);
             }
+        }
+
+        if (yBad.count > 0 && warningsOut) {
+            *warningsOut << QString(
+                "Column %1 (Y signal '%2'): %3 non-numeric cell(s) in the parsed range; "
+                "first was \"%4\" at preview row %5. Parsed as 0.")
+                .arg(colLabel(yCol))
+                .arg(ySpec.signalName.isEmpty()
+                        ? QString("Col%1").arg(colLabel(yCol))
+                        : ySpec.signalName)
+                .arg(yBad.count)
+                .arg(yBad.firstExample)
+                .arg(yBad.firstRow + 1);
         }
 
         // Per-channel time-axis post-processing:
@@ -455,6 +520,23 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
                     reinterpret_cast<const std::byte*>(vs.data()),
                     vs.size());
         out.push_back(std::move(sig));
+    }
+
+    // Emit one warning per X column that had any non-numeric cells, after
+    // every Y signal has had a chance to drive its parse loop. Keyed by
+    // column letter so a shared X column is mentioned once, not once per
+    // signal that referenced it.
+    if (warningsOut) {
+        for (const auto& [colId, bad] : badXStats) {
+            if (bad.count == 0) continue;
+            *warningsOut << QString(
+                "Column %1 (X-axis): %2 non-numeric cell(s) in the parsed range; "
+                "first was \"%3\" at preview row %4. Parsed as 0.")
+                .arg(colId)
+                .arg(bad.count)
+                .arg(bad.firstExample)
+                .arg(bad.firstRow + 1);
+        }
     }
 
     return out;

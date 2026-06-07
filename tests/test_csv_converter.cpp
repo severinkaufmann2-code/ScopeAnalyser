@@ -178,6 +178,121 @@ TEST(CsvConverter, ProfileFromScopeMetadataReturnsFalseWithoutHeader) {
     std::filesystem::remove(path);
 }
 
+// Row range typed as "1:*" pulls the header line into the parsed range.
+// toDouble can't parse text → 0 silently. We expect one warning per
+// affected column (one for Y, one for X) telling the user what was
+// turned into zero and where.
+TEST(CsvConverter, RangeOverHeaderRowProducesNonNumericWarning) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_text_in_range.csv";
+    {
+        std::ofstream f(path);
+        f << "t_s,speed\n";   // preview row 1
+        f << "0,1.0\n";       // preview row 2
+        f << "0.1,2.0\n";     // preview row 3
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.sourceType = "csv";
+    p.headerRow  = 1;
+    p.columns = {
+        {"A", ColumnMapping::Role::XTime,  "",      "s",   /*rowStart=*/0, /*rowEnd=*/-1},
+        {"B", ColumnMapping::Role::Signal, "Speed", "rpm", /*rowStart=*/0, /*rowEnd=*/-1},
+    };
+    QString err;
+    QStringList warnings;
+    auto sigs = src.apply(p, &err, &warnings);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+
+    // Speed signal got the header row parsed as (t=0, v=0) plus the two
+    // real data rows.
+    EXPECT_EQ(sigs[0]->sampleCount(), 3u);
+
+    // Two warnings: one for the Y column "B" and one for the X column "A".
+    ASSERT_EQ(warnings.size(), 2);
+    bool sawY = false, sawX = false;
+    for (const auto& w : warnings) {
+        if (w.contains("Column B") && w.contains("Y signal 'Speed'")
+            && w.contains("\"speed\"")     // the header cell
+            && w.contains("preview row 1"))
+            sawY = true;
+        if (w.contains("Column A") && w.contains("X-axis")
+            && w.contains("\"t_s\"")
+            && w.contains("preview row 1"))
+            sawX = true;
+    }
+    EXPECT_TRUE(sawY) << warnings.join("\n").toStdString();
+    EXPECT_TRUE(sawX) << warnings.join("\n").toStdString();
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, RangeAllSkipsHeaderAndProducesNoNonNumericWarning) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_text_safe.csv";
+    {
+        std::ofstream f(path);
+        f << "t_s,speed\n";
+        f << "0,1.0\n";
+        f << "0.1,2.0\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.sourceType = "csv";
+    p.headerRow  = 1;
+    // rowStart = -1 / rowEnd = -1 → "all", which uses the headerRow
+    // setting to skip preview row 1.
+    p.columns = {
+        {"A", ColumnMapping::Role::XTime,  "",      "s",   -1, -1},
+        {"B", ColumnMapping::Role::Signal, "Speed", "rpm", -1, -1},
+    };
+    QString err;
+    QStringList warnings;
+    auto sigs = src.apply(p, &err, &warnings);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    EXPECT_EQ(sigs[0]->sampleCount(), 2u);   // header skipped, two data rows
+    // The mismatched-unit checks could still fire (they don't here —
+    // "s" is on the ladder), so the count we actually care about is
+    // "no non-numeric warnings".
+    for (const auto& w : warnings) {
+        EXPECT_FALSE(w.contains("non-numeric"))
+            << "unexpected: " << w.toStdString();
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, EmptyCellsAreNotFlaggedAsNonNumeric) {
+    // Sparse CSVs are common — empty cells should silently become 0 and
+    // NOT produce a warning. Only non-empty unparseable text triggers
+    // the warning.
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_empty_cells.csv";
+    {
+        std::ofstream f(path);
+        f << "t,v\n";
+        f << "0,1.0\n";
+        f << "0.1,\n";    // missing v
+        f << "0.2,3.0\n";
+    }
+    CsvSource src(path);
+
+    ConverterProfile p;
+    p.sourceType = "csv";
+    p.headerRow  = 1;
+    p.columns = {
+        {"A", ColumnMapping::Role::XTime,  "",  "s",   -1, -1},
+        {"B", ColumnMapping::Role::Signal, "V", "V",   -1, -1},
+    };
+    QString err;
+    QStringList warnings;
+    auto sigs = src.apply(p, &err, &warnings);
+    ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+    EXPECT_EQ(sigs[0]->sampleCount(), 3u);
+    for (const auto& w : warnings) {
+        EXPECT_FALSE(w.contains("non-numeric"))
+            << "empty cell shouldn't warn: " << w.toStdString();
+    }
+    std::filesystem::remove(path);
+}
+
 TEST(CsvConverter, BogusUnitOnXTimeProducesWarning) {
     auto path = std::filesystem::temp_directory_path() / "scope_test_csv_bogus_unit.csv";
     {
