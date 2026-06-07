@@ -86,4 +86,15 @@ struct ConverterProfile {
                     QString* errorOut = nullptr) const;
 };
 
+// Peek the first non-blank line of a CSV-style file. If it starts with
+// the "# scope-csv:" sentinel, parse the JSON and build a ConverterProfile
+// pre-filled with each column's role / unit / signal name (and refX-
+// resolved xSourceColumn pointers for Y signals). Returns true on a
+// successful match; the caller can drop the profile into the mapping
+// panel so the user just clicks Apply if they're happy. Returns false
+// (and leaves `out` untouched) if no metadata is present.
+bool profileFromScopeMetadata(const std::filesystem::path& path,
+                              ConverterProfile* out,
+                              QString* errorOut = nullptr);
+
 }  // namespace scope::converter

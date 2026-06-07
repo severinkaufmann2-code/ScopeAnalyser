@@ -3,10 +3,13 @@
 #include "CsvWriter.h"
 
 #include "scope/core/Signal.h"
+#include "scope/core/SignalStore.h"
 
 #include <QString>
+#include <QStringList>
 
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -64,5 +67,48 @@ bool saveFile(const std::filesystem::path& path,
               FileFormat fmt = FileFormat::Auto,
               const SaveOptions& opts = {},
               QString* errorOut = nullptr);
+
+// ---------- Save-chart-from-store helper -------------------------------
+//
+// What the Analyser's `Save chart…` and the Converter's `Save chart…`
+// share: pull channels from a SignalStore, apply the standard filters
+// (per-domain include, derived-channel toggle, time range), trim, split
+// into separate files per domain if requested, and dispatch to
+// saveFile(). Centralising it keeps both tools in lockstep.
+
+struct ChartSaveFilters {
+    bool   includeTime{true};
+    bool   includeFrequency{true};
+    bool   includeDerived{true};
+    // When true, write <base>_time.<ext> and <base>_frequency.<ext> as
+    // separate files. Only honoured when both domains have data after
+    // filtering — a single-domain export goes to <base> regardless.
+    bool   splitDomainsIntoTwoFiles{false};
+    // Inclusive time range filter applied to time-domain signals only.
+    // Frequency signals' "timestamps" carry Hz so seconds bounds don't
+    // make sense for them. The default sentinels mean "no trim".
+    bool   useCustomRange{false};
+    double fromSec{-1e18};
+    double toSec  { 1e18};
+};
+
+enum class ChartSaveResult {
+    Ok,
+    NothingMatchedFilters,
+    Failed,
+};
+
+// `basePath` is the user-chosen target. On a split write the helper
+// inserts `_time` / `_frequency` before the extension.
+// On Ok: `messagesOut` holds one human-readable line per file written.
+// On Failed: `errorOut` carries the message.
+ChartSaveResult saveChartFromStore(
+    const QString& basePath,
+    const scope::core::SignalStore& store,
+    FileFormat fmt,
+    const ChartSaveFilters& filters,
+    const SaveOptions& opts,
+    QStringList* messagesOut = nullptr,
+    QString* errorOut = nullptr);
 
 }  // namespace scope::converter

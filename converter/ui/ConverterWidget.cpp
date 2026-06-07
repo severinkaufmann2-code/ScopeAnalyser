@@ -2,10 +2,10 @@
 #include "scope/converter/ConverterProfile.h"
 #include "scope/converter/CsvSource.h"
 #include "scope/converter/CsvWriter.h"
+#include "scope/converter/SaveChartDialog.h"
 #include "scope/converter/SignalIO.h"
 
 #include "MappingPanel.h"
-#include "CsvExportDialog.h"
 
 #include <nlohmann/json.hpp>
 
@@ -336,29 +336,31 @@ QString uniqueStoreName(const core::SignalStore& store, const QString& base) {
 ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* parent)
     : QWidget(parent), store_(store), impl_(std::make_unique<Impl>()) {
 
-    auto* openCsvBtn  = new QPushButton("Open CSV…", this);
-    auto* loadH5Btn   = new QPushButton("Open recording…", this);
-    loadH5Btn->setToolTip("Open an .h5 or .mf4 recording");
-    auto* saveWsBtn   = new QPushButton("Save workspace…", this);
-    auto* loadWsBtn   = new QPushButton("Load workspace…", this);
-    auto* applyAllBtn = new QPushButton("Apply all (import signals)", this);
-    auto* saveH5Btn   = new QPushButton("Save .h5…", this);
-    auto* saveMf4Btn  = new QPushButton("Save .mf4…", this);
-    auto* saveCsvBtn  = new QPushButton("Save CSV…", this);
+    auto* openChartBtn = new QPushButton("Open chart…", this);
+    openChartBtn->setToolTip(
+        "Open .h5 / .mf4 / .csv / .txt. Recordings (.h5 / .mf4) go "
+        "straight to the signal store; CSV files land in the mapping "
+        "panel so you can review the column assignments before Apply. "
+        "If the CSV carries a scope metadata header the mapping panel "
+        "is pre-filled.");
+    auto* saveWsBtn    = new QPushButton("Save workspace…", this);
+    auto* loadWsBtn    = new QPushButton("Load workspace…", this);
+    auto* applyAllBtn  = new QPushButton("Apply all (import signals)", this);
+    auto* saveChartBtn = new QPushButton("Save chart…", this);
+    saveChartBtn->setToolTip(
+        "Unified save dialog: pick HDF5 / MDF4 / CSV, per-domain filters, "
+        "time range, split-files toggle, CSV options.");
 
     impl_->statusLabel = new QLabel("No file open", this);
 
     auto* topBar = new QHBoxLayout();
-    topBar->addWidget(openCsvBtn);
-    topBar->addWidget(loadH5Btn);
+    topBar->addWidget(openChartBtn);
     topBar->addSpacing(20);
     topBar->addWidget(saveWsBtn);
     topBar->addWidget(loadWsBtn);
     topBar->addWidget(applyAllBtn);
     topBar->addSpacing(20);
-    topBar->addWidget(saveH5Btn);
-    topBar->addWidget(saveMf4Btn);
-    topBar->addWidget(saveCsvBtn);
+    topBar->addWidget(saveChartBtn);
     topBar->addStretch();
     topBar->addWidget(impl_->statusLabel);
 
@@ -480,23 +482,65 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     };
 
     // ---- Open CSV ----------------------------------------------------
-    connect(openCsvBtn, &QPushButton::clicked, this,
-            [this, saveActiveState, loadActiveState, addFileToList]{
-        const QString path = QFileDialog::getOpenFileName(
-            this, "Open CSV file", QString(),
-            "CSV / text files (*.csv *.tsv *.txt);;All files (*)");
-        if (path.isEmpty()) return;
+    // ---- Open recording (.h5 / .mf4): loads all signals into memory,
+    //      doesn't push to store until the user picks + Applies. ----
+    auto openRecording = [this, saveActiveState, loadActiveState, addFileToList]
+        (const QString& path) {
+        auto r = converter::loadFile(std::filesystem::path(path.toStdString()));
+        if (!r.ok && r.channels.empty()) {
+            QMessageBox::critical(this, "Open failed",
+                r.error.isEmpty() ? QString("Unknown error") : r.error);
+            return;
+        }
+        if (r.channels.empty()) {
+            QMessageBox::warning(this, "Empty file",
+                r.error.isEmpty() ? QString("No channels in this file.") : r.error);
+            return;
+        }
 
+        auto f = std::make_unique<OpenedFile>();
+        f->type = FileType::H5;
+        f->path = path;
+        f->displayName = QFileInfo(path).fileName();
+        f->h5Signals = std::move(r.channels);
+        for (const auto& s : f->h5Signals) {
+            if (s) f->h5SelectedChannels << s->meta().name;
+        }
+
+        saveActiveState();
+        impl_->files.push_back(std::move(f));
+        addFileToList(*impl_->files.back());
+        impl_->activeIndex = (int)impl_->files.size() - 1;
+        {
+            QSignalBlocker b(impl_->fileList);
+            impl_->fileList->setCurrentRow(impl_->activeIndex);
+        }
+        loadActiveState();
+    };
+
+    // ---- Open CSV: lands in the mapping panel. If the file carries a
+    //      "# scope-csv:" header the panel is pre-filled. ----
+    auto openCsvForMapping = [this, saveActiveState, loadActiveState, addFileToList]
+        (const QString& path) {
         auto f = std::make_unique<OpenedFile>();
         f->type = FileType::Csv;
         f->path = path;
         f->displayName = QFileInfo(path).fileName();
-        f->profile = ConverterProfile{};
-        f->profile.sourceType = "csv";
-        f->profile.columnDelimiter = ",";
-        f->profile.rowDelimiter    = "\n";
-        f->profile.headerRow = 1;
-        f->profile.decimalSeparator = ".";
+        // Pre-fill from scope metadata if present; otherwise the empty
+        // default (user maps manually).
+        ConverterProfile metaProfile;
+        const bool hadMeta = converter::profileFromScopeMetadata(
+            std::filesystem::path(path.toStdString()), &metaProfile);
+        if (hadMeta) {
+            f->profile = std::move(metaProfile);
+        } else {
+            f->profile = ConverterProfile{};
+            f->profile.sourceType = "csv";
+            f->profile.columnDelimiter = ",";
+            f->profile.rowDelimiter    = "\n";
+            f->profile.headerRow = 1;
+            f->profile.decimalSeparator = ".";
+        }
         try {
             f->csv = std::make_unique<CsvSource>(
                 std::filesystem::path(path.toStdString()),
@@ -518,53 +562,28 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             impl_->fileList->setCurrentRow(impl_->activeIndex);
         }
         loadActiveState();
-    });
-
-    // ---- Open .h5 / .mf4 (loads all signals into memory, doesn't push to
-    //               store until user selects + Applies) -----------------
-    auto openRecording = [this, saveActiveState, loadActiveState, addFileToList]
-        (const QString& path) {
-        if (path.isEmpty()) return;
-
-        auto r = converter::loadFile(std::filesystem::path(path.toStdString()));
-        if (!r.ok && r.channels.empty()) {
-            QMessageBox::critical(this, "Open failed",
-                r.error.isEmpty() ? QString("Unknown error") : r.error);
-            return;
-        }
-        if (r.channels.empty()) {
-            QMessageBox::warning(this, "Empty file",
-                r.error.isEmpty() ? QString("No channels in this file.") : r.error);
-            return;
-        }
-
-        auto f = std::make_unique<OpenedFile>();
-        f->type = FileType::H5;  // unified: any "recording" file uses H5 lane
-        f->path = path;
-        f->displayName = QFileInfo(path).fileName();
-        f->h5Signals = std::move(r.channels);
-        // Default: all channels checked (so the user just clicks Apply
-        // to get the old behaviour).
-        for (const auto& s : f->h5Signals) {
-            if (s) f->h5SelectedChannels << s->meta().name;
-        }
-
-        saveActiveState();
-        impl_->files.push_back(std::move(f));
-        addFileToList(*impl_->files.back());
-        impl_->activeIndex = (int)impl_->files.size() - 1;
-        {
-            QSignalBlocker b(impl_->fileList);
-            impl_->fileList->setCurrentRow(impl_->activeIndex);
-        }
-        loadActiveState();
     };
 
-    connect(loadH5Btn, &QPushButton::clicked, this, [this, openRecording]{
+    // ---- One Open chart button — extension dispatch. ----
+    connect(openChartBtn, &QPushButton::clicked, this,
+            [this, openRecording, openCsvForMapping]{
         const QString path = QFileDialog::getOpenFileName(
-            this, "Open recording (.h5 / .mf4)", QString(),
-            "Recordings (*.h5 *.mf4);;HDF5 (*.h5);;MDF4 (*.mf4);;All files (*)");
-        openRecording(path);
+            this, "Open chart", QString(),
+            "Scope files (*.h5 *.mf4 *.csv *.tsv *.txt);;"
+            "Recordings (*.h5 *.mf4);;"
+            "HDF5 (*.h5);;MDF4 (*.mf4);;"
+            "CSV / text (*.csv *.tsv *.txt);;"
+            "All files (*)");
+        if (path.isEmpty()) return;
+        const auto fmt = converter::detectFormatFromExtension(
+            std::filesystem::path(path.toStdString()));
+        if (fmt == converter::FileFormat::Hdf5
+            || fmt == converter::FileFormat::Mdf4) {
+            openRecording(path);
+        } else {
+            // .csv / .tsv / .txt / unknown → mapping panel.
+            openCsvForMapping(path);
+        }
     });
 
     // ---- Apply for the active file ----------------------------------
@@ -1103,80 +1122,62 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         impl_->statusLabel->setText(msg);
     });
 
-    // ---- Save recording: dump the SignalStore to .h5 or .mf4 ----------
-    auto saveRecording = [this](converter::FileFormat fmt, const QString& title) {
+    // ---- Save chart: same dialog the Analyser uses ----
+    connect(saveChartBtn, &QPushButton::clicked, this, [this]{
         if (store_.size() == 0) {
             QMessageBox::information(this, "Nothing to save",
                 "The signal store is empty. Apply a file first.");
             return;
         }
-        QFileDialog dlg(this, title);
-        dlg.setAcceptMode(QFileDialog::AcceptSave);
-        dlg.setNameFilters(converter::nameFilters(fmt));
-        dlg.setDefaultSuffix(converter::defaultSuffix(fmt));
+        // No plot here → custom range box opens at 0…0, but it's
+        // disabled unless the user picks "Custom range" anyway.
+        converter::ui::SaveChartDialog dlg(0.0, 0.0, this);
         if (dlg.exec() != QDialog::Accepted) return;
-        const auto sel = dlg.selectedFiles();
+
+        const auto fmtChoice = dlg.format();
+        const converter::FileFormat fmt =
+              (fmtChoice == converter::ui::SaveChartDialog::Format::Csv)  ? converter::FileFormat::Csv
+            : (fmtChoice == converter::ui::SaveChartDialog::Format::Mdf4) ? converter::FileFormat::Mdf4
+                                                                          : converter::FileFormat::Hdf5;
+
+        QFileDialog fileDlg(this,
+            QString("Save chart (.%1)").arg(converter::defaultSuffix(fmt)));
+        fileDlg.setAcceptMode(QFileDialog::AcceptSave);
+        fileDlg.setNameFilters(converter::nameFilters(fmt));
+        fileDlg.setDefaultSuffix(converter::defaultSuffix(fmt));
+        if (fileDlg.exec() != QDialog::Accepted) return;
+        const auto sel = fileDlg.selectedFiles();
         if (sel.isEmpty()) return;
-        QString path = sel.first();
 
-        std::vector<std::shared_ptr<scope::core::Signal>> chans;
-        for (const auto& name : store_.channelNames()) {
-            if (auto s = store_.get(name)) chans.push_back(std::move(s));
-        }
+        converter::ChartSaveFilters filters;
+        filters.includeTime              = dlg.includeTimeDomain();
+        filters.includeFrequency         = dlg.includeFrequencyDomain();
+        filters.includeDerived           = dlg.includeDerivedChannels();
+        filters.splitDomainsIntoTwoFiles = dlg.splitDomainsIntoTwoFiles();
+        filters.useCustomRange           = dlg.useCustomRange();
+        filters.fromSec                  = dlg.fromSec();
+        filters.toSec                    = dlg.toSec();
+
+        converter::SaveOptions opts;
+        opts.csv = dlg.csvOptions();
+
+        QStringList messages;
         QString err;
-        if (!converter::saveFile(
-                std::filesystem::path(path.toStdString()),
-                chans, fmt, {}, &err)) {
-            QMessageBox::critical(this, "Save failed", err);
-            return;
+        const auto result = converter::saveChartFromStore(
+            sel.first(), store_, fmt, filters, opts, &messages, &err);
+        switch (result) {
+            case converter::ChartSaveResult::NothingMatchedFilters:
+                QMessageBox::warning(this, "Nothing to save",
+                    "No channels matched the current filters / time range.");
+                return;
+            case converter::ChartSaveResult::Failed:
+                QMessageBox::critical(this, "Save failed", err);
+                return;
+            case converter::ChartSaveResult::Ok:
+                impl_->statusLabel->setText("Saved: " + messages.join("; "));
+                QMessageBox::information(this, "Saved", messages.join("\n"));
+                return;
         }
-        impl_->statusLabel->setText(QString("Saved %1: %2 channel(s)")
-                                        .arg(QFileInfo(path).fileName())
-                                        .arg(chans.size()));
-    };
-
-    connect(saveH5Btn, &QPushButton::clicked, this, [saveRecording]{
-        saveRecording(converter::FileFormat::Hdf5, "Save recording (.h5)");
-    });
-    connect(saveMf4Btn, &QPushButton::clicked, this, [saveRecording]{
-        saveRecording(converter::FileFormat::Mdf4, "Save recording (.mf4)");
-    });
-
-    // ---- Save CSV: dialog + writer ------------------------------------
-    connect(saveCsvBtn, &QPushButton::clicked, this, [this]{
-        if (store_.size() == 0) {
-            QMessageBox::information(this, "Nothing to save",
-                "The signal store is empty. Apply a file first.");
-            return;
-        }
-        ui::CsvExportDialog optionsDlg(this);
-        if (optionsDlg.exec() != QDialog::Accepted) return;
-        converter::SaveOptions saveOpts;
-        saveOpts.csv = optionsDlg.options();
-
-        QFileDialog dlg(this, "Save CSV");
-        dlg.setAcceptMode(QFileDialog::AcceptSave);
-        dlg.setNameFilters(converter::nameFilters(converter::FileFormat::Csv));
-        dlg.setDefaultSuffix(converter::defaultSuffix(converter::FileFormat::Csv));
-        if (dlg.exec() != QDialog::Accepted) return;
-        const auto sel = dlg.selectedFiles();
-        if (sel.isEmpty()) return;
-        QString path = sel.first();
-
-        std::vector<std::shared_ptr<scope::core::Signal>> chans;
-        for (const auto& name : store_.channelNames()) {
-            if (auto s = store_.get(name)) chans.push_back(std::move(s));
-        }
-        QString err;
-        if (!converter::saveFile(std::filesystem::path(path.toStdString()),
-                                 chans, converter::FileFormat::Csv,
-                                 saveOpts, &err)) {
-            QMessageBox::critical(this, "Save failed", err);
-            return;
-        }
-        impl_->statusLabel->setText(QString("Saved %1: %2 channel(s)")
-                                        .arg(QFileInfo(path).fileName())
-                                        .arg(chans.size()));
     });
 }
 

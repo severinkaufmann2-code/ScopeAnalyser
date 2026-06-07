@@ -1,4 +1,4 @@
-#include "SaveChartDialog.h"
+#include "scope/converter/SaveChartDialog.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -14,7 +14,7 @@
 
 #include <array>
 
-namespace scope::analyser::ui {
+namespace scope::converter::ui {
 
 namespace {
 
@@ -226,4 +226,4 @@ scope::converter::CsvExportOptions SaveChartDialog::csvOptions() const {
     return o;
 }
 
-}  // namespace scope::analyser::ui
+}  // namespace scope::converter::ui

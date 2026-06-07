@@ -136,4 +136,118 @@ bool ConverterProfile::saveToFile(const std::filesystem::path& path,
     }
 }
 
+// ---------------------------------------------------------------------------
+//
+// Convert a 0-based column index to its A / B / … / AA / AB / … letter,
+// matching the convention CsvSource / MappingPanel use everywhere else.
+namespace {
+QString columnLetter(int index) {
+    QString s;
+    int n = index;
+    while (true) {
+        s.prepend(QChar('A' + (n % 26)));
+        n = n / 26 - 1;
+        if (n < 0) break;
+    }
+    return s;
+}
+}
+
+bool profileFromScopeMetadata(const std::filesystem::path& path,
+                              ConverterProfile* out,
+                              QString* errorOut) {
+    if (!out) return false;
+    try {
+        std::ifstream f(path);
+        if (!f) {
+            if (errorOut) *errorOut = "Couldn't open file.";
+            return false;
+        }
+        std::string line;
+        // First non-blank line wins. We keep this loop simple: peek up
+        // to ~5 lines so a leading BOM line or stray empty line doesn't
+        // throw us off, then give up.
+        std::string firstNonBlank;
+        for (int i = 0; i < 5 && std::getline(f, line); ++i) {
+            std::string trimmed = line;
+            while (!trimmed.empty()
+                   && (trimmed.back() == '\r' || trimmed.back() == ' '
+                    || trimmed.back() == '\t' || trimmed.back() == '\n'))
+                trimmed.pop_back();
+            std::size_t start = 0;
+            while (start < trimmed.size()
+                   && (trimmed[start] == ' ' || trimmed[start] == '\t'))
+                ++start;
+            if (start < trimmed.size()) {
+                firstNonBlank = trimmed.substr(start);
+                break;
+            }
+        }
+        static const std::string kPrefix = "# scope-csv:";
+        if (firstNonBlank.size() < kPrefix.size()
+            || firstNonBlank.compare(0, kPrefix.size(), kPrefix) != 0) {
+            return false;   // no metadata, caller falls back to manual mapping
+        }
+        std::string jsonText = firstNonBlank.substr(kPrefix.size());
+        // Strip leading whitespace inside the comment.
+        std::size_t js = 0;
+        while (js < jsonText.size()
+               && (jsonText[js] == ' ' || jsonText[js] == '\t')) ++js;
+        const auto root = json::parse(jsonText.substr(js));
+
+        ConverterProfile prof;
+        prof.sourceType = "csv";
+        prof.headerRow  = 1;
+        prof.decimalSeparator = ".";
+        prof.columnDelimiter  = ",";
+        prof.rowDelimiter     = "\n";
+
+        const auto& arr = root.value("columns", json::array());
+
+        // Two-pass build: pass 1 figures out each column's letter and
+        // role/unit/name (signals carry a `refX` index pointing back at
+        // their X column); pass 2 fills in xSourceColumn now that we
+        // have the letter table.
+        struct Tmp {
+            QString letter;
+            ColumnMapping::Role role{ColumnMapping::Role::Ignore};
+            QString unit;
+            QString signalName;
+            int     refX{-1};
+            QString sourceSymbol;
+        };
+        std::vector<Tmp> tmps;
+        tmps.reserve(arr.size());
+        for (std::size_t i = 0; i < arr.size(); ++i) {
+            const auto& jc = arr[i];
+            Tmp t;
+            t.letter = columnLetter(static_cast<int>(i));
+            t.role   = roleFromString(jc.value("role", std::string("signal")));
+            t.unit   = QString::fromStdString(jc.value("unit", std::string{}));
+            t.signalName  = QString::fromStdString(jc.value("name", std::string{}));
+            t.sourceSymbol= QString::fromStdString(jc.value("src", std::string{}));
+            t.refX        = jc.value("refX", -1);
+            tmps.push_back(std::move(t));
+        }
+        for (const auto& t : tmps) {
+            ColumnMapping cm;
+            cm.columnId   = t.letter;
+            cm.role       = t.role;
+            cm.unit       = t.unit;
+            cm.signalName = t.signalName;
+            if (cm.role == ColumnMapping::Role::Signal
+                && t.refX >= 0
+                && t.refX < static_cast<int>(tmps.size())) {
+                cm.xSourceColumn = tmps[t.refX].letter;
+            }
+            prof.columns.push_back(std::move(cm));
+        }
+        *out = std::move(prof);
+        return true;
+    } catch (const std::exception& e) {
+        if (errorOut) *errorOut = QString::fromUtf8(e.what());
+        return false;
+    }
+}
+
 }  // namespace scope::converter

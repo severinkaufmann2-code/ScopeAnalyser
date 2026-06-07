@@ -5,10 +5,10 @@ set(CONVERTER_HEADERS
     include/scope/converter/CsvSource.h
     include/scope/converter/CsvWriter.h
     include/scope/converter/SignalIO.h
+    include/scope/converter/SaveChartDialog.h
     include/scope/converter/ConverterWidget.h
     ui/MappingPanel.h
     ui/ChannelEditDialog.h
-    ui/CsvExportDialog.h
 )
 
 set(CONVERTER_SOURCES
@@ -20,7 +20,7 @@ set(CONVERTER_SOURCES
     ui/ConverterWidget.cpp
     ui/MappingPanel.cpp
     ui/ChannelEditDialog.cpp
-    ui/CsvExportDialog.cpp
+    ui/SaveChartDialog.cpp
 )
 
 scope_add_library(scope_converter

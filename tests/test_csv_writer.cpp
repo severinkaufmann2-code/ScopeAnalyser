@@ -340,6 +340,73 @@ TEST(CsvWriter, MixedDomainHeuristicFallbackTagsCorrectly) {
     std::filesystem::remove(path);
 }
 
+// saveChartFromStore is the shared helper both the Analyser and the
+// Converter call from their Save chart… flows. This test exercises the
+// per-domain split path through a real SignalStore.
+TEST(CsvWriter, SaveChartFromStoreSplitsByDomain) {
+    scope::core::SignalStore store;
+    {
+        Signal::Meta m; m.name = "speed"; m.unit = "rpm";
+        m.dataType = DataType::Float64; m.domain = Signal::Domain::Time;
+        auto s = std::make_shared<Signal>(m);
+        std::vector<TimestampNs> ts{0, 1'000'000'000LL};
+        std::vector<double>      vs{0, 10};
+        s->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), 2);
+        store.add(s);
+    }
+    {
+        Signal::Meta m; m.name = "FFT_speed"; m.unit = "mag";
+        m.dataType = DataType::Float64; m.domain = Signal::Domain::Frequency;
+        auto s = std::make_shared<Signal>(m);
+        std::vector<TimestampNs> ts{0, 50LL * 1'000'000'000LL};
+        std::vector<double>      vs{1, 2};
+        s->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), 2);
+        store.add(s);
+    }
+
+    const auto base = std::filesystem::temp_directory_path() / "scope_chart_split.csv";
+    const QString basePath = QString::fromStdString(base.string());
+    ChartSaveFilters filters;
+    filters.splitDomainsIntoTwoFiles = true;
+    SaveOptions opts;
+    QStringList messages; QString err;
+    auto result = saveChartFromStore(basePath, store, FileFormat::Csv,
+                                     filters, opts, &messages, &err);
+    EXPECT_EQ(result, ChartSaveResult::Ok) << err.toStdString();
+    EXPECT_EQ(messages.size(), 2);
+    const auto tPath = std::filesystem::temp_directory_path() / "scope_chart_split_time.csv";
+    const auto fPath = std::filesystem::temp_directory_path() / "scope_chart_split_frequency.csv";
+    EXPECT_TRUE(std::filesystem::exists(tPath));
+    EXPECT_TRUE(std::filesystem::exists(fPath));
+    std::filesystem::remove(tPath);
+    std::filesystem::remove(fPath);
+}
+
+TEST(CsvWriter, SaveChartFromStoreReportsNothingMatched) {
+    scope::core::SignalStore store;
+    {
+        Signal::Meta m; m.name = "speed"; m.unit = "rpm";
+        m.dataType = DataType::Float64; m.domain = Signal::Domain::Time;
+        auto s = std::make_shared<Signal>(m);
+        std::vector<TimestampNs> ts{0, 1'000'000'000LL};
+        std::vector<double>      vs{0, 10};
+        s->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), 2);
+        store.add(s);
+    }
+    const auto base = std::filesystem::temp_directory_path() / "scope_chart_empty.csv";
+    ChartSaveFilters filters;
+    filters.includeTime      = false;  // strip the only signal we have
+    filters.includeFrequency = false;
+    QStringList messages; QString err;
+    auto result = saveChartFromStore(
+        QString::fromStdString(base.string()),
+        store, FileFormat::Csv, filters, SaveOptions{},
+        &messages, &err);
+    EXPECT_EQ(result, ChartSaveResult::NothingMatchedFilters);
+    EXPECT_TRUE(messages.isEmpty());
+    EXPECT_FALSE(std::filesystem::exists(base));
+}
+
 TEST(CsvWriter, MetadataHeaderCanBeDisabled) {
     auto sig = makeRamp("speed", 3, 0.1, 0.0, 1.0, "rpm");
     CsvExportOptions opts;

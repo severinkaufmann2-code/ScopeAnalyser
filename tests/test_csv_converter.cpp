@@ -126,6 +126,58 @@ TEST(CsvConverter, FrequencyXAxisScalesKHz) {
     std::filesystem::remove(path);
 }
 
+// profileFromScopeMetadata: the "Open chart…" CSV path uses this to
+// pre-fill the mapping panel from a "# scope-csv:" header so the user
+// just clicks Apply.
+TEST(CsvConverter, ProfileFromScopeMetadataPrefillsMapping) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_prefill.csv";
+    {
+        std::ofstream f(path);
+        f << "# scope-csv: {\"v\":1,\"columns\":["
+             "{\"role\":\"x_time\",\"unit\":\"s\"},"
+             "{\"role\":\"signal\",\"unit\":\"rpm\",\"name\":\"speed\",\"refX\":0},"
+             "{\"role\":\"x_frequency\",\"unit\":\"Hz\"},"
+             "{\"role\":\"signal\",\"unit\":\"mag\",\"name\":\"FFT_speed\",\"refX\":2}"
+             "]}\n";
+        f << "t [s],speed [rpm],f [Hz],FFT_speed [mag]\n";
+        f << "0,0,0,1\n";
+    }
+    ConverterProfile prof;
+    QString err;
+    ASSERT_TRUE(profileFromScopeMetadata(path, &prof, &err)) << err.toStdString();
+    ASSERT_EQ(prof.columns.size(), 4u);
+    EXPECT_EQ(prof.columns[0].columnId,   "A");
+    EXPECT_EQ(prof.columns[0].role,       ColumnMapping::Role::XTime);
+    EXPECT_EQ(prof.columns[0].unit,       "s");
+    EXPECT_EQ(prof.columns[1].columnId,   "B");
+    EXPECT_EQ(prof.columns[1].role,       ColumnMapping::Role::Signal);
+    EXPECT_EQ(prof.columns[1].unit,       "rpm");
+    EXPECT_EQ(prof.columns[1].signalName, "speed");
+    EXPECT_EQ(prof.columns[1].xSourceColumn, "A");
+    EXPECT_EQ(prof.columns[2].columnId,   "C");
+    EXPECT_EQ(prof.columns[2].role,       ColumnMapping::Role::XFrequency);
+    EXPECT_EQ(prof.columns[2].unit,       "Hz");
+    EXPECT_EQ(prof.columns[3].columnId,   "D");
+    EXPECT_EQ(prof.columns[3].role,       ColumnMapping::Role::Signal);
+    EXPECT_EQ(prof.columns[3].signalName, "FFT_speed");
+    EXPECT_EQ(prof.columns[3].xSourceColumn, "C");
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, ProfileFromScopeMetadataReturnsFalseWithoutHeader) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_csv_no_meta.csv";
+    {
+        std::ofstream f(path);
+        f << "t,v\n0,1\n0.1,2\n";
+    }
+    ConverterProfile prof;
+    QString err;
+    EXPECT_FALSE(profileFromScopeMetadata(path, &prof, &err));
+    EXPECT_TRUE(err.isEmpty());
+    EXPECT_TRUE(prof.columns.empty());
+    std::filesystem::remove(path);
+}
+
 TEST(CsvConverter, BogusUnitOnXTimeProducesWarning) {
     auto path = std::filesystem::temp_directory_path() / "scope_test_csv_bogus_unit.csv";
     {

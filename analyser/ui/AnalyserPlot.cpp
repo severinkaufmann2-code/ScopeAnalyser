@@ -1,7 +1,7 @@
 #include "AnalyserPlot.h"
 
 #include "AddChannelDialog.h"
-#include "SaveChartDialog.h"
+#include "scope/converter/SaveChartDialog.h"
 
 #include "scope/analyser/FormulaEngine.h"
 #include "scope/plot/ScopePlot.h"
@@ -596,77 +596,14 @@ void AnalyserPlot::saveChartDialog() {
         return;
     }
     const auto xr = scope_->plot()->xAxis->range();
-    SaveChartDialog dlg(xr.lower, xr.upper, this);
+    converter::ui::SaveChartDialog dlg(xr.lower, xr.upper, this);
     if (dlg.exec() != QDialog::Accepted) return;
 
     const auto fmtChoice = dlg.format();
     const converter::FileFormat fmt =
-          (fmtChoice == SaveChartDialog::Format::Csv)  ? converter::FileFormat::Csv
-        : (fmtChoice == SaveChartDialog::Format::Mdf4) ? converter::FileFormat::Mdf4
-                                                       : converter::FileFormat::Hdf5;
-    const bool csv = (fmt == converter::FileFormat::Csv);
-    const bool customRange = dlg.useCustomRange();
-    const core::TimestampNs fromNs = customRange
-        ? static_cast<core::TimestampNs>(dlg.fromSec() * 1e9)
-        : std::numeric_limits<core::TimestampNs>::min();
-    const core::TimestampNs toNs = customRange
-        ? static_cast<core::TimestampNs>(dlg.toSec()   * 1e9)
-        : std::numeric_limits<core::TimestampNs>::max();
-    const bool incTime    = dlg.includeTimeDomain();
-    const bool incFreq    = dlg.includeFrequencyDomain();
-    const bool incDerived = dlg.includeDerivedChannels();
-    const bool splitFiles = dlg.splitDomainsIntoTwoFiles();
-
-    // A signal is "derived" if its source symbol is "<name> = <expr>" with
-    // lhs == its own name (the stamp FormulaEngine::evaluate leaves).
-    auto isDerived = [](const std::shared_ptr<core::Signal>& s) {
-        const QString src = s->meta().sourceSymbol;
-        const int eq = src.indexOf('=');
-        if (eq <= 0) return false;
-        return src.left(eq).trimmed() == s->meta().name;
-    };
-
-    // Build trimmed copies, partitioned by domain, after filters.
-    std::vector<std::shared_ptr<core::Signal>> timeChans, freqChans;
-    for (const auto& n : store_.channelNames()) {
-        auto src = store_.get(n);
-        if (!src) continue;
-        const bool freq = (src->meta().domain == core::Signal::Domain::Frequency);
-        if (freq && !incFreq) continue;
-        if (!freq && !incTime) continue;
-        if (!incDerived && isDerived(src)) continue;
-        auto view = src->snapshotForRead();
-        auto vs   = src->readAsDouble();
-        if (view.count == 0) continue;
-
-        std::vector<core::TimestampNs> tsBuf;
-        std::vector<double>            vsBuf;
-        tsBuf.reserve(view.count);
-        vsBuf.reserve(view.count);
-        // Time range filter only applies to time-domain signals — for
-        // frequency, the "timestamps" encode Hz and the customRange
-        // numbers are in seconds, so they wouldn't be meaningful.
-        for (std::size_t i = 0; i < view.count; ++i) {
-            const core::TimestampNs t = view.timestamps[i];
-            if (!freq && (t < fromNs || t > toNs)) continue;
-            tsBuf.push_back(t);
-            vsBuf.push_back(i < vs.size() ? vs[i] : 0.0);
-        }
-        if (tsBuf.empty()) continue;
-        core::Signal::Meta meta = src->meta();
-        meta.dataType = core::DataType::Float64;
-        auto trimmed = std::make_shared<core::Signal>(meta);
-        trimmed->append(tsBuf.data(),
-                        reinterpret_cast<const std::byte*>(vsBuf.data()),
-                        tsBuf.size());
-        if (freq) freqChans.push_back(std::move(trimmed));
-        else      timeChans.push_back(std::move(trimmed));
-    }
-    if (timeChans.empty() && freqChans.empty()) {
-        QMessageBox::warning(this, "Nothing to save",
-            "No channels matched the current filters / time range.");
-        return;
-    }
+          (fmtChoice == converter::ui::SaveChartDialog::Format::Csv)  ? converter::FileFormat::Csv
+        : (fmtChoice == converter::ui::SaveChartDialog::Format::Mdf4) ? converter::FileFormat::Mdf4
+                                                                      : converter::FileFormat::Hdf5;
 
     QFileDialog fileDlg(this,
         QString("Save chart (.%1)").arg(converter::defaultSuffix(fmt)));
@@ -676,62 +613,35 @@ void AnalyserPlot::saveChartDialog() {
     if (fileDlg.exec() != QDialog::Accepted) return;
     const auto sel = fileDlg.selectedFiles();
     if (sel.isEmpty()) return;
-    const QString basePath = sel.first();
 
-    // Helper: insert a suffix before the extension.
-    auto withSuffix = [](const QString& p, const QString& suffix) {
-        const int dot = p.lastIndexOf('.');
-        return (dot > p.lastIndexOf('/') && dot > p.lastIndexOf('\\'))
-            ? p.left(dot) + suffix + p.mid(dot)
-            : p + suffix;
-    };
+    converter::ChartSaveFilters filters;
+    filters.includeTime               = dlg.includeTimeDomain();
+    filters.includeFrequency          = dlg.includeFrequencyDomain();
+    filters.includeDerived            = dlg.includeDerivedChannels();
+    filters.splitDomainsIntoTwoFiles  = dlg.splitDomainsIntoTwoFiles();
+    filters.useCustomRange            = dlg.useCustomRange();
+    filters.fromSec                   = dlg.fromSec();
+    filters.toSec                     = dlg.toSec();
 
-    converter::SaveOptions saveOpts;
-    saveOpts.csv = dlg.csvOptions();
+    converter::SaveOptions opts;
+    opts.csv = dlg.csvOptions();
 
-    auto writeOne = [&](const QString& outPath,
-                        const std::vector<std::shared_ptr<core::Signal>>& chans,
-                        QString* err) -> bool {
-        return converter::saveFile(
-            std::filesystem::path(outPath.toStdString()),
-            chans, fmt, saveOpts, err);
-    };
-
-    const bool haveBoth = !timeChans.empty() && !freqChans.empty();
-    const bool reallySplit = splitFiles && haveBoth;
-    QStringList wrote;
+    QStringList messages;
     QString err;
-
-    if (reallySplit) {
-        const QString tPath = withSuffix(basePath, "_time");
-        const QString fPath = withSuffix(basePath, "_frequency");
-        if (!writeOne(tPath, timeChans, &err)) {
-            QMessageBox::critical(this, "Save failed", err); return;
-        }
-        if (!writeOne(fPath, freqChans, &err)) {
-            QMessageBox::critical(this, "Save failed", err); return;
-        }
-        wrote << QString("%1 time-domain channel(s) → %2")
-                     .arg(timeChans.size()).arg(QFileInfo(tPath).fileName())
-              << QString("%1 frequency-domain channel(s) → %2")
-                     .arg(freqChans.size()).arg(QFileInfo(fPath).fileName());
-    } else {
-        // Single file, combined.
-        std::vector<std::shared_ptr<core::Signal>> all;
-        all.reserve(timeChans.size() + freqChans.size());
-        for (auto& s : timeChans) all.push_back(s);
-        for (auto& s : freqChans) all.push_back(s);
-        if (!writeOne(basePath, all, &err)) {
-            QMessageBox::critical(this, "Save failed", err); return;
-        }
-        wrote << QString("%1 channel(s) → %2  "
-                         "(time: %3, frequency: %4)")
-                     .arg(all.size())
-                     .arg(QFileInfo(basePath).fileName())
-                     .arg(timeChans.size())
-                     .arg(freqChans.size());
+    const auto result = converter::saveChartFromStore(
+        sel.first(), store_, fmt, filters, opts, &messages, &err);
+    switch (result) {
+        case converter::ChartSaveResult::NothingMatchedFilters:
+            QMessageBox::warning(this, "Nothing to save",
+                "No channels matched the current filters / time range.");
+            return;
+        case converter::ChartSaveResult::Failed:
+            QMessageBox::critical(this, "Save failed", err);
+            return;
+        case converter::ChartSaveResult::Ok:
+            QMessageBox::information(this, "Saved", messages.join("\n"));
+            return;
     }
-    QMessageBox::information(this, "Saved", wrote.join("\n"));
 }
 
 namespace {

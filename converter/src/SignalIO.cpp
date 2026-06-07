@@ -376,4 +376,133 @@ bool saveFile(const std::filesystem::path& path,
     }
 }
 
+namespace {
+
+bool isDerivedChannel(const std::shared_ptr<Signal>& s) {
+    if (!s) return false;
+    const QString src = s->meta().sourceSymbol;
+    const int eq = src.indexOf('=');
+    if (eq <= 0) return false;
+    return src.left(eq).trimmed() == s->meta().name;
+}
+
+QString withSuffixBeforeExt(const QString& p, const QString& suffix) {
+    const int dot = p.lastIndexOf('.');
+    return (dot > p.lastIndexOf('/') && dot > p.lastIndexOf('\\'))
+        ? p.left(dot) + suffix + p.mid(dot)
+        : p + suffix;
+}
+
+}  // namespace
+
+ChartSaveResult saveChartFromStore(
+    const QString& basePath,
+    const scope::core::SignalStore& store,
+    FileFormat fmt,
+    const ChartSaveFilters& filters,
+    const SaveOptions& opts,
+    QStringList* messagesOut,
+    QString* errorOut) {
+
+    using TimestampNs = scope::core::TimestampNs;
+    const TimestampNs fromNs = filters.useCustomRange
+        ? static_cast<TimestampNs>(filters.fromSec * 1e9)
+        : std::numeric_limits<TimestampNs>::min();
+    const TimestampNs toNs = filters.useCustomRange
+        ? static_cast<TimestampNs>(filters.toSec   * 1e9)
+        : std::numeric_limits<TimestampNs>::max();
+
+    std::vector<std::shared_ptr<Signal>> timeChans, freqChans;
+    for (const auto& n : store.channelNames()) {
+        auto src = store.get(n);
+        if (!src) continue;
+        const bool freq = (src->meta().domain == Signal::Domain::Frequency);
+        if (freq && !filters.includeFrequency) continue;
+        if (!freq && !filters.includeTime)      continue;
+        if (!filters.includeDerived && isDerivedChannel(src)) continue;
+        auto view = src->snapshotForRead();
+        auto vs   = src->readAsDouble();
+        if (view.count == 0) continue;
+
+        std::vector<TimestampNs> tsBuf;
+        std::vector<double>      vsBuf;
+        tsBuf.reserve(view.count);
+        vsBuf.reserve(view.count);
+        for (std::size_t i = 0; i < view.count; ++i) {
+            const TimestampNs t = view.timestamps[i];
+            if (!freq && (t < fromNs || t > toNs)) continue;
+            tsBuf.push_back(t);
+            vsBuf.push_back(i < vs.size() ? vs[i] : 0.0);
+        }
+        if (tsBuf.empty()) continue;
+        Signal::Meta meta = src->meta();
+        meta.dataType = scope::core::DataType::Float64;
+        auto trimmed = std::make_shared<Signal>(meta);
+        trimmed->append(tsBuf.data(),
+                        reinterpret_cast<const std::byte*>(vsBuf.data()),
+                        tsBuf.size());
+        if (freq) freqChans.push_back(std::move(trimmed));
+        else      timeChans.push_back(std::move(trimmed));
+    }
+
+    if (timeChans.empty() && freqChans.empty()) {
+        return ChartSaveResult::NothingMatchedFilters;
+    }
+
+    const bool haveBoth = !timeChans.empty() && !freqChans.empty();
+    const bool reallySplit = filters.splitDomainsIntoTwoFiles && haveBoth;
+
+    auto writeOne = [&](const QString& outPath,
+                        const std::vector<std::shared_ptr<Signal>>& chans,
+                        QString* err) -> bool {
+        return saveFile(std::filesystem::path(outPath.toStdString()),
+                        chans, fmt, opts, err);
+    };
+
+    QString err;
+    if (reallySplit) {
+        const QString tPath = withSuffixBeforeExt(basePath, "_time");
+        const QString fPath = withSuffixBeforeExt(basePath, "_frequency");
+        if (!writeOne(tPath, timeChans, &err)) {
+            if (errorOut) *errorOut = err;
+            return ChartSaveResult::Failed;
+        }
+        if (!writeOne(fPath, freqChans, &err)) {
+            if (errorOut) *errorOut = err;
+            return ChartSaveResult::Failed;
+        }
+        if (messagesOut) {
+            const QString tName = QString::fromStdString(
+                std::filesystem::path(tPath.toStdString()).filename().string());
+            const QString fName = QString::fromStdString(
+                std::filesystem::path(fPath.toStdString()).filename().string());
+            *messagesOut << QString("%1 time-domain channel(s) → %2")
+                                 .arg(timeChans.size()).arg(tName)
+                         << QString("%1 frequency-domain channel(s) → %2")
+                                 .arg(freqChans.size()).arg(fName);
+        }
+        return ChartSaveResult::Ok;
+    }
+
+    // Single combined file.
+    std::vector<std::shared_ptr<Signal>> all;
+    all.reserve(timeChans.size() + freqChans.size());
+    for (auto& s : timeChans) all.push_back(s);
+    for (auto& s : freqChans) all.push_back(s);
+    if (!writeOne(basePath, all, &err)) {
+        if (errorOut) *errorOut = err;
+        return ChartSaveResult::Failed;
+    }
+    if (messagesOut) {
+        const QString name = QString::fromStdString(
+            std::filesystem::path(basePath.toStdString()).filename().string());
+        *messagesOut << QString("%1 channel(s) → %2  (time: %3, frequency: %4)")
+                            .arg(all.size())
+                            .arg(name)
+                            .arg(timeChans.size())
+                            .arg(freqChans.size());
+    }
+    return ChartSaveResult::Ok;
+}
+
 }  // namespace scope::converter

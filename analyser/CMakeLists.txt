@@ -4,7 +4,6 @@ set(ANALYSER_HEADERS
     include/scope/analyser/AnalyserWidget.h
     ui/AnalyserPlot.h
     ui/AddChannelDialog.h
-    ui/SaveChartDialog.h
 )
 
 set(ANALYSER_SOURCES
@@ -13,7 +12,6 @@ set(ANALYSER_SOURCES
     ui/AnalyserWidget.cpp
     ui/AnalyserPlot.cpp
     ui/AddChannelDialog.cpp
-    ui/SaveChartDialog.cpp
 )
 
 scope_add_library(scope_analyser

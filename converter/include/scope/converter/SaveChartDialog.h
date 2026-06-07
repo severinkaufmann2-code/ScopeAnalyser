@@ -11,14 +11,16 @@ class QGroupBox;
 class QLineEdit;
 class QRadioButton;
 
-namespace scope::analyser::ui {
+namespace scope::converter::ui {
 
-// Dialog for "Save chart…" in the Analyser. Returns:
-//   - format (.h5 or .csv)
+// Save dialog shared by both Analyser ("Save chart…") and Converter
+// ("Save chart…"). Returns:
+//   - format (.h5, .mf4, .csv)
 //   - time range (all data, or custom seconds From/To)
-//   - CSV options (header, separators, decimal, time mode) — used only
-//     when format == csv. Defaults pre-filled so OK alone produces a
-//     standard CSV.
+//   - CSV options (header, scope metadata, separators, decimal, time mode)
+//     used only when format == csv. Defaults pre-filled so OK alone
+//     produces a standard CSV.
+//   - per-domain channel filters and split-files toggle.
 class SaveChartDialog : public QDialog {
     Q_OBJECT
 public:
@@ -68,4 +70,4 @@ private:
     QCheckBox*  splitFilesCheck_{nullptr};
 };
 
-}  // namespace scope::analyser::ui
+}  // namespace scope::converter::ui
