@@ -74,11 +74,14 @@ jobs:
         shell: pwsh
         run: |
           # vcpkg's hdf5 has no module-mode wrapper, so point the stock
-          # FindHDF5 module at the vcpkg prefix (also used by HighFive).
-          $hdf5Root = "$env:VCPKG_INSTALLATION_ROOT/installed/$env:VCPKG_TRIPLET"
+          # FindHDF5 module at the vcpkg prefix (also used by HighFive). Use
+          # forward slashes — a backslash path (C:\vcpkg) trips CMake 4.x's
+          # "invalid character escape" when FindHDF5 re-emits it.
+          $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT".Replace('\', '/')
+          $hdf5Root = "$vcpkgRoot/installed/$env:VCPKG_TRIPLET"
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_TOOLCHAIN_FILE="$vcpkgRoot/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=$env:VCPKG_TRIPLET `
             -DVCPKG_MANIFEST_MODE=OFF `
             -DHDF5_ROOT="$hdf5Root" `
