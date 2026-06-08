@@ -118,9 +118,9 @@ jobs:
           # not depend on the toolchain's implicit prefix.
           $prefix = "$hdf5Root;$qtRoot"
           cmake -S . -B build -G Ninja `
-            -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
+            -DCMAKE_BUILD_TYPE="$env:BUILD_TYPE" `
             -DCMAKE_TOOLCHAIN_FILE="$vcpkgRoot/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=$env:VCPKG_TRIPLET `
+            -DVCPKG_TARGET_TRIPLET="$env:VCPKG_TRIPLET" `
             -DVCPKG_MANIFEST_MODE=OFF `
             -DHDF5_ROOT="$hdf5Root" `
             -DCMAKE_PREFIX_PATH="$prefix" `
