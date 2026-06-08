@@ -20,5 +20,6 @@ scope_add_library(scope_plot
         qcustomplot::qcustomplot
     PRIVATE_LIBS
         nlohmann_json::nlohmann_json
+        spdlog::spdlog
     FOLDER scope/plot
 )

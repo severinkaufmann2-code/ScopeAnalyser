@@ -98,6 +98,11 @@ add_library(qcustomplot::qcustomplot ALIAS qcustomplot)
 # xlsx lib, or Qt-from-source) when we get there.
 
 # Beckhoff/ADS — open-source ADS-over-TCP client (Linux + Windows).
+# Force a static build: ADS defaults to BUILD_SHARED_LIBS=ON but has no
+# dllexport markup, so on Windows the DLL ships no import lib and our exes
+# fail to link (LNK1104: cannot open ads.lib). Setting this before the
+# subproject also stops its option(BUILD_SHARED_LIBS ON) from leaking out.
+set(BUILD_SHARED_LIBS OFF)
 FetchContent_Declare(beckhoff_ads
     GIT_REPOSITORY https://github.com/Beckhoff/ADS.git
     GIT_TAG        master
