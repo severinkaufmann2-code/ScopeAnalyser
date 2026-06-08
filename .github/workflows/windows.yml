@@ -64,7 +64,7 @@ jobs:
       - name: Install dependencies via vcpkg
         shell: pwsh
         run: |
-          $attempts = 4
+          $attempts = 12
           for ($i = 1; $i -le $attempts; $i++) {
             Write-Host "::group::vcpkg install (attempt $i/$attempts)"
             & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install --classic --triplet $env:VCPKG_TRIPLET `
@@ -78,8 +78,8 @@ jobs:
             Write-Host "::endgroup::"
             if ($code -eq 0) { break }
             if ($i -eq $attempts) { throw "vcpkg install failed after $attempts attempts" }
-            Write-Host "vcpkg install failed (exit $code); retrying in 20s..."
-            Start-Sleep -Seconds 20
+            Write-Host "vcpkg install failed (exit $code); retrying in 30s..."
+            Start-Sleep -Seconds 30
           }
 
       # --- Configure / Build / Test ------------------------------------------
