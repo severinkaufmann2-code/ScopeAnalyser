@@ -58,9 +58,22 @@ jobs:
       # NOTE: we do NOT use manifest mode. vcpkg.json lists qtbase / qcustomplot
       # / qxlsx, all of which would force a multi-hour Qt build from source; Qt
       # is provided prebuilt above instead.
+# Persist vcpkg's source-tarball downloads across runs. They are content-
+      # addressed (SHA512-verified), so reuse is safe, and accumulating them
+      # means transient 504s on GitHub's archive endpoint converge to success
+      # instead of re-downloading everything each run. Saved on every outcome
+      # (if: always) so partial progress is never lost.
+      - name: Restore vcpkg downloads cache
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\vcpkg\downloads
+          key: vcpkg-downloads-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vcpkg-downloads-
+
       # Retry to ride out transient 504s from GitHub's archive endpoint on the
-      # larger source tarballs (e.g. HDF5). vcpkg is incremental, so each retry
-      # resumes from the package that failed to download.
+      # source tarballs. vcpkg is incremental, so each retry resumes from the
+      # package that failed to download.
       - name: Install dependencies via vcpkg
         shell: pwsh
         run: |
@@ -81,6 +94,13 @@ jobs:
             Write-Host "vcpkg install failed (exit $code); retrying in 30s..."
             Start-Sleep -Seconds 30
           }
+
+      - name: Save vcpkg downloads cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: C:\vcpkg\downloads
+          key: vcpkg-downloads-${{ github.run_id }}-${{ github.run_attempt }}
 
       # --- Configure / Build / Test ------------------------------------------
       - name: Configure
