@@ -31,17 +31,12 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     hostEdit_->setToolTip("IP or hostname where the PLC's ADS router listens "
                           "(TCP 48898). For a local TwinCAT use 127.0.0.1.");
     netIdLabel_ = new QLabel("AMS NetId:", this);
-    netIdEdit_  = new QLineEdit("127.0.0.1.1.1", this);
+    netIdEdit_  = new QLineEdit(this);
     netIdEdit_->setMaximumWidth(160);
-    netIdEdit_->setToolTip("Target's AMS NetId (NOT its IP). Shown in the "
-                           "TwinCAT system tray, e.g. 5.123.45.67.1.1.");
-    localNetIdLabel_ = new QLabel("Local NetId:", this);
-    localNetIdEdit_  = new QLineEdit(this);
-    localNetIdEdit_->setMaximumWidth(160);
-    localNetIdEdit_->setPlaceholderText("auto");
-    localNetIdEdit_->setToolTip("Our source AMS NetId. The PLC must have a "
-                                "route for it (else ADS error 6). Leave blank "
-                                "to auto-derive <our-ip>.1.1.");
+    netIdEdit_->setPlaceholderText("local PLC");
+    netIdEdit_->setToolTip("Target PLC's AMS NetId (NOT its IP), e.g. "
+                           "5.123.45.67.1.1. Leave blank to use the local "
+                           "TwinCAT on the host above.");
     portLabel_  = new QLabel("Port:", this);
     portSpin_   = new QSpinBox(this);
     portSpin_->setRange(1, 65535);
@@ -61,8 +56,6 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     topBar->addWidget(hostEdit_);
     topBar->addWidget(netIdLabel_);
     topBar->addWidget(netIdEdit_);
-    topBar->addWidget(localNetIdLabel_);
-    topBar->addWidget(localNetIdEdit_);
     topBar->addWidget(portLabel_);
     topBar->addWidget(portSpin_);
     topBar->addWidget(connectBtn_);
@@ -78,8 +71,6 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
         hostEdit_->setVisible(isAds);
         netIdLabel_->setVisible(isAds);
         netIdEdit_->setVisible(isAds);
-        localNetIdLabel_->setVisible(isAds);
-        localNetIdEdit_->setVisible(isAds);
         portLabel_->setVisible(isAds);
         portSpin_->setVisible(isAds);
     };
@@ -125,10 +116,9 @@ void RecorderWidget::onConnectClicked() {
     }
 
     scope::core::AdsRoute route;
-    route.host       = hostEdit_->text().trimmed();
-    route.netId      = netIdEdit_->text().trimmed();
-    route.localNetId = localNetIdEdit_->text().trimmed();
-    route.port       = static_cast<std::uint16_t>(portSpin_->value());
+    route.host  = hostEdit_->text().trimmed();
+    route.netId = netIdEdit_->text().trimmed();
+    route.port  = static_cast<std::uint16_t>(portSpin_->value());
 
     QString err;
     if (!client_->connect(route, &err)) {

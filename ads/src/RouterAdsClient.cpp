@@ -286,8 +286,10 @@ bool RouterAdsClient::connect(const AdsRoute& route, QString* errorOut) {
         return false;
     };
 
-    // Parse target NetId "a.b.c.d.e.f".
-    {
+    // Parse target NetId "a.b.c.d.e.f". Empty → use the router's own NetId
+    // (resolved from the port-connect reply) so a local PLC needs no NetId.
+    const bool autoLocalNetId = route.netId.trimmed().isEmpty();
+    if (!autoLocalNetId) {
         int n[6] = {0};
         if (std::sscanf(route.netId.toStdString().c_str(), "%d.%d.%d.%d.%d.%d",
                         &n[0], &n[1], &n[2], &n[3], &n[4], &n[5]) != 6)
@@ -297,7 +299,8 @@ bool RouterAdsClient::connect(const AdsRoute& route, QString* errorOut) {
     impl_->tgtPort = route.port;
 
     const QString host = route.host.trimmed().isEmpty()
-        ? route.netId.section('.', 0, 3) : route.host.trimmed();
+        ? (autoLocalNetId ? QString("127.0.0.1") : route.netId.section('.', 0, 3))
+        : route.host.trimmed();
 
     // Resolve + connect to the router (TCP 48898).
     addrinfo hints{}; hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
@@ -330,6 +333,9 @@ bool RouterAdsClient::connect(const AdsRoute& route, QString* errorOut) {
         std::memcpy(impl_->srcNet.data(), r.data(), 6);
         impl_->srcPort = g16(r.data() + 6);
     }
+
+    // For a local PLC with no NetId given, target the router's own NetId.
+    if (autoLocalNetId) impl_->tgtNet = impl_->srcNet;
 
     impl_->connected = true;
     impl_->reader = std::thread([this] { impl_->readerLoop(); });

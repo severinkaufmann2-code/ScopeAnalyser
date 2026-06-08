@@ -50,8 +50,6 @@ private:
     QLineEdit*       hostEdit_;
     QLabel*          netIdLabel_;
     QLineEdit*       netIdEdit_;
-    QLabel*          localNetIdLabel_;
-    QLineEdit*       localNetIdEdit_;
     QLabel*          portLabel_;
     QSpinBox*        portSpin_;
     QPushButton*     connectBtn_;
