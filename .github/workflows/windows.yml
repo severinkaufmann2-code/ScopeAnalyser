@@ -1,0 +1,117 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+
+    env:
+      # RelWithDebInfo mirrors the project's "windows-release" preset.
+      BUILD_TYPE: RelWithDebInfo
+      VCPKG_TRIPLET: x64-windows
+      QT_VERSION: 6.7.3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- Toolchain ----------------------------------------------------------
+      # CMake (>=3.24 required by the project) + Ninja, pinned recent versions.
+      - name: Install CMake & Ninja
+        uses: lukka/get-cmake@latest
+
+      # MSVC compiler environment (cl, link) on PATH for the Ninja generator.
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Prebuilt Qt6 instead of building it from source via vcpkg. Provides
+      # Core/Gui/Widgets/PrintSupport/Concurrent/Test (all in qtbase). The
+      # action puts Qt's bin on PATH and exports QT_ROOT_DIR for CMake.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          cache: true
+
+      # --- vcpkg (classic mode) ----------------------------------------------
+      # Bootstrap vcpkg without touching the manifest. We deliberately install
+      # only the libraries that CMake resolves through find_package(); the rest
+      # (HighFive, exprtk, QCustomPlot, ConcurrentQueue, Beckhoff ADS, mdflib)
+      # are pulled in by FetchContent at configure time.
+      #
+      # NOTE: we do NOT use manifest mode here. vcpkg.json lists qtbase /
+      # qcustomplot / qxlsx, all of which would force a multi-hour Qt build from
+      # source; Qt is provided prebuilt above instead.
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          runVcpkgInstall: false
+
+      - name: Install dependencies via vcpkg
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_ROOT/vcpkg" install --triplet $env:VCPKG_TRIPLET `
+            "hdf5[cpp,zlib]" `
+            spdlog `
+            nlohmann-json `
+            gtest `
+            zlib `
+            expat
+
+      # --- Configure / Build / Test ------------------------------------------
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=$env:VCPKG_TRIPLET `
+            -DVCPKG_MANIFEST_MODE=OFF `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Test
+        shell: pwsh
+        env:
+          # No display on the runner; render Qt widgets off-screen.
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build -C $env:BUILD_TYPE --output-on-failure
+
+      # --- Package ------------------------------------------------------------
+      # windeployqt copies the Qt runtime DLLs/plugins next to each executable;
+      # the vcpkg toolchain already deployed the non-Qt DLLs (applocal). The
+      # result under build/bin is a self-contained, runnable set of binaries.
+      - name: Deploy Qt runtime
+        shell: pwsh
+        run: |
+          $windeployqt = Join-Path $env:QT_ROOT_DIR "bin\windeployqt.exe"
+          Get-ChildItem build\bin\*.exe |
+            Where-Object { $_.Name -notlike "*test*" } |
+            ForEach-Object {
+              Write-Host "Deploying $($_.Name)"
+              & $windeployqt --release --no-translations --no-compiler-runtime $_.FullName
+            }
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScopeAnalyser-windows-x64
+          path: build/bin/
+          if-no-files-found: error
