@@ -22,7 +22,9 @@ if(MSVC)
     # <windows.h> (pulled in by the Beckhoff ADS lib) defines min/max macros
     # that clobber std::min/std::max; NOMINMAX disables them. WIN32_LEAN_AND_MEAN
     # trims the header and avoids the winsock.h/winsock2.h clash.
-    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+    # _USE_MATH_DEFINES makes <cmath> expose M_PI etc. (MSVC omits them by
+    # default, unlike glibc).
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _USE_MATH_DEFINES)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
