@@ -109,46 +109,65 @@ std::vector<ChanMeta> parseChannels(const QByteArray& xml) {
     return out;
 }
 
-// Within a data block, find the offset where the full-resolution sub-segment
-// chain begins, by validating that [FILETIME][count][count*rec] repeats
-// consistently. `rec` = 4 (ts) + value size.
+// Length (in sub-segments) of the [FILETIME][count][count*rec] chain starting
+// at `off`, or 0 if `off` is not a valid chain head.
+int chainLen(const std::byte* b, std::size_t n, std::uint64_t lo, std::uint64_t hi,
+             std::size_t rec, std::size_t off) {
+    std::size_t o = off;
+    int segs = 0;
+    while (o + 12 <= n) {
+        const std::uint64_t ft = rd<std::uint64_t>(b + o);
+        const std::uint32_t cnt = rd<std::uint32_t>(b + o + 8);
+        if (ft < lo || ft > hi || cnt == 0 || cnt > 1'000'000) break;
+        const std::size_t next = o + 12 + static_cast<std::size_t>(cnt) * rec;
+        if (next > n) { segs++; break; }   // last (possibly clamped) segment
+        o = next;
+        if (++segs >= 64) break;           // enough to be confident
+    }
+    return segs;
+}
+
+// Find where the full-resolution sub-segment chain begins. The data may sit
+// far into the block (after a min/max overview layer), so scan the whole
+// block, but cheaply: only attempt to validate at offsets whose first 8 bytes
+// look like a plausible FILETIME.
 std::size_t findChainStart(const std::byte* b, std::size_t n,
-                           std::uint64_t startFT, std::uint64_t endFT,
-                           std::size_t rec) {
-    const std::uint64_t lo = startFT > 10'000'000ULL ? startFT - 10'000'000ULL : 0;
-    const std::uint64_t hi = endFT + 2'000'000'000ULL;  // +200 ms slack
-    const std::size_t scanEnd = std::min<std::size_t>(n, 4096);
-    for (std::size_t off = 43; off + 12 <= scanEnd; ++off) {
-        std::size_t o = off;
-        int segs = 0;
-        bool ok = true;
-        while (o + 12 <= n) {
-            const std::uint64_t ft = rd<std::uint64_t>(b + o);
-            const std::uint32_t cnt = rd<std::uint32_t>(b + o + 8);
-            if (ft < lo || ft > hi || cnt == 0 || cnt > 1'000'000) { ok = false; break; }
-            const std::size_t next = o + 12 + static_cast<std::size_t>(cnt) * rec;
-            if (next > n) { segs++; break; }  // last (possibly clamped) segment
-            o = next;
-            segs++;
-            if (segs >= 64) break;            // enough to be confident
-        }
-        if (ok && segs >= 2) return off;
+                           std::uint64_t lo, std::uint64_t hi, std::size_t rec) {
+    for (std::size_t off = 43; off + 12 <= n; ++off) {
+        const std::uint64_t ft = rd<std::uint64_t>(b + off);
+        if (ft < lo || ft > hi) continue;
+        if (chainLen(b, n, lo, hi, rec, off) >= 4) return off;
     }
     return 0;
 }
 
 // Decode one channel's data block into (timestamps, raw value bytes).
-bool decodeBlock(const std::byte* b, std::size_t n, DataType dt,
+// `dt` is taken as a hint from the XML; if it doesn't yield a valid sub-segment
+// chain (or no XML was present) the value size is auto-detected.
+bool decodeBlock(const std::byte* b, std::size_t n, DataType& dt,
                  std::vector<TimestampNs>& ts, std::vector<std::byte>& vals) {
     if (n < 43) return false;
     const std::uint64_t startFT = rd<std::uint64_t>(b + 11);
     const std::uint64_t segEndFT = rd<std::uint64_t>(b + 35);
-    const std::size_t vsize = sizeOf(dt);
-    const std::size_t rec = 4 + vsize;
+    const std::uint64_t lo = startFT > 10'000'000ULL ? startFT - 10'000'000ULL : 0;
+    const std::uint64_t hi = segEndFT + 2'000'000'000ULL;  // +200 ms slack
     const TimestampNs endNs = filetimeToUnixNs(segEndFT);
 
-    const std::size_t start = findChainStart(b, n, startFT, segEndFT, rec);
-    if (start == 0) return false;
+    std::size_t vsize = sizeOf(dt);
+    std::size_t start = findChainStart(b, n, lo, hi, 4 + vsize);
+    if (start == 0) {
+        // Auto-detect: pick the value size whose chain reaches furthest.
+        static constexpr DataType kGuess[] = {DataType::Float64, DataType::Float32,
+                                              DataType::Int16, DataType::Bool};
+        int best = 0;
+        for (DataType g : kGuess) {
+            const std::size_t s = findChainStart(b, n, lo, hi, 4 + sizeOf(g));
+            const int len = s ? chainLen(b, n, lo, hi, 4 + sizeOf(g), s) : 0;
+            if (len > best) { best = len; dt = g; vsize = sizeOf(g); start = s; }
+        }
+        if (start == 0) return false;
+    }
+    const std::size_t rec = 4 + vsize;
 
     std::size_t o = start;
     while (o + 12 <= n) {

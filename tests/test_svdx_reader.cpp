@@ -43,3 +43,37 @@ TEST(SvdxReader, DecodesTwinCatBitChannel) {
         }
     }
 }
+
+// Local-only: verify REAL64 decoding against a full TwinCAT recording. The
+// 649 MB file is too large to commit, so this skips unless it's present in
+// the working tree. The expected values are the first ActVelo samples from
+// the matching TwinCAT CSV export (TestScope2.csv).
+TEST(SvdxReader, DecodesReal64ChannelIfBigFilePresent) {
+    const std::filesystem::path path =
+        std::filesystem::path(SVDX_TEST_DATA_DIR) / ".." / ".." /
+        "040626_Test_In10HminSchritteBis150Hmin.svdx";
+    if (!std::filesystem::exists(path))
+        GTEST_SKIP() << "big sample not present: " << path.string();
+
+    QString err;
+    auto chans = readSvdx(path, &err);
+    ASSERT_FALSE(chans.empty()) << err.toStdString();
+
+    const std::vector<double> expected{
+        -0.014977340885399332, -0.01524553118508775, -0.027307922355041477,
+        -0.021174928990280131, -0.0174325739674399,  -0.0038614194296103712};
+
+    bool found = false;
+    for (const auto& sig : chans) {
+        if (sig->meta().dataType != DataType::Float64) continue;
+        const auto v = sig->readAsDouble();
+        for (std::size_t i = 0; i + expected.size() <= v.size() && !found; ++i) {
+            bool all = true;
+            for (std::size_t j = 0; j < expected.size(); ++j)
+                if (std::abs(v[i + j] - expected[j]) > 1e-9) { all = false; break; }
+            if (all) found = true;
+        }
+        if (found) break;
+    }
+    EXPECT_TRUE(found) << "ActVelo REAL64 sample sequence not found in any channel";
+}
