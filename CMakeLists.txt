@@ -77,7 +77,12 @@ FetchContent_MakeAvailable(qcustomplot)
 add_library(qcustomplot STATIC ${qcustomplot_SOURCE_DIR}/qcustomplot.cpp)
 target_include_directories(qcustomplot PUBLIC ${qcustomplot_SOURCE_DIR})
 target_link_libraries(qcustomplot PUBLIC Qt6::Widgets Qt6::PrintSupport Qt6::Gui)
-target_compile_definitions(qcustomplot PUBLIC QCUSTOMPLOT_USE_LIBRARY)
+# Do NOT define QCUSTOMPLOT_USE_LIBRARY: that is for consuming a *shared*
+# QCustomPlot and expands QCP_LIB_DECL to __declspec(dllimport), which on MSVC
+# makes compiling the static lib's own .cpp fail (C2491, "definition of
+# dllimport static data member"). On Linux the macro is empty, so it was a
+# latent Windows-only bug. With it undefined the decl is empty and the static
+# lib builds on every platform.
 add_library(qcustomplot::qcustomplot ALIAS qcustomplot)
 
 # QXlsx is added in Phase 4 when the Excel converter source is implemented.
