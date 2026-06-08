@@ -19,6 +19,12 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 if(MSVC)
     add_compile_options(/W4 /permissive- /Zc:__cplusplus)
+    # <windows.h> (pulled in by the Beckhoff ADS lib) defines min/max macros
+    # that clobber std::min/std::max; NOMINMAX disables them. WIN32_LEAN_AND_MEAN
+    # trims the header and avoids the winsock.h/winsock2.h clash.
+    # _USE_MATH_DEFINES makes <cmath> expose M_PI etc. (MSVC omits them by
+    # default, unlike glibc).
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _USE_MATH_DEFINES)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -50,6 +56,11 @@ set(HIGHFIVE_USE_BOOST OFF CACHE BOOL "" FORCE)
 set(HIGHFIVE_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 set(HIGHFIVE_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(HIGHFIVE_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+# The C++20-concepts code path (only for prettier errors) is broken on MSVC:
+# the PropertyInterface concept calls the private Property::apply, which MSVC's
+# concept evaluation rejects, so DataSetCreateProps::add() finds no overload.
+# Disable it to use the SFINAE fallback, which compiles on every platform.
+set(HIGHFIVE_HAS_CONCEPTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(HighFive
     GIT_REPOSITORY https://github.com/BlueBrain/HighFive.git
     GIT_TAG        v2.10.0
@@ -73,7 +84,12 @@ FetchContent_MakeAvailable(qcustomplot)
 add_library(qcustomplot STATIC ${qcustomplot_SOURCE_DIR}/qcustomplot.cpp)
 target_include_directories(qcustomplot PUBLIC ${qcustomplot_SOURCE_DIR})
 target_link_libraries(qcustomplot PUBLIC Qt6::Widgets Qt6::PrintSupport Qt6::Gui)
-target_compile_definitions(qcustomplot PUBLIC QCUSTOMPLOT_USE_LIBRARY)
+# Do NOT define QCUSTOMPLOT_USE_LIBRARY: that is for consuming a *shared*
+# QCustomPlot and expands QCP_LIB_DECL to __declspec(dllimport), which on MSVC
+# makes compiling the static lib's own .cpp fail (C2491, "definition of
+# dllimport static data member"). On Linux the macro is empty, so it was a
+# latent Windows-only bug. With it undefined the decl is empty and the static
+# lib builds on every platform.
 add_library(qcustomplot::qcustomplot ALIAS qcustomplot)
 
 # QXlsx is added in Phase 4 when the Excel converter source is implemented.
@@ -82,10 +98,19 @@ add_library(qcustomplot::qcustomplot ALIAS qcustomplot)
 # xlsx lib, or Qt-from-source) when we get there.
 
 # Beckhoff/ADS — open-source ADS-over-TCP client (Linux + Windows).
+# Force a static build: ADS defaults to BUILD_SHARED_LIBS=ON but has no
+# dllexport markup, so on Windows the DLL ships no import lib and our exes
+# fail to link (LNK1104: cannot open ads.lib). Setting this before the
+# subproject also stops its option(BUILD_SHARED_LIBS ON) from leaking out.
+set(BUILD_SHARED_LIBS OFF)
 FetchContent_Declare(beckhoff_ads
     GIT_REPOSITORY https://github.com/Beckhoff/ADS.git
     GIT_TAG        master
-    GIT_SHALLOW    TRUE)
+    GIT_SHALLOW    TRUE
+    # ADS unconditionally adds AdsTool / AdsLibTest / example subdirs we don't
+    # use; on Windows their executables fail to link (cannot find ads.lib).
+    # EXCLUDE_FROM_ALL builds only the `ads` library our code links.
+    EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(beckhoff_ads)
 
 # mdflib — open-source C++ library for ASAM MDF 4.x (.mf4) read/write.

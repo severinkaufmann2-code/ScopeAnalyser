@@ -13,11 +13,24 @@
 
 namespace scope::core {
 
-// AMS NetId, e.g. "5.123.45.67.1.1". Port is the ADS port number (851 for
-// the first PLC task by default).
+// Connection target for an ADS-over-TCP client.
+//
+// `host` and `netId` are independent: `host` is where we open the TCP/ADS
+// connection (an IPv4 address or hostname, e.g. "127.0.0.1" or a PLC's IP),
+// while `netId` is the AMS routing address of the target (e.g.
+// "5.123.45.67.1.1"). They are NOT interchangeable — a PLC's AMS NetId rarely
+// equals its IP. If `host` is empty we fall back to the NetId's first four
+// octets for backwards compatibility.
+//
+// `localNetId` is our own source AMS NetId. The target must have a route
+// configured for it, otherwise it cannot send ADS replies back (ADS error 6,
+// "target port not found"). Leave empty to let the library auto-derive
+// "<our-ip>.1.1".
 struct AdsRoute {
-    QString netId;
-    std::uint16_t port{851};
+    QString host;             // target IP / hostname for the TCP connection
+    QString netId;            // target AMS NetId, e.g. "5.123.45.67.1.1"
+    std::uint16_t port{851};  // ADS port (851 = first TC3 PLC task)
+    QString localNetId;       // our source AMS NetId (optional; see above)
 };
 
 // One entry from the symbol upload (`ADSIGRP_SYM_UPLOAD`).

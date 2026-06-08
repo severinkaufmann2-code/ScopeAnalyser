@@ -64,6 +64,7 @@ TEST(Mdf4Session, RoundTripFloat64) {
         EXPECT_NEAR(vals[i], values[i], 1e-9);
     }
 
+    session.reset();  // close the file before removing it (Windows locks open files)
     std::filesystem::remove(path);
 }
 
@@ -96,6 +97,7 @@ TEST(Mdf4Session, DomainAttributeRoundTrip) {
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded[0]->meta().domain, Signal::Domain::Frequency);
 
+    session.reset();  // close the file before removing it (Windows locks open files)
     std::filesystem::remove(path);
 }
 
@@ -139,6 +141,7 @@ TEST(Mdf4Session, TwoChannelsRoundTrip) {
     EXPECT_EQ(a->sampleCount(), 3u);
     EXPECT_EQ(b->sampleCount(), 3u);
 
+    session.reset();  // close the file before removing it (Windows locks open files)
     std::filesystem::remove(path);
 }
 
@@ -323,6 +326,7 @@ TEST(Mdf4Session, SignalIOSaveFileFirstChannelHasValues) {
     check("BBB_second", v2);
     check("CCC_third",  v3);
 
+    session.reset();  // close the file before removing it (Windows locks open files)
     std::filesystem::remove(path);
 }
 
@@ -574,5 +578,6 @@ TEST(Mdf4Session, ManyChannelsRoundTripValuesMatch) {
         }
     }
 
+    session.reset();  // close the file before removing it (Windows locks open files)
     std::filesystem::remove(path);
 }

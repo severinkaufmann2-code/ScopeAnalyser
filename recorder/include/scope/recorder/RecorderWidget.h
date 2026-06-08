@@ -46,6 +46,8 @@ private:
     std::unique_ptr<RecordingSession> session_;
 
     QComboBox*       sourceCombo_;
+    QLabel*          hostLabel_;
+    QLineEdit*       hostEdit_;
     QLabel*          netIdLabel_;
     QLineEdit*       netIdEdit_;
     QLabel*          portLabel_;

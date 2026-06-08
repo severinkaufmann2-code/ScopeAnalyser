@@ -25,9 +25,18 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     sourceCombo_ = new QComboBox(this);
     sourceCombo_->addItem("Demo (Mock)");
     sourceCombo_->addItem("ADS over TCP");
+    hostLabel_ = new QLabel("Target IP/host:", this);
+    hostEdit_  = new QLineEdit("127.0.0.1", this);
+    hostEdit_->setMaximumWidth(140);
+    hostEdit_->setToolTip("IP or hostname where the PLC's ADS router listens "
+                          "(TCP 48898). For a local TwinCAT use 127.0.0.1.");
     netIdLabel_ = new QLabel("AMS NetId:", this);
-    netIdEdit_  = new QLineEdit("127.0.0.1.1.1", this);
-    netIdEdit_->setMaximumWidth(180);
+    netIdEdit_  = new QLineEdit(this);
+    netIdEdit_->setMaximumWidth(160);
+    netIdEdit_->setPlaceholderText("local PLC");
+    netIdEdit_->setToolTip("Target PLC's AMS NetId (NOT its IP), e.g. "
+                           "5.123.45.67.1.1. Leave blank to use the local "
+                           "TwinCAT on the host above.");
     portLabel_  = new QLabel("Port:", this);
     portSpin_   = new QSpinBox(this);
     portSpin_->setRange(1, 65535);
@@ -43,6 +52,8 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     auto* topBar = new QHBoxLayout();
     topBar->addWidget(new QLabel("Source:", this));
     topBar->addWidget(sourceCombo_);
+    topBar->addWidget(hostLabel_);
+    topBar->addWidget(hostEdit_);
     topBar->addWidget(netIdLabel_);
     topBar->addWidget(netIdEdit_);
     topBar->addWidget(portLabel_);
@@ -56,6 +67,8 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
 
     auto applySourceVisibility = [this]{
         const bool isAds = sourceCombo_->currentText() == "ADS over TCP";
+        hostLabel_->setVisible(isAds);
+        hostEdit_->setVisible(isAds);
         netIdLabel_->setVisible(isAds);
         netIdEdit_->setVisible(isAds);
         portLabel_->setVisible(isAds);
@@ -103,6 +116,7 @@ void RecorderWidget::onConnectClicked() {
     }
 
     scope::core::AdsRoute route;
+    route.host  = hostEdit_->text().trimmed();
     route.netId = netIdEdit_->text().trimmed();
     route.port  = static_cast<std::uint16_t>(portSpin_->value());
 

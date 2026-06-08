@@ -110,20 +110,33 @@ BeckhoffOpenAdsClient::~BeckhoffOpenAdsClient() { disconnect(); }
 
 bool BeckhoffOpenAdsClient::connect(const AdsRoute& route, QString* errorOut) {
     try {
+        // Our source AMS NetId. The target needs a route back to it; if the
+        // caller pins it here, the user can configure that route deterministically.
+        if (!route.localNetId.trimmed().isEmpty()) {
+            AdsSetLocalAddress(AmsNetId{route.localNetId.trimmed().toStdString()});
+        }
+
         AmsNetId netId{route.netId.toStdString()};
-        // The IP argument is the route target IP. For NetIds of the form
-        // "x.y.z.w.1.1" the IP is the first four octets.
-        impl_->device = std::make_unique<AdsDevice>(
-            route.netId.section('.', 0, 3).toStdString(),
-            netId,
-            route.port);
+
+        // TCP target host. Prefer the explicit host; only fall back to the
+        // NetId's first four octets when no host was given (legacy behaviour).
+        const QString host = route.host.trimmed();
+        const std::string target = host.isEmpty()
+            ? route.netId.section('.', 0, 3).toStdString()
+            : host.toStdString();
+
+        impl_->device = std::make_unique<AdsDevice>(target, netId, route.port);
         impl_->route = route;
         impl_->connected = true;
+        spdlog::info("ADS connected: host={} netId={} port={} localNetId={}",
+                     target, route.netId.toStdString(), route.port,
+                     route.localNetId.toStdString());
         return true;
     } catch (const std::exception& e) {
         if (errorOut) *errorOut = QString::fromUtf8(e.what());
-        spdlog::error("ADS connect({}:{}): {}",
-                      route.netId.toStdString(), route.port, e.what());
+        spdlog::error("ADS connect(host={} netId={} port={}): {}",
+                      route.host.toStdString(), route.netId.toStdString(),
+                      route.port, e.what());
         impl_->device.reset();
         impl_->connected = false;
         return false;
@@ -285,8 +298,7 @@ bool BeckhoffOpenAdsClient::read(std::uint32_t indexGroup,
 
 }  // namespace scope::ads
 
-namespace scope::core {
-std::unique_ptr<IAdsClient> makeDefaultAdsClient() {
-    return std::make_unique<scope::ads::BeckhoffOpenAdsClient>();
-}
-}  // namespace scope::core
+// makeDefaultAdsClient() now lives in RouterAdsClient.cpp — the AMS/TCP
+// router-client is the default because it works against the TwinCAT 4026
+// router (the open-source peer-router path here does not). BeckhoffOpenAdsClient
+// is kept available for callers that explicitly want the peer-router lib.

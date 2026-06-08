@@ -1,0 +1,159 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+
+    env:
+      # RelWithDebInfo mirrors the project's "windows-release" preset.
+      BUILD_TYPE: RelWithDebInfo
+      VCPKG_TRIPLET: x64-windows
+      QT_VERSION: 6.7.3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- Toolchain ----------------------------------------------------------
+      # CMake (>=3.24 required by the project) + Ninja, pinned recent versions.
+      - name: Install CMake & Ninja
+        uses: lukka/get-cmake@latest
+
+      # MSVC compiler environment (cl, link) on PATH for the Ninja generator.
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Prebuilt Qt6 instead of building it from source via vcpkg. Provides
+      # Core/Gui/Widgets/PrintSupport/Concurrent/Test (all in qtbase). The
+      # action puts Qt's bin on PATH and exports QT_ROOT_DIR for CMake.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          cache: true
+
+      # --- vcpkg (classic mode) ----------------------------------------------
+      # Use the vcpkg already installed on the runner (VCPKG_INSTALLATION_ROOT)
+      # in CLASSIC mode. We deliberately install only the libraries that CMake
+      # resolves through find_package(); the rest (HighFive, exprtk, QCustomPlot,
+      # ConcurrentQueue, Beckhoff ADS, mdflib) are pulled in by FetchContent at
+      # configure time.
+      #
+      # NOTE: we do NOT use manifest mode. vcpkg.json lists qtbase / qcustomplot
+      # / qxlsx, all of which would force a multi-hour Qt build from source; Qt
+      # is provided prebuilt above instead.
+# Persist vcpkg's source-tarball downloads across runs. They are content-
+      # addressed (SHA512-verified), so reuse is safe, and accumulating them
+      # means transient 504s on GitHub's archive endpoint converge to success
+      # instead of re-downloading everything each run. Saved on every outcome
+      # (if: always) so partial progress is never lost.
+      - name: Restore vcpkg downloads cache
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\vcpkg\downloads
+          key: vcpkg-downloads-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vcpkg-downloads-
+
+      # Retry to ride out transient 504s from GitHub's archive endpoint on the
+      # source tarballs. vcpkg is incremental, so each retry resumes from the
+      # package that failed to download.
+      - name: Install dependencies via vcpkg
+        shell: pwsh
+        run: |
+          $attempts = 12
+          for ($i = 1; $i -le $attempts; $i++) {
+            Write-Host "::group::vcpkg install (attempt $i/$attempts)"
+            & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install --classic --triplet $env:VCPKG_TRIPLET `
+              "hdf5[cpp,zlib]" `
+              spdlog `
+              nlohmann-json `
+              gtest `
+              zlib `
+              expat
+            $code = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($code -eq 0) { break }
+            if ($i -eq $attempts) { throw "vcpkg install failed after $attempts attempts" }
+            Write-Host "vcpkg install failed (exit $code); retrying in 30s..."
+            Start-Sleep -Seconds 30
+          }
+
+      - name: Save vcpkg downloads cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: C:\vcpkg\downloads
+          key: vcpkg-downloads-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # --- Configure / Build / Test ------------------------------------------
+      - name: Configure
+        shell: pwsh
+        run: |
+          # vcpkg's hdf5 has no module-mode wrapper, so point the stock
+          # FindHDF5 module at the vcpkg prefix (also used by HighFive). Use
+          # forward slashes — a backslash path (C:\vcpkg) trips CMake 4.x's
+          # "invalid character escape" when FindHDF5 re-emits it.
+          $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT".Replace('\', '/')
+          $hdf5Root = "$vcpkgRoot/installed/$env:VCPKG_TRIPLET"
+          $qtRoot = "$env:QT_ROOT_DIR".Replace('\', '/')
+          # Search both the vcpkg install prefix (spdlog / nlohmann_json / gtest
+          # config packages) and Qt explicitly, so config-mode discovery does
+          # not depend on the toolchain's implicit prefix.
+          $prefix = "$hdf5Root;$qtRoot"
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE="$env:BUILD_TYPE" `
+            -DCMAKE_TOOLCHAIN_FILE="$vcpkgRoot/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET="$env:VCPKG_TRIPLET" `
+            -DVCPKG_MANIFEST_MODE=OFF `
+            -DHDF5_ROOT="$hdf5Root" `
+            -DCMAKE_PREFIX_PATH="$prefix" `
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }}
+
+      - name: Test
+        shell: pwsh
+        env:
+          # No display on the runner; render Qt widgets off-screen.
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build -C $env:BUILD_TYPE --output-on-failure
+
+      # --- Package ------------------------------------------------------------
+      # windeployqt copies the Qt runtime DLLs/plugins next to each executable;
+      # the vcpkg toolchain already deployed the non-Qt DLLs (applocal). The
+      # result under build/bin is a self-contained, runnable set of binaries.
+      - name: Deploy Qt runtime
+        shell: pwsh
+        run: |
+          $windeployqt = Join-Path $env:QT_ROOT_DIR "bin\windeployqt.exe"
+          Get-ChildItem build\bin\*.exe |
+            Where-Object { $_.Name -notlike "*test*" } |
+            ForEach-Object {
+              Write-Host "Deploying $($_.Name)"
+              & $windeployqt --release --no-translations --no-compiler-runtime $_.FullName
+            }
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScopeAnalyser-windows-x64
+          path: build/bin/
+          if-no-files-found: error

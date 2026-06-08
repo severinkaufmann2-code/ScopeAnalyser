@@ -1,10 +1,12 @@
 set(ADS_HEADERS
     include/scope/ads/BeckhoffOpenAdsClient.h
+    include/scope/ads/RouterAdsClient.h
     include/scope/ads/MockAdsClient.h
 )
 
 set(ADS_SOURCES
     src/BeckhoffOpenAdsClient.cpp
+    src/RouterAdsClient.cpp
     src/MockAdsClient.cpp
 )
 
