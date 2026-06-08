@@ -118,6 +118,7 @@ TEST(MockPipeline, RecordsBothChannelsToHdf5) {
         }
     }
     EXPECT_EQ(found, 2u);
+    reader.reset();  // close the file before removing it (Windows locks open files)
     std::filesystem::remove(path);
 }
 

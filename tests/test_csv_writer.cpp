@@ -177,6 +177,7 @@ TEST(CsvWriter, PerSignalUsesFHzForFrequencyDomain) {
     // First data row's X should be 0 (not subtracted-from-anything).
     std::string firstRow; std::getline(in, firstRow);
     EXPECT_EQ(firstRow.substr(0, 1), "0") << firstRow;
+    in.close();  // close before removing (Windows locks open files)
     std::filesystem::remove(path);
 }
 
@@ -221,6 +222,7 @@ TEST(CsvWriter, SharedMixedDomainGetsTwoXColumns) {
     std::string r;
     while (std::getline(in, r)) { if (!r.empty()) ++dataRows; }
     EXPECT_EQ(dataRows, 5);
+    in.close();  // close before removing (Windows locks open files)
     std::filesystem::remove(path);
 }
 
@@ -254,6 +256,7 @@ TEST(CsvWriter, MetadataHeaderEmittedByDefault) {
     EXPECT_NE(firstLine.find("\"x_frequency\""), std::string::npos);
     EXPECT_NE(firstLine.find("\"FFT_speed\""), std::string::npos);
     EXPECT_NE(firstLine.find("\"MAIN.fSpeed\""), std::string::npos);
+    in.close();  // close before removing (Windows locks open files)
     std::filesystem::remove(path);
 }
 
@@ -418,5 +421,6 @@ TEST(CsvWriter, MetadataHeaderCanBeDisabled) {
     std::string firstLine; std::getline(in, firstLine);
     // No metadata line — first line is the column header.
     EXPECT_NE(firstLine.find("t [s]"), std::string::npos) << firstLine;
+    in.close();  // close before removing (Windows locks open files)
     std::filesystem::remove(path);
 }

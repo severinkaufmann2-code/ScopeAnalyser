@@ -51,6 +51,7 @@ TEST(Hdf5Session, RoundTripFloat64) {
     EXPECT_EQ(loaded[0]->meta().dataType, DataType::Float64);
     EXPECT_EQ(loaded[0]->sampleCount(), 100u);
 
+    session.reset();  // close the file before removing it (Windows locks open files)
     std::filesystem::remove(path);
 }
 
@@ -82,6 +83,7 @@ TEST(Hdf5Session, DomainAttributeRoundTrip) {
     EXPECT_EQ(loaded[0]->meta().domain, Signal::Domain::Frequency);
     EXPECT_EQ(loaded[0]->sampleCount(), 3u);
 
+    session.reset();  // close the file before removing it (Windows locks open files)
     std::filesystem::remove(path);
 }
 
