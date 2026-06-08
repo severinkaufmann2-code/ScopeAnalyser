@@ -61,7 +61,7 @@ jobs:
       - name: Install dependencies via vcpkg
         shell: pwsh
         run: |
-          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet $env:VCPKG_TRIPLET `
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install --classic --triplet $env:VCPKG_TRIPLET `
             "hdf5[cpp,zlib]" `
             spdlog `
             nlohmann-json `
