@@ -103,7 +103,8 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=$env:VCPKG_TRIPLET `
             -DVCPKG_MANIFEST_MODE=OFF `
             -DHDF5_ROOT="$hdf5Root" `
-            -DCMAKE_PREFIX_PATH="$prefix"
+            -DCMAKE_PREFIX_PATH="$prefix" `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }}
