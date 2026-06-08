@@ -43,6 +43,12 @@ constexpr std::uint16_t kTcpData = 0x0000, kTcpPortConnect = 0x1000;
 constexpr std::uint32_t kAdsigrpSymUploadInfo2 = 0xF00F;
 constexpr std::uint32_t kAdsigrpSymUpload = 0xF00B;
 
+// AMS notification timestamps are Windows FILETIMEs (100 ns ticks since 1601).
+// Convert to ns since the Unix epoch. NB: scaling the raw FILETIME by 100
+// overflows int64 (a 2026 FILETIME is ~1.34e17, ×100 ≈ 1.34e19 > INT64_MAX),
+// so subtract the epoch offset first.
+constexpr std::uint64_t kFiletimeUnixDiff = 116444736000000000ULL;
+
 #pragma pack(push, 1)
 struct SymbolEntryHeader {
     std::uint32_t entryLength;
@@ -259,7 +265,9 @@ struct RouterAdsClient::Impl {
                 }
                 if (cb) {
                     AdsSample smp;
-                    smp.plcTimestampNs = static_cast<TimestampNs>(ft) * 100;
+                    smp.plcTimestampNs = ft >= kFiletimeUnixDiff
+                        ? static_cast<TimestampNs>((ft - kFiletimeUnixDiff) * 100ULL)
+                        : 0;
                     smp.hostTimestampNs = nowNs();
                     smp.data = std::span<const std::byte>(
                         reinterpret_cast<const std::byte*>(d.data() + o), size);
