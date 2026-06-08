@@ -49,23 +49,19 @@ jobs:
           cache: true
 
       # --- vcpkg (classic mode) ----------------------------------------------
-      # Bootstrap vcpkg without touching the manifest. We deliberately install
-      # only the libraries that CMake resolves through find_package(); the rest
-      # (HighFive, exprtk, QCustomPlot, ConcurrentQueue, Beckhoff ADS, mdflib)
-      # are pulled in by FetchContent at configure time.
+      # Use the vcpkg already installed on the runner (VCPKG_INSTALLATION_ROOT)
+      # in CLASSIC mode. We deliberately install only the libraries that CMake
+      # resolves through find_package(); the rest (HighFive, exprtk, QCustomPlot,
+      # ConcurrentQueue, Beckhoff ADS, mdflib) are pulled in by FetchContent at
+      # configure time.
       #
-      # NOTE: we do NOT use manifest mode here. vcpkg.json lists qtbase /
-      # qcustomplot / qxlsx, all of which would force a multi-hour Qt build from
-      # source; Qt is provided prebuilt above instead.
-      - name: Set up vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          runVcpkgInstall: false
-
+      # NOTE: we do NOT use manifest mode. vcpkg.json lists qtbase / qcustomplot
+      # / qxlsx, all of which would force a multi-hour Qt build from source; Qt
+      # is provided prebuilt above instead.
       - name: Install dependencies via vcpkg
         shell: pwsh
         run: |
-          & "$env:VCPKG_ROOT/vcpkg" install --triplet $env:VCPKG_TRIPLET `
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet $env:VCPKG_TRIPLET `
             "hdf5[cpp,zlib]" `
             spdlog `
             nlohmann-json `
@@ -79,7 +75,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=$env:VCPKG_TRIPLET `
             -DVCPKG_MANIFEST_MODE=OFF `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
