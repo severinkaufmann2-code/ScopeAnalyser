@@ -19,6 +19,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 if(MSVC)
     add_compile_options(/W4 /permissive- /Zc:__cplusplus)
+    # <windows.h> (pulled in by the Beckhoff ADS lib) defines min/max macros
+    # that clobber std::min/std::max; NOMINMAX disables them. WIN32_LEAN_AND_MEAN
+    # trims the header and avoids the winsock.h/winsock2.h clash.
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
