@@ -58,16 +58,29 @@ jobs:
       # NOTE: we do NOT use manifest mode. vcpkg.json lists qtbase / qcustomplot
       # / qxlsx, all of which would force a multi-hour Qt build from source; Qt
       # is provided prebuilt above instead.
+      # Retry to ride out transient 504s from GitHub's archive endpoint on the
+      # larger source tarballs (e.g. HDF5). vcpkg is incremental, so each retry
+      # resumes from the package that failed to download.
       - name: Install dependencies via vcpkg
         shell: pwsh
         run: |
-          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install --classic --triplet $env:VCPKG_TRIPLET `
-            "hdf5[cpp,zlib]" `
-            spdlog `
-            nlohmann-json `
-            gtest `
-            zlib `
-            expat
+          $attempts = 4
+          for ($i = 1; $i -le $attempts; $i++) {
+            Write-Host "::group::vcpkg install (attempt $i/$attempts)"
+            & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install --classic --triplet $env:VCPKG_TRIPLET `
+              "hdf5[cpp,zlib]" `
+              spdlog `
+              nlohmann-json `
+              gtest `
+              zlib `
+              expat
+            $code = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($code -eq 0) { break }
+            if ($i -eq $attempts) { throw "vcpkg install failed after $attempts attempts" }
+            Write-Host "vcpkg install failed (exit $code); retrying in 20s..."
+            Start-Sleep -Seconds 20
+          }
 
       # --- Configure / Build / Test ------------------------------------------
       - name: Configure
