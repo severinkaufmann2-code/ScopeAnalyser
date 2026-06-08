@@ -54,6 +54,11 @@ set(HIGHFIVE_USE_BOOST OFF CACHE BOOL "" FORCE)
 set(HIGHFIVE_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 set(HIGHFIVE_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(HIGHFIVE_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+# The C++20-concepts code path (only for prettier errors) is broken on MSVC:
+# the PropertyInterface concept calls the private Property::apply, which MSVC's
+# concept evaluation rejects, so DataSetCreateProps::add() finds no overload.
+# Disable it to use the SFINAE fallback, which compiles on every platform.
+set(HIGHFIVE_HAS_CONCEPTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(HighFive
     GIT_REPOSITORY https://github.com/BlueBrain/HighFive.git
     GIT_TAG        v2.10.0
