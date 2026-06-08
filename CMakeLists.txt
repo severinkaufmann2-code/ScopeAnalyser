@@ -148,14 +148,6 @@ if(SCOPE_BUILD_APP)
     add_subdirectory(app)
 endif()
 
-# Temporary: standalone ADS connectivity probe (open-source AdsLib) for
-# diagnosing the Recorder's TwinCAT connection. Not part of the product.
-option(SCOPE_BUILD_ADS_PROBE "Build standalone ADS connectivity probe" ON)
-if(SCOPE_BUILD_ADS_PROBE)
-    add_executable(ads_probe tools/ads_probe.cpp)
-    target_link_libraries(ads_probe PRIVATE ads)
-endif()
-
 if(SCOPE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
