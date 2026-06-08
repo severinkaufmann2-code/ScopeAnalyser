@@ -9,7 +9,12 @@ add_executable(scope_tests
     test_mock_pipeline.cpp
     test_scope_plot.cpp
     test_analyser_layout.cpp
+    test_svdx_reader.cpp
 )
+
+# Real TwinCAT Scope export used as a decode fixture (tests/data/).
+target_compile_definitions(scope_tests PRIVATE
+    SVDX_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 # test_analyser_layout.cpp drives AnalyserPlot directly; its header lives in
 # the analyser target's private ui/ dir, so expose it to the test target.

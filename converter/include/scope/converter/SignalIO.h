@@ -25,6 +25,7 @@ enum class FileFormat {
     Csv,
     Hdf5,
     Mdf4,
+    Svdx,    // TwinCAT Scope View export (read-only)
 };
 
 // Pick a format from a path's extension. ".h5"/".hdf5" → Hdf5, ".mf4" →
