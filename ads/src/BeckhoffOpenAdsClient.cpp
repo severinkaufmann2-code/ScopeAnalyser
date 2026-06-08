@@ -298,8 +298,7 @@ bool BeckhoffOpenAdsClient::read(std::uint32_t indexGroup,
 
 }  // namespace scope::ads
 
-namespace scope::core {
-std::unique_ptr<IAdsClient> makeDefaultAdsClient() {
-    return std::make_unique<scope::ads::BeckhoffOpenAdsClient>();
-}
-}  // namespace scope::core
+// makeDefaultAdsClient() now lives in RouterAdsClient.cpp — the AMS/TCP
+// router-client is the default because it works against the TwinCAT 4026
+// router (the open-source peer-router path here does not). BeckhoffOpenAdsClient
+// is kept available for callers that explicitly want the peer-router lib.
