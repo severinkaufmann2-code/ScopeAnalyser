@@ -99,7 +99,11 @@ add_library(qcustomplot::qcustomplot ALIAS qcustomplot)
 FetchContent_Declare(beckhoff_ads
     GIT_REPOSITORY https://github.com/Beckhoff/ADS.git
     GIT_TAG        master
-    GIT_SHALLOW    TRUE)
+    GIT_SHALLOW    TRUE
+    # ADS unconditionally adds AdsTool / AdsLibTest / example subdirs we don't
+    # use; on Windows their executables fail to link (cannot find ads.lib).
+    # EXCLUDE_FROM_ALL builds only the `ads` library our code links.
+    EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(beckhoff_ads)
 
 # mdflib — open-source C++ library for ASAM MDF 4.x (.mf4) read/write.
