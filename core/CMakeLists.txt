@@ -4,7 +4,6 @@ set(CORE_HEADERS
     include/scope/core/SignalStore.h
     include/scope/core/Hdf5Session.h
     include/scope/core/Mdf4Session.h
-    include/scope/core/SvdxReader.h
     include/scope/core/IAdsClient.h
 )
 
@@ -13,7 +12,6 @@ set(CORE_SOURCES
     src/SignalStore.cpp
     src/Hdf5Session.cpp
     src/Mdf4Session.cpp
-    src/SvdxReader.cpp
 )
 
 scope_add_library(scope_core

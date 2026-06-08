@@ -2,7 +2,6 @@
 
 #include "scope/core/Hdf5Session.h"
 #include "scope/core/Mdf4Session.h"
-#include "scope/core/SvdxReader.h"
 
 #include <nlohmann/json.hpp>
 
@@ -315,7 +314,6 @@ FileFormat detectFormatFromExtension(const std::filesystem::path& path) {
     const QString e = lowerExt(path);
     if (e == ".h5" || e == ".hdf5") return FileFormat::Hdf5;
     if (e == ".mf4")                return FileFormat::Mdf4;
-    if (e == ".svdx")               return FileFormat::Svdx;
     if (e == ".csv" || e == ".txt") return FileFormat::Csv;
     return FileFormat::Auto;
 }
@@ -325,13 +323,11 @@ QStringList nameFilters(FileFormat fmt) {
         case FileFormat::Csv:  return {"CSV (*.csv)", "Text (*.txt)", "All files (*)"};
         case FileFormat::Hdf5: return {"HDF5 (*.h5)", "All files (*)"};
         case FileFormat::Mdf4: return {"MDF4 (*.mf4)", "All files (*)"};
-        case FileFormat::Svdx: return {"TwinCAT Scope (*.svdx)", "All files (*)"};
         case FileFormat::Auto:
         default:
-            return {"Scope chart (*.h5 *.mf4 *.csv *.txt *.svdx)",
+            return {"Scope chart (*.h5 *.mf4 *.csv *.txt)",
                     "HDF5 (*.h5)",
                     "MDF4 (*.mf4)",
-                    "TwinCAT Scope (*.svdx)",
                     "CSV / text (*.csv *.txt)",
                     "All files (*)"};
     }
@@ -342,7 +338,6 @@ QString defaultSuffix(FileFormat fmt) {
         case FileFormat::Csv:  return "csv";
         case FileFormat::Hdf5: return "h5";
         case FileFormat::Mdf4: return "mf4";
-        case FileFormat::Svdx: return "svdx";
         case FileFormat::Auto:
         default:               return "h5";
     }
@@ -371,12 +366,6 @@ LoadResult loadFile(const std::filesystem::path& path, FileFormat fmt) {
             r.ok = !r.channels.empty() || err.isEmpty();
             return r;
         }
-        case FileFormat::Svdx: {
-            r.channels = scope::core::readSvdx(path, &err);
-            r.error = err;
-            r.ok = !r.channels.empty();
-            return r;
-        }
         case FileFormat::Csv:
             r.ok = loadCsvChart(path, &r.channels, &r.error, &r.layoutJson);
             return r;
@@ -396,9 +385,6 @@ bool saveFile(const std::filesystem::path& path,
     switch (fmt) {
         case FileFormat::Hdf5: return writeHdf5(path, channels, opts.layoutJson, errorOut);
         case FileFormat::Mdf4: return writeMdf4(path, channels, opts.layoutJson, errorOut);
-        case FileFormat::Svdx:
-            if (errorOut) *errorOut = "Writing .svdx is not supported yet (import only).";
-            return false;
         case FileFormat::Csv: {
             // Bridge the format-agnostic layout into the CSV writer's own
             // knob. SaveOptions::layoutJson wins when set so all formats are
