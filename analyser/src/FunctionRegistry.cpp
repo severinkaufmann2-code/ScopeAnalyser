@@ -99,6 +99,37 @@ std::shared_ptr<Signal> impl_Filter(const FunctionArgs& a, QString* err) {
     return makeDoubleSignal("Filter", ts, dst, signal->meta().unit);
 }
 
+// ---- HighPass(signal, tau_seconds) ----
+// 1st-order high-pass: the exact complement of the low-pass Filter — the
+// signal minus its low-passed version. Removes slow drift / DC offset and
+// passes fast changes; same -3 dB cutoff as Filter(tau). Filter(x,tau) +
+// HighPass(x,tau) reconstructs x sample-for-sample. Causal (has phase lag) —
+// wrap in filtfilt() for zero phase.
+std::shared_ptr<Signal> impl_HighPass(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 2, err, "HighPass")) return nullptr;
+    auto signal = a[0];
+    double tau = 0;
+    if (!asScalar(a[1], tau) || tau <= 0) {
+        if (err) *err = "HighPass: tau must be a positive scalar (seconds)";
+        return nullptr;
+    }
+    auto view = signal->snapshotForRead();
+    auto src  = signal->readAsDouble();
+    std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
+    std::vector<double> dst(view.count);
+    if (view.count == 0)
+        return makeDoubleSignal("HighPass", ts, dst, signal->meta().unit);
+    auto dt = samplePeriodsSec(ts);
+    double lp = src[0];     // low-pass accumulator (same recurrence as Filter)
+    dst[0] = 0.0;           // x[0] - lp == 0
+    for (std::size_t i = 1; i < view.count; ++i) {
+        const double alpha = dt[i] / (tau + dt[i]);
+        lp = alpha * src[i] + (1.0 - alpha) * lp;
+        dst[i] = src[i] - lp;
+    }
+    return makeDoubleSignal("HighPass", ts, dst, signal->meta().unit);
+}
+
 // ---- Reverse(signal) — flip the waveform in time ----
 // Values are reversed; timestamps stay ascending starting at the original
 // first timestamp, with the inter-sample spacing reversed (so a causal filter
@@ -1211,6 +1242,10 @@ void FunctionRegistry::registerBuiltins() {
     add("Filter",     "Filter(signal, tau_seconds)",
         "1st-order low-pass IIR with time constant tau (causal — has phase "
         "lag; wrap in filtfilt() for zero phase).", 2, 2, &impl_Filter);
+    add("HighPass",   "HighPass(signal, tau_seconds)",
+        "1st-order high-pass: removes slow drift / DC, passes fast changes "
+        "(complement of Filter; same cutoff). Causal — wrap in filtfilt() "
+        "for zero phase.", 2, 2, &impl_HighPass);
     add("Butterworth","Butterworth(signal, cutoff_hz, order)",
         "Digital Butterworth low-pass (uniform-rate, bilinear). order is "
         "optional (default 2). Causal — wrap in filtfilt() for zero phase.",

@@ -921,3 +921,43 @@ TEST(FormulaEngine, FiltFiltRejectsNonFilterAndBadSyntax) {
     EXPECT_FALSE(engine.evaluate("Y = filtfilt(A, 0.05)", &err));      // 1st arg not a filter name
     EXPECT_FALSE(engine.evaluate("Z = filtfilt(Filter, A)", &err));    // Filter needs tau
 }
+
+TEST(FormulaEngine, HighPassPlusLowPassReconstructsInput) {
+    SignalStore store;
+    store.add(makeSine("A", 2000, 1000.0, 7.0, 1.0));
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("LP  = Filter(A, 0.05)",   &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("HP  = HighPass(A, 0.05)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("SUM = LP + HP",           &err)) << err.toStdString();
+    auto a = store.get("A")->readAsDouble();
+    auto s = store.get("SUM")->readAsDouble();
+    ASSERT_EQ(a.size(), s.size());
+    for (std::size_t i = 0; i < a.size(); ++i) EXPECT_NEAR(s[i], a[i], 1e-9);
+}
+
+TEST(FormulaEngine, HighPassRemovesDcKeepsFastChanges) {
+    SignalStore store;
+    store.add(makeSeries("C",  std::vector<double>(500, 3.0), 100.0));
+    store.add(makeSine  ("HI", 4000, 1000.0, 200.0, 1.0));   // above cutoff
+    store.add(makeSine  ("LO", 4000, 1000.0,   1.0, 1.0));   // below cutoff
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("DC = HighPass(C,  0.05)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BH = HighPass(HI, 0.05)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BL = HighPass(LO, 0.05)", &err)) << err.toStdString();
+    auto amp = [&](const char* nm) {
+        auto v = store.get(nm)->readAsDouble();
+        double m = 0; for (std::size_t i = v.size()/2; i < v.size(); ++i) m = std::max(m, std::abs(v[i]));
+        return m;
+    };
+    EXPECT_LT(amp("DC"), 1e-6);     // DC / drift removed
+    EXPECT_GT(amp("BH"), 0.9);      // fast changes pass
+    EXPECT_LT(amp("BL"), 0.4);      // slow content attenuated
+}
+
+TEST(FormulaEngine, FiltFiltWorksWithHighPass) {
+    SignalStore store;
+    store.add(makeSine("A", 4000, 1000.0, 1.0, 1.0));
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("Z = filtfilt(HighPass, A, 0.05)", &err)) << err.toStdString();
+    EXPECT_EQ(store.get("Z")->sampleCount(), 4000u);
+}
