@@ -81,16 +81,21 @@ void RecordingSession::onDrainTick() {
         if (!s.notify || !s.signal) continue;
         const auto preCount = s.signal->sampleCount();
         const auto drained = s.notify->drainTo(*s.signal);
-        if (drained > 0 && hdf5_) {
-            auto view = s.signal->snapshotForRead();
-            QString err;
-            if (!hdf5_->appendSamples(
-                    s.signal->meta().name,
-                    view.timestamps + preCount,
-                    view.values    + preCount * s.signal->bytesPerSample(),
-                    drained, &err)) {
-                spdlog::error("HDF5 append failed: {}", err.toStdString());
+        if (drained > 0) {
+            if (hdf5_) {
+                auto view = s.signal->snapshotForRead();
+                QString err;
+                if (!hdf5_->appendSamples(
+                        s.signal->meta().name,
+                        view.timestamps + preCount,
+                        view.values    + preCount * s.signal->bytesPerSample(),
+                        drained, &err)) {
+                    spdlog::error("HDF5 append failed: {}", err.toStdString());
+                }
             }
+            // Let the Analyser (or any other view) refresh — the signal grew
+            // in place, which the store can't see on its own.
+            store_.notifyDataChanged(s.signal->meta().name);
         }
         stats.samplesReceived += s.notify->samplesReceived();
         const auto overruns = s.notify->overruns();

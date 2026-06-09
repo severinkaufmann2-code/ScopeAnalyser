@@ -142,11 +142,24 @@ std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
     auto avView = a->snapshotForRead();
     auto bvView = b->snapshotForRead();
 
+    // Inherit the domain from the non-constant operand(s) so arithmetic on
+    // frequency-domain signals (e.g. FFT magnitude * 2) stays in the
+    // Frequency view instead of silently defaulting back to Time.
+    using Domain = Signal::Domain;
+    const Domain domA = a->meta().domain;
+    const Domain domB = b->meta().domain;
+    const Domain outDomain =
+        aConst ? domB
+      : bConst ? domA
+      : (domA == Domain::Frequency || domB == Domain::Frequency)
+            ? Domain::Frequency : Domain::Time;
+
     auto makeSig = [&](const std::vector<TimestampNs>& ts,
                        const std::vector<double>& vs) {
         Signal::Meta m;
         m.dataType = DataType::Float64;
         m.name = opName;
+        m.domain = outDomain;
         auto s = std::make_shared<Signal>(m);
         s->append(ts.data(),
                   reinterpret_cast<const std::byte*>(vs.data()),
@@ -360,15 +373,52 @@ struct Parser {
 
 struct FormulaEngine::Impl {
     scope::core::SignalStore& store;
+    // Derived channel name -> expression (RHS only). `order` keeps the
+    // definition sequence so recomputeAll evaluates dependencies first in
+    // the common case; it also falls back to a multi-pass loop.
+    QHash<QString, QString> formulas;
+    QStringList             order;
+    bool                    recomputing{false};
+    QMetaObject::Connection removedConn;
+
     explicit Impl(scope::core::SignalStore& s) : store(s) {}
+
+    void setFormula(const QString& name, const QString& expr) {
+        formulas.insert(name, expr);
+        order.removeAll(name);
+        order.append(name);
+    }
 };
+
+// Deep-copy a signal's data + meta into a fresh, independently-owned Signal.
+// Used so a bare-reference formula (`Out = speed`) doesn't re-register and
+// mutate the store-owned source signal under a new name.
+static std::shared_ptr<Signal> cloneSignal(const std::shared_ptr<Signal>& src) {
+    auto view = src->snapshotForRead();
+    auto copy = std::make_shared<Signal>(src->meta());
+    if (view.count > 0) {
+        copy->append(view.timestamps, view.values, view.count);
+    }
+    return copy;
+}
 
 FormulaEngine::FormulaEngine(scope::core::SignalStore& store)
     : impl_(std::make_unique<Impl>(store)) {
     FunctionRegistry::instance();  // force builtin registration
+    // When a channel is removed from the store, drop any formula we held
+    // for it. During a recompute the store emits channelRemoved as part of
+    // an insert-or-replace; evaluate() re-records the formula *after* the
+    // store add, so the definition isn't lost in that case.
+    impl_->removedConn = QObject::connect(
+        &store, &scope::core::SignalStore::channelRemoved,
+        &store, [this](const QString& name) {
+            if (!impl_->recomputing) forget(name);
+        });
 }
 
-FormulaEngine::~FormulaEngine() = default;
+FormulaEngine::~FormulaEngine() {
+    QObject::disconnect(impl_->removedConn);
+}
 
 bool FormulaEngine::evaluate(const QString& sourceLine, QString* errorOut) {
     EvalCtx ctx{impl_->store, errorOut};
@@ -390,13 +440,76 @@ bool FormulaEngine::evaluate(const QString& sourceLine, QString* errorOut) {
     auto result = parser.parseExpr();
     if (!result) return false;
 
+    // A bare channel reference (`Out = speed`) returns the store-owned
+    // source signal itself. Re-registering it under `outName` would mutate
+    // the original's meta and alias the two — clone first so they stay
+    // independent.
+    for (const auto& n : impl_->store.channelNames()) {
+        if (impl_->store.get(n) == result) { result = cloneSignal(result); break; }
+    }
+
     // Register the result under the user's chosen name.
     auto meta = result->meta();
     meta.name = outName;
     meta.sourceSymbol = sourceLine.trimmed();
     result->setMeta(meta);
     impl_->store.add(result);
+
+    // Record the definition *after* the store add: add() emits
+    // channelRemoved (on replace) which our handler turns into forget(),
+    // so recording here keeps the entry that the user just (re-)defined.
+    impl_->setFormula(outName, exprPart.trimmed());
     return true;
+}
+
+QString FormulaEngine::formulaFor(const QString& name) const {
+    return impl_->formulas.value(name);
+}
+
+void FormulaEngine::rememberFormula(const QString& name, const QString& expr) {
+    if (expr.trimmed().isEmpty()) return;
+    impl_->setFormula(name, expr.trimmed());
+}
+
+void FormulaEngine::forget(const QString& name) {
+    impl_->formulas.remove(name);
+    impl_->order.removeAll(name);
+}
+
+bool FormulaEngine::isRecomputing() const { return impl_->recomputing; }
+
+int FormulaEngine::recomputeAll(QStringList* errorsOut) {
+    if (impl_->recomputing) return 0;
+    impl_->recomputing = true;
+
+    QStringList pending = impl_->order;  // snapshot; evaluate() mutates order
+    QHash<QString, QString> lastErr;
+    int total = 0;
+    bool progress = true;
+    while (progress && !pending.isEmpty()) {
+        progress = false;
+        QStringList stillPending;
+        for (const auto& name : pending) {
+            const QString expr = impl_->formulas.value(name);
+            if (expr.isEmpty()) continue;  // forgotten mid-loop
+            QString err;
+            if (evaluate(name + " = " + expr, &err)) {
+                ++total;
+                progress = true;
+            } else {
+                lastErr.insert(name, err);
+                stillPending.append(name);
+            }
+        }
+        pending = std::move(stillPending);
+    }
+    if (errorsOut) {
+        for (const auto& name : pending)
+            *errorsOut << QString("%1: %2").arg(name, lastErr.value(name));
+    }
+
+    impl_->recomputing = false;
+    return total;
 }
 
 }  // namespace scope::analyser

@@ -36,9 +36,18 @@ public:
     QStringList channelNames() const;
     std::size_t size() const;
 
+    // A Signal grows in place via Signal::append() (e.g. the recorder's
+    // drain loop), which the store can't observe on its own. The owner of
+    // the growing signal calls this so views (Analyser) can refresh.
+    // Safe to call when `name` isn't in the store — it just emits.
+    void notifyDataChanged(const QString& name) { emit channelDataChanged(name); }
+
 signals:
     void channelAdded(QString name);
     void channelRemoved(QString name);
+    // Emitted when an existing channel's sample data changed (appended /
+    // recomputed) without the channel itself being added or removed.
+    void channelDataChanged(QString name);
 
 private:
     mutable std::shared_mutex mtx_;

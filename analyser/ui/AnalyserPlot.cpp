@@ -25,6 +25,7 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextStream>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -227,15 +228,36 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         redrawForActiveChannels();
     });
 
+    // A new/replaced source fires channelAdded, which may feed derived
+    // channels. Coalesce a burst (e.g. opening a multi-channel file) into a
+    // single recompute via a short single-shot timer.
+    recomputeTimer_ = new QTimer(this);
+    recomputeTimer_->setSingleShot(true);
+    recomputeTimer_->setInterval(0);
+    connect(recomputeTimer_, &QTimer::timeout, this, [this]{
+        engine_.recomputeAll();   // emits channelAdded → redraw via onChannelAdded
+    });
+
     connect(&store_, &scope::core::SignalStore::channelAdded,
             this, &AnalyserPlot::onChannelAdded);
     connect(&store_, &scope::core::SignalStore::channelRemoved,
             this, &AnalyserPlot::onChannelRemoved);
+    // channelDataChanged (a growing recording) is intentionally NOT wired to
+    // a redraw: the chart stays frozen while recording / streaming and only
+    // refreshes on an explicit Redraw. See redrawAll().
     connect(scope_, &scope::plot::ScopePlot::yAxesChanged,
             this, [this]{ rebuildAxisCombos(); });
 
     rebuildXyXCombo();
     rebuildTable();
+}
+
+void AnalyserPlot::scheduleRecompute() {
+    // Don't reschedule for the channelAdded emissions that recomputeAll
+    // itself produces — that would spin. start() restarts (coalesces) an
+    // already-pending timer.
+    if (recomputeTimer_ && !engine_.isRecomputing())
+        recomputeTimer_->start();
 }
 
 int AnalyserPlot::pickAxisForUnit(const QString& unit) const {
@@ -414,6 +436,9 @@ void AnalyserPlot::onChannelAdded(QString /*name*/) {
     rebuildXyXCombo();
     rebuildTable();
     redrawForActiveChannels();
+    // A new / replaced source may feed derived channels — recompute them
+    // (coalesced; a no-op while recomputeAll is the one doing the adding).
+    scheduleRecompute();
 }
 void AnalyserPlot::onChannelRemoved(QString name) {
     if (plotted_.contains(name)) {
@@ -550,7 +575,20 @@ void AnalyserPlot::applyFromDomain(scope::core::Signal::Domain d) {
     rebuildAxisCombos();
 }
 
-void AnalyserPlot::redrawAll() { redrawForActiveChannels(); }
+void AnalyserPlot::redrawAll() {
+    // The explicit, user-driven refresh. This is the single place that
+    // recomputes derived/formula channels against the current source data
+    // before redrawing — tab switches and live recording deliberately don't,
+    // so this button is how the user pulls the chart up to date.
+    QStringList errs;
+    engine_.recomputeAll(&errs);
+    if (!errs.isEmpty()) {
+        QMessageBox::warning(this, "Some formulas failed",
+            "Couldn't re-evaluate (kept any saved data as-is):\n"
+                + errs.join("\n"));
+    }
+    redrawForActiveChannels();
+}
 
 namespace {
 
@@ -787,12 +825,10 @@ scope::plot::PlotLayout AnalyserPlot::currentLayout() {
             c.name      = name;
             c.axisIndex = st.rowState.value(name, {true, 0}).second;
             c.domain    = key;
-            const QString src = sig->meta().sourceSymbol;
-            const int eq = src.indexOf('=');
-            if (eq > 0) {
-                const QString lhs = src.left(eq).trimmed();
-                if (lhs == name) c.formula = src.mid(eq + 1).trimmed();
-            }
+            // The engine is the authoritative record of a channel's formula.
+            // Scraping sourceSymbol used to drop the formula whenever a
+            // reopened file (e.g. CSV) had overwritten it.
+            c.formula   = engine_.formulaFor(name);
             chans.append(std::move(c));
         }
         layout.channelsByDomain.insert(key, chans);
@@ -844,23 +880,26 @@ void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout) {
     loadDomain(Domain::Frequency, "frequency");
 
     // ---- Re-evaluate formula channels --------------------------------
-    QStringList formulaErrors;
+    // Register every formula with the engine first, then recompute the
+    // whole set. This (a) recomputes derived channels even when their data
+    // was embedded in the file and reloaded as a plain channel — so they
+    // reflect the current sources instead of stale saved values; and
+    // (b) restores the formula definition even for formats that don't
+    // round-trip Signal::Meta::sourceSymbol, so the next save keeps it.
     const auto allLayoutChans = [&] {
         QList<scope::plot::PlotLayoutChannel> all;
         for (const auto& list : layout.channelsByDomain) all.append(list);
         return all;
     }();
     for (const auto& c : allLayoutChans) {
-        if (c.formula.isEmpty()) continue;
-        if (store_.contains(c.name)) continue;
-        QString fErr;
-        if (!engine_.evaluate(c.name + " = " + c.formula, &fErr)) {
-            formulaErrors << QString("%1: %2").arg(c.name, fErr);
-        }
+        if (!c.formula.isEmpty()) engine_.rememberFormula(c.name, c.formula);
     }
+    QStringList formulaErrors;
+    engine_.recomputeAll(&formulaErrors);
     if (!formulaErrors.isEmpty()) {
         QMessageBox::warning(this, "Some formulas failed",
-            "Couldn't re-evaluate:\n" + formulaErrors.join("\n"));
+            "Couldn't re-evaluate (kept any saved data as-is):\n"
+                + formulaErrors.join("\n"));
     }
     pendingAssignments_.clear();
     for (const auto& c : allLayoutChans) {
@@ -940,17 +979,17 @@ void AnalyserPlot::editChannelDialog() {
     auto sig = store_.get(name);
     if (!sig) return;
 
-    // Formula-derived channels have sourceSymbol set to "<name> = <expr>"
-    // by FormulaEngine::evaluate. Anything else (recorded / imported)
-    // doesn't have an editable formula.
-    const QString src = sig->meta().sourceSymbol;
-    const int eq = src.indexOf('=');
-    QString origName, expr;
-    if (eq > 0) {
-        origName = src.left(eq).trimmed();
-        expr     = src.mid(eq + 1).trimmed();
+    // The engine is the source of truth for formulas (survives a reopen
+    // even when the file format dropped sourceSymbol). Fall back to
+    // scraping sourceSymbol for anything it doesn't know about.
+    QString expr = engine_.formulaFor(name);
+    if (expr.isEmpty()) {
+        const QString src = sig->meta().sourceSymbol;
+        const int eq = src.indexOf('=');
+        if (eq > 0 && src.left(eq).trimmed() == name)
+            expr = src.mid(eq + 1).trimmed();
     }
-    if (origName.isEmpty() || expr.isEmpty() || origName != name) {
+    if (expr.isEmpty()) {
         QMessageBox::information(this, "Not a formula channel",
             QString("'%1' wasn't created with a formula, so there's "
                     "nothing to edit here. Use Remove + Add to replace "
@@ -959,7 +998,7 @@ void AnalyserPlot::editChannelDialog() {
     }
 
     AddChannelDialog dlg(store_, engine_, this);
-    dlg.setEditMode(origName, expr);
+    dlg.setEditMode(name, expr);
     dlg.exec();
 }
 

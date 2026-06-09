@@ -11,6 +11,7 @@
 class QCPAbstractPlottable;
 class QComboBox;
 class QTableWidget;
+class QTimer;
 
 namespace scope::plot { class ScopePlot; }
 
@@ -59,6 +60,13 @@ private:
 
     void rebuildTable();
     void redrawForActiveChannels();
+
+    // Coalesced reaction to store activity: channelAdded (a new/replaced
+    // source) may feed dependent formula channels, so re-evaluate them via a
+    // short single-shot timer that collapses a burst (e.g. opening a
+    // multi-channel file) into one recompute.
+    void scheduleRecompute();
+    QTimer* recomputeTimer_{nullptr};
     void rebuildAxisCombos();
     void onAxisComboChanged(int row, int axisIndex);
     void onVisibilityChanged(int row);

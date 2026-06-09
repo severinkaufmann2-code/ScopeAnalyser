@@ -2,7 +2,9 @@
 
 #include "scope/core/SignalStore.h"
 
+#include <QHash>
 #include <QString>
+#include <QStringList>
 
 #include <memory>
 
@@ -31,7 +33,36 @@ public:
 
     // Compile + run an assignment of the form `OutName = <expr>` and write
     // the result as a derived Signal into the store. Returns false on error.
+    // On success the (name -> expression) pair is remembered so the channel
+    // can be re-saved and recomputed later.
     bool evaluate(const QString& sourceLine, QString* errorOut = nullptr);
+
+    // ---- Formula registry --------------------------------------------
+    // The engine is the source of truth for which channels are derived and
+    // by what expression. This survives a save/reopen even when the file
+    // format doesn't round-trip Signal::Meta::sourceSymbol (e.g. CSV), so
+    // formulas aren't silently dropped on the next save.
+
+    // Expression (RHS only, no "name =") for a derived channel, or empty.
+    QString formulaFor(const QString& name) const;
+
+    // Record a formula without evaluating it (used when reopening a file
+    // whose sources aren't available yet — keeps the definition so it can
+    // be saved again and recomputed once sources appear).
+    void rememberFormula(const QString& name, const QString& expr);
+
+    // Forget a derived channel's formula (e.g. when it's removed).
+    void forget(const QString& name);
+
+    // Re-evaluate every remembered formula against the current store, in
+    // dependency order (multi-pass: a formula that references another
+    // formula resolves once its dependency has been recomputed). Returns
+    // the number successfully (re-)evaluated; failures are reported via
+    // errorsOut and their definitions are retained. No-op (returns 0) when
+    // already recomputing, so it's safe to call from store change handlers.
+    int recomputeAll(QStringList* errorsOut = nullptr);
+
+    bool isRecomputing() const;
 
 private:
     struct Impl;
