@@ -922,12 +922,12 @@ TEST(FormulaEngine, FiltFiltRejectsNonFilterAndBadSyntax) {
     EXPECT_FALSE(engine.evaluate("Z = filtfilt(Filter, A)", &err));    // Filter needs tau
 }
 
-TEST(FormulaEngine, HighPassPlusLowPassReconstructsInput) {
+TEST(FormulaEngine, FilterHPPlusLowPassReconstructsInput) {
     SignalStore store;
     store.add(makeSine("A", 2000, 1000.0, 7.0, 1.0));
     FormulaEngine engine(store); QString err;
     ASSERT_TRUE(engine.evaluate("LP  = Filter(A, 0.05)",   &err)) << err.toStdString();
-    ASSERT_TRUE(engine.evaluate("HP  = HighPass(A, 0.05)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("HP  = FilterHP(A, 0.05)", &err)) << err.toStdString();
     ASSERT_TRUE(engine.evaluate("SUM = LP + HP",           &err)) << err.toStdString();
     auto a = store.get("A")->readAsDouble();
     auto s = store.get("SUM")->readAsDouble();
@@ -935,15 +935,15 @@ TEST(FormulaEngine, HighPassPlusLowPassReconstructsInput) {
     for (std::size_t i = 0; i < a.size(); ++i) EXPECT_NEAR(s[i], a[i], 1e-9);
 }
 
-TEST(FormulaEngine, HighPassRemovesDcKeepsFastChanges) {
+TEST(FormulaEngine, FilterHPRemovesDcKeepsFastChanges) {
     SignalStore store;
     store.add(makeSeries("C",  std::vector<double>(500, 3.0), 100.0));
     store.add(makeSine  ("HI", 4000, 1000.0, 200.0, 1.0));   // above cutoff
     store.add(makeSine  ("LO", 4000, 1000.0,   1.0, 1.0));   // below cutoff
     FormulaEngine engine(store); QString err;
-    ASSERT_TRUE(engine.evaluate("DC = HighPass(C,  0.05)", &err)) << err.toStdString();
-    ASSERT_TRUE(engine.evaluate("BH = HighPass(HI, 0.05)", &err)) << err.toStdString();
-    ASSERT_TRUE(engine.evaluate("BL = HighPass(LO, 0.05)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("DC = FilterHP(C,  0.05)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BH = FilterHP(HI, 0.05)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BL = FilterHP(LO, 0.05)", &err)) << err.toStdString();
     auto amp = [&](const char* nm) {
         auto v = store.get(nm)->readAsDouble();
         double m = 0; for (std::size_t i = v.size()/2; i < v.size(); ++i) m = std::max(m, std::abs(v[i]));
@@ -954,10 +954,31 @@ TEST(FormulaEngine, HighPassRemovesDcKeepsFastChanges) {
     EXPECT_LT(amp("BL"), 0.4);      // slow content attenuated
 }
 
-TEST(FormulaEngine, FiltFiltWorksWithHighPass) {
+TEST(FormulaEngine, FiltFiltWorksWithFilterHP) {
     SignalStore store;
     store.add(makeSine("A", 4000, 1000.0, 1.0, 1.0));
     FormulaEngine engine(store); QString err;
-    ASSERT_TRUE(engine.evaluate("Z = filtfilt(HighPass, A, 0.05)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("Z = filtfilt(FilterHP, A, 0.05)", &err)) << err.toStdString();
+    EXPECT_EQ(store.get("Z")->sampleCount(), 4000u);
+}
+
+TEST(FormulaEngine, ButterworthHighPassSeparatesBands) {
+    SignalStore store;
+    const double fs = 1000.0;
+    store.add(makeSine("LOW",  4000, fs,   5.0, 1.0));   // below cutoff → blocked
+    store.add(makeSine("HIGH", 4000, fs, 200.0, 1.0));   // above cutoff → passes
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("BL = ButterworthHP(LOW,  50, 4)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BH = ButterworthHP(HIGH, 50, 4)", &err)) << err.toStdString();
+    auto amp = [&](const char* nm) {
+        auto v = store.get(nm)->readAsDouble();
+        double m = 0; for (std::size_t i = v.size()/2; i < v.size(); ++i) m = std::max(m, std::abs(v[i]));
+        return m;
+    };
+    EXPECT_LT(amp("BL"), 0.1);    // low frequency blocked
+    EXPECT_GT(amp("BH"), 0.9);    // high frequency passes
+    // and it composes in filtfilt for a zero-phase high-pass
+    ASSERT_TRUE(engine.evaluate("Z = filtfilt(ButterworthHP, HIGH, 50, 4)", &err))
+        << err.toStdString();
     EXPECT_EQ(store.get("Z")->sampleCount(), 4000u);
 }

@@ -357,14 +357,14 @@ struct Parser {
                     if (!expect(Tok::RParen, ") in filtfilt")) return nullptr;
 
                     auto isFilterable = [](const QString& fn) {
-                        return fn == "Filter" || fn == "HighPass"
-                            || fn == "Butterworth"
-                            || fn == "Mean"   || fn == "RMS";
+                        return fn == "Filter"      || fn == "FilterHP"
+                            || fn == "Butterworth" || fn == "ButterworthHP"
+                            || fn == "Mean"        || fn == "RMS";
                     };
                     if (!isFilterable(innerName)) {
                         setErr(ctx, QString("filtfilt: '%1' can't be applied "
-                            "zero-phase (use Filter, HighPass, Butterworth, "
-                            "Mean or RMS)").arg(innerName));
+                            "zero-phase (use Filter, FilterHP, Butterworth, "
+                            "ButterworthHP, Mean or RMS)").arg(innerName));
                         return nullptr;
                     }
                     auto* inner = FunctionRegistry::instance().find(innerName);
