@@ -360,12 +360,13 @@ struct Parser {
                         return fn == "Filter"      || fn == "FilterHP"
                             || fn == "PT"          || fn == "Butterworth"
                             || fn == "Cheby1"      || fn == "Cheby2"
-                            || fn == "Mean"        || fn == "RMS";
+                            || fn == "Elliptic"    || fn == "Mean"
+                            || fn == "RMS";
                     };
                     if (!isFilterable(innerName)) {
                         setErr(ctx, QString("filtfilt: '%1' can't be applied "
                             "zero-phase (use Filter, FilterHP, PT, Butterworth, "
-                            "Cheby1, Cheby2, Mean or RMS)").arg(innerName));
+                            "Cheby1, Cheby2, Elliptic, Mean or RMS)").arg(innerName));
                         return nullptr;
                     }
                     auto* inner = FunctionRegistry::instance().find(innerName);

@@ -134,6 +134,7 @@ bool filterPreviewSpec(const QString& fn, QString& family, int& band,
     if (fn == "Butterworth") { family = "Butterworth"; band = 0; orders = {2, 4, 8}; return true; }
     if (fn == "Cheby1")      { family = "Cheby1";      band = 0; orders = {2, 4, 8}; return true; }
     if (fn == "Cheby2")      { family = "Cheby2";      band = 0; orders = {2, 4, 8}; return true; }
+    if (fn == "Elliptic")    { family = "Elliptic";    band = 0; orders = {2, 4, 8}; return true; }
     return false;
 }
 
@@ -171,6 +172,7 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
     familyCombo_->addItem("Butterworth", "Butterworth");
     familyCombo_->addItem("Chebyshev I", "Cheby1");
     familyCombo_->addItem("Chebyshev II", "Cheby2");
+    familyCombo_->addItem("Elliptic (Cauer)", "Elliptic");
     bandCombo_ = new QComboBox(this);
     orderSpin_ = new QSpinBox(this); orderSpin_->setRange(1, 8); orderSpin_->setValue(2);
     orderLabel_ = new QLabel("Order:", this);
@@ -190,6 +192,10 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
     rippleSpin_->setRange(0.01, 120.0); rippleSpin_->setDecimals(2); rippleSpin_->setValue(1.0);
     rippleSpin_->setSuffix(" dB");
     rippleLabel_ = new QLabel("Ripple:", this);
+    rippleStopSpin_ = new QDoubleSpinBox(this);
+    rippleStopSpin_->setRange(0.01, 200.0); rippleStopSpin_->setDecimals(2); rippleStopSpin_->setValue(40.0);
+    rippleStopSpin_->setSuffix(" dB");
+    rippleStopLabel_ = new QLabel("Stop atten:", this);
     insertBtn_ = new QPushButton("Insert formula", this);
 
     auto* g = new QGridLayout(builder);
@@ -201,7 +207,8 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
     g->addWidget(tauLabel_,    gr, 0); g->addWidget(tauSpin_,    gr++, 1);
     g->addWidget(f1Label_,     gr, 0); g->addWidget(f1Spin_,     gr++, 1);
     g->addWidget(f2Label_,     gr, 0); g->addWidget(f2Spin_,     gr++, 1);
-    g->addWidget(rippleLabel_, gr, 0); g->addWidget(rippleSpin_, gr++, 1);
+    g->addWidget(rippleLabel_,     gr, 0); g->addWidget(rippleSpin_,     gr++, 1);
+    g->addWidget(rippleStopLabel_, gr, 0); g->addWidget(rippleStopSpin_, gr++, 1);
     g->addWidget(insertBtn_,   gr, 0, 1, 2);
 
     auto* leftBox = new QWidget(this);
@@ -265,6 +272,8 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
             this, [this](int){ onBuilderChanged(); });
     connect(rippleSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double){ onBuilderChanged(); });
+    connect(rippleStopSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double){ onBuilderChanged(); });
     connect(insertBtn_, &QPushButton::clicked, this, &AddChannelDialog::onInsertFilter);
     connect(funcList_, &QListWidget::itemEntered, this, &AddChannelDialog::onFunctionHovered);
     connect(funcList_, &QListWidget::currentItemChanged, this,
@@ -316,7 +325,8 @@ void AddChannelDialog::buildHelp() {
 
 void AddChannelDialog::rebuildBandCombo() {
     const QString fam = familyCombo_->currentData().toString();
-    const bool iir = (fam == "Butterworth" || fam == "Cheby1" || fam == "Cheby2");
+    const bool iir = (fam == "Butterworth" || fam == "Cheby1"
+                      || fam == "Cheby2" || fam == "Elliptic");
     bandCombo_->blockSignals(true);
     bandCombo_->clear();
     bandCombo_->addItem("Low-pass", 0);
@@ -331,20 +341,27 @@ void AddChannelDialog::rebuildBandCombo() {
 void AddChannelDialog::onBuilderChanged() {
     const QString fam = familyCombo_->currentData().toString();
     const int band = bandCombo_->currentData().toInt();
-    const bool iir = (fam == "Butterworth" || fam == "Cheby1" || fam == "Cheby2");
+    const bool iir = (fam == "Butterworth" || fam == "Cheby1"
+                      || fam == "Cheby2" || fam == "Elliptic");
     const bool isFirstOrder = (fam == "Filter");
     const bool isBandType = (band == 2 || band == 3);
-    const bool hasRipple = (fam == "Cheby1" || fam == "Cheby2");
+    const bool isElliptic = (fam == "Elliptic");
+    // rippleSpin_ shows the passband ripple for Cheby1 / Elliptic, or the stop
+    // attenuation for Cheby2. rippleStopSpin_ (Elliptic only) is the stop atten.
+    const bool hasRipple = (fam == "Cheby1" || fam == "Cheby2" || isElliptic);
 
     orderLabel_->setVisible(!isFirstOrder);  orderSpin_->setVisible(!isFirstOrder);
     tauLabel_->setVisible(!iir);             tauSpin_->setVisible(!iir);
     f1Label_->setVisible(iir);               f1Spin_->setVisible(iir);
     f2Label_->setVisible(iir && isBandType); f2Spin_->setVisible(iir && isBandType);
     rippleLabel_->setVisible(hasRipple);     rippleSpin_->setVisible(hasRipple);
-    rippleLabel_->setText(fam == "Cheby2" ? "Stop atten:" : "Ripple:");
+    rippleStopLabel_->setVisible(isElliptic); rippleStopSpin_->setVisible(isElliptic);
+    rippleLabel_->setText(fam == "Cheby2" ? "Stop atten:"
+                                          : isElliptic ? "Passband Rp:" : "Ripple:");
 
     const int order = isFirstOrder ? 1 : orderSpin_->value();
-    plotResponse(fam, band, static_cast<int>(rippleSpin_->value()), {order});
+    plotResponse(fam, band, static_cast<int>(rippleSpin_->value()),
+                 static_cast<int>(rippleStopSpin_->value()), {order});
 }
 
 void AddChannelDialog::onInsertFilter() {
@@ -373,9 +390,13 @@ void AddChannelDialog::onInsertFilter() {
         else if (fam == "Cheby1")
             formula = QString("Cheby1(%1, %2, %3, %4, %5)")
                           .arg(src).arg(band).arg(order).arg(num(rippleSpin_->value()), cut);
-        else
+        else if (fam == "Cheby2")
             formula = QString("Cheby2(%1, %2, %3, %4, %5)")
                           .arg(src).arg(band).arg(order).arg(num(rippleSpin_->value()), cut);
+        else   // Elliptic — two ripple params: Rp then Rs
+            formula = QString("Elliptic(%1, %2, %3, %4, %5, %6)")
+                          .arg(src).arg(band).arg(order)
+                          .arg(num(rippleSpin_->value()), num(rippleStopSpin_->value()), cut);
     }
     formulaEdit_->setPlainText(formula);
     if (nameEdit_->text().trimmed().isEmpty())
@@ -391,23 +412,24 @@ void AddChannelDialog::onFunctionHovered(QListWidgetItem* item) {
     }
     QString family; int band = 0; std::vector<int> orders;
     if (filterPreviewSpec(name, family, band, orders)) {
-        const int rip = (family == "Cheby2") ? 40 : 1;
-        plotResponse(family, band, rip, orders);
+        const int rip = (family == "Cheby2") ? 40 : 1;   // Cheby2 spinbox is atten
+        plotResponse(family, band, rip, /*ripStopDb=*/40, orders);
     }
 }
 
 void AddChannelDialog::plotResponse(const QString& family, int band, int ripDb,
-                                    const std::vector<int>& orders) {
+                                    int ripStopDb, const std::vector<int>& orders) {
     static const std::array<QColor, 3> cols{
         QColor(31, 119, 180), QColor(255, 127, 14), QColor(44, 160, 44)};
     magPlot_->clearGraphs();
     phasePlot_->clearGraphs();
     for (std::size_t i = 0; i < orders.size(); ++i) {
         FilterPlotSpec spec;
-        spec.family = family;
-        spec.band   = band;
-        spec.order  = orders[i];
-        spec.ripple = ripDb > 0 ? ripDb : 1;
+        spec.family     = family;
+        spec.band       = band;
+        spec.order      = orders[i];
+        spec.ripple     = ripDb > 0 ? ripDb : 1;
+        spec.rippleStop = ripStopDb > ripDb ? ripStopDb : ripDb + 1;
         const auto resp = filterFreqResponse(spec);
         QVector<double> x, mdb, ph;
         x.reserve(static_cast<int>(resp.freqHz.size()));

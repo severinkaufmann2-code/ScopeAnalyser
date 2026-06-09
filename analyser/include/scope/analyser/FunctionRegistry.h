@@ -33,10 +33,11 @@ struct FunctionDescriptor {
 // rolloff steepness, ripple, phase behaviour — against a normalized frequency
 // axis (freqHz / fc). Reuses the same design pipeline the filters run.
 struct FilterPlotSpec {
-    QString family;        // "Filter", "PT", "Butterworth", "Cheby1", "Cheby2"
+    QString family;        // "Filter", "PT", "Butterworth", "Cheby1", "Cheby2", "Elliptic"
     int     band{0};       // 0=low 1=high 2=band-pass 3=band-stop
     int     order{2};
-    double  ripple{1.0};   // dB — Cheby1 passband ripple / Cheby2 stop attenuation
+    double  ripple{1.0};   // dB — Cheby1/Elliptic passband ripple / Cheby2 stop attenuation
+    double  rippleStop{40.0};  // dB — Elliptic stopband attenuation (Rs)
 };
 struct FilterFreqResponse {
     std::vector<double> freqHz;     // log-spaced grid (nominal fs)

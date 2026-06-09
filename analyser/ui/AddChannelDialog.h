@@ -60,7 +60,7 @@ private:
     void onBuilderChanged();          // refresh field visibility + preview
     void onInsertFilter();            // write the generated formula
     void onFunctionHovered(QListWidgetItem* item);  // chart the hovered filter
-    void plotResponse(const QString& family, int band, int ripDb,
+    void plotResponse(const QString& family, int band, int ripDb, int ripStopDb,
                       const std::vector<int>& orders);
 
     scope::core::SignalStore& store_;
@@ -86,6 +86,8 @@ private:
     QLabel*          f2Label_{nullptr};
     QDoubleSpinBox*  rippleSpin_{nullptr};
     QLabel*          rippleLabel_{nullptr};
+    QDoubleSpinBox*  rippleStopSpin_{nullptr};   // Elliptic stopband atten (Rs)
+    QLabel*          rippleStopLabel_{nullptr};
     QPushButton*     insertBtn_{nullptr};
 
     QListWidget*     funcList_{nullptr};

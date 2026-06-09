@@ -224,11 +224,152 @@ std::shared_ptr<Signal> impl_Reverse(const FunctionArgs& a, QString* err) {
 // The sample rate is derived from the timestamps (uniform-rate assumption).
 // Causal, so it has phase lag — wrap in filtfilt() for zero phase.
 // band: 0 = low-pass, 1 = high-pass, 2 = band-pass, 3 = band-stop.
-// family: 0 = Butterworth, 1 = Chebyshev I (rp), 2 = Chebyshev II (rs).
+// family: 0 = Butterworth, 1 = Chebyshev I (rp), 2 = Chebyshev II (rs),
+//         3 = Elliptic / Cauer (rp passband ripple + rs stop attenuation).
 using Cplx = std::complex<double>;
 
 struct Zpk { std::vector<Cplx> z, p; double k{1.0}; };
 struct SOSec { double b0, b1, b2, a1, a2; };
+
+// ---- Jacobi elliptic helpers (for the elliptic / Cauer prototype) --------
+// Complete elliptic integral K(m) of the first kind, parameter m = k^2, via
+// the arithmetic-geometric mean: K(m) = pi / (2*AGM(1, sqrt(1-m))).
+double ellipK(double m) {
+    if (m >= 1.0) return std::numeric_limits<double>::infinity();
+    if (m <= 0.0) return M_PI / 2.0;
+    double a = 1.0, b = std::sqrt(1.0 - m);
+    for (int i = 0; i < 60; ++i) {
+        const double an = 0.5 * (a + b), bn = std::sqrt(a * b);
+        if (std::abs(a - b) <= 1e-16 * a) { a = an; break; }
+        a = an; b = bn;
+    }
+    return M_PI / (2.0 * a);
+}
+
+// Jacobi elliptic functions sn/cn/dn for a real argument u and parameter
+// m = k^2 (0 <= m <= 1), via the descending Landen (AGM) transformation.
+void ellipjReal(double u, double m, double& sn, double& cn, double& dn) {
+    if (m < 1e-15) { sn = std::sin(u); cn = std::cos(u); dn = 1.0; return; }
+    if (m > 1.0 - 1e-15) {
+        const double ch = std::cosh(u);
+        sn = std::tanh(u); cn = 1.0 / ch; dn = 1.0 / ch; return;
+    }
+    double a[16], c[16];
+    a[0] = 1.0; c[0] = std::sqrt(m);
+    double b = std::sqrt(1.0 - m);
+    int n = 0;
+    for (n = 0; n < 14; ++n) {
+        if (std::abs(c[n]) < 1e-16) break;
+        a[n + 1] = 0.5 * (a[n] + b);
+        c[n + 1] = 0.5 * (a[n] - b);
+        b = std::sqrt(a[n] * b);
+    }
+    double phi = std::ldexp(a[n], n) * u;
+    for (int i = n; i > 0; --i) {
+        const double s = c[i] / a[i] * std::sin(phi);
+        phi = 0.5 * (phi + std::asin(std::clamp(s, -1.0, 1.0)));
+    }
+    sn = std::sin(phi);
+    cn = std::cos(phi);
+    dn = std::sqrt(std::max(0.0, 1.0 - m * sn * sn));
+}
+
+// Jacobi sn/cn/dn for a complex argument, via the imaginary-argument addition
+// formulas (combining the real-argument values for x with parameter m and for
+// y with the complementary parameter 1-m).
+void ellipjCplx(Cplx u, double m, Cplx& sn, Cplx& cn, Cplx& dn) {
+    double s, c, d, s1, c1, d1;
+    ellipjReal(u.real(), m, s, c, d);
+    ellipjReal(u.imag(), 1.0 - m, s1, c1, d1);
+    const double den = c1 * c1 + m * s * s * s1 * s1;
+    sn = Cplx(s * d1,        c * d * s1 * c1) / den;
+    cn = Cplx(c * c1,       -s * d * s1 * d1) / den;
+    dn = Cplx(d * c1 * d1,  -m * s * c * s1)  / den;
+}
+
+// Solve the elliptic degree equation: given order n and m1 = k1^2 (the squared
+// ratio modulus), return m = k^2 (the squared selectivity modulus) satisfying
+// n * K(k1)/K'(k1) = K(k)/K'(k). Uses the nome series (scipy's _ellipdeg).
+double ellipDeg(int n, double m1) {
+    constexpr int MM = 7;
+    const double K1 = ellipK(m1), K1p = ellipK(1.0 - m1);
+    const double q1 = std::exp(-M_PI * K1p / K1);
+    const double q  = std::pow(q1, 1.0 / n);
+    double num = 0.0, den = 0.0;
+    for (int i = 0; i <= MM; ++i)     num += std::pow(q, static_cast<double>(i * (i + 1)));
+    for (int i = 1; i <= MM + 1; ++i) den += std::pow(q, static_cast<double>(i * i));
+    const double t = num / (1.0 + 2.0 * den);
+    const double k = 4.0 * std::sqrt(q) * t * t;
+    return k * k;
+}
+
+// Inverse sn for the purely-imaginary value i/eps with parameter m1: returns
+// the real u such that sn(i*u, m1) = i/eps. Using sn(i*u,m1) = i*sc(u, 1-m1),
+// this is sc(u, 1-m1) = 1/eps, solved by bisection on u in [0, K'(m1)).
+double arcSnImag(double eps, double m1) {
+    const double m1c = 1.0 - m1;
+    const double Kc = ellipK(m1c);
+    const double target = 1.0 / eps;
+    double lo = 0.0, hi = Kc * (1.0 - 1e-13);
+    for (int it = 0; it < 200; ++it) {
+        const double um = 0.5 * (lo + hi);
+        double sn, cn, dn;
+        ellipjReal(um, m1c, sn, cn, dn);
+        if (sn / cn < target) lo = um; else hi = um;
+    }
+    return 0.5 * (lo + hi);
+}
+
+// Elliptic / Cauer analog normalized low-pass prototype (cutoff = 1 rad/s),
+// matching scipy.signal.ellipap: passband ripple rp dB, stopband attenuation
+// rs dB, finite imaginary-axis zeros and LHP poles. DC gain: odd order -> 1,
+// even order -> 10^(-rp/20) (the ripple floor).
+Zpk ellipAp(int n, double rp, double rs) {
+    Zpk r;
+    if (n == 1) {                                       // degenerates to Cheby1
+        r.p.push_back(Cplx(-std::sqrt(1.0 / (std::pow(10.0, 0.1 * rp) - 1.0)), 0.0));
+        r.k = -r.p[0].real();
+        return r;
+    }
+    const double epsSq = std::pow(10.0, 0.1 * rp) - 1.0;
+    const double eps   = std::sqrt(epsSq);
+    const double m1    = epsSq / (std::pow(10.0, 0.1 * rs) - 1.0);   // k1^2
+    const double m     = ellipDeg(n, m1);                            // k^2
+    const double capk  = ellipK(m), capk1 = ellipK(m1);
+
+    std::vector<int> jvec;                              // scipy: arange(1-n%2, n, 2)
+    for (int j = 1 - (n % 2); j < n; j += 2) jvec.push_back(j);
+
+    // Imaginary-axis zero pairs at i / (sqrt(m) * sn(j*K/n, m)).
+    for (int j : jvec) {
+        double sn, cn, dn;
+        ellipjReal(static_cast<double>(j) * capk / n, m, sn, cn, dn);
+        if (std::abs(sn) > 1e-12) {
+            const double zi = 1.0 / (std::sqrt(m) * sn);
+            r.z.push_back(Cplx(0.0, zi));
+            r.z.push_back(Cplx(0.0, -zi));
+        }
+    }
+
+    // Poles: p = i * sn(j*K/n + i*v0, m); the +i*v0 offset places them in the
+    // left half-plane (stable). For odd n the j=0 term is the lone real pole.
+    const double v0 = capk * arcSnImag(eps, m1) / (n * capk1);
+    for (int j : jvec) {
+        Cplx sn, cn, dn;
+        ellipjCplx(Cplx(static_cast<double>(j) * capk / n, v0), m, sn, cn, dn);
+        const Cplx pole = Cplx(0.0, 1.0) * sn;
+        r.p.push_back(pole);
+        if (std::abs(pole.imag()) > 1e-12) r.p.push_back(std::conj(pole));
+    }
+
+    // Gain so |H(0)| matches the prototype DC convention above.
+    Cplx num(1.0, 0.0), den(1.0, 0.0);
+    for (const auto& z : r.z) num *= -z;
+    for (const auto& p : r.p) den *= -p;
+    const double want = (n % 2 == 1) ? 1.0 : std::pow(10.0, -rp / 20.0);
+    r.k = want * std::abs(den / num);
+    return r;
+}
 
 // Analog normalized low-pass prototypes (cutoff = 1 rad/s).
 Zpk butterAp(int n) {
@@ -373,6 +514,7 @@ std::vector<SOSec> designIIR(int family, int band, int order,
                              double f1, double f2, double rp, double rs, double fs) {
     Zpk proto = (family == 1) ? cheby1Ap(order, rp)
               : (family == 2) ? cheby2Ap(order, rs)
+              : (family == 3) ? ellipAp(order, rp, rs)
                               : butterAp(order);
     auto warp = [&](double f) { return 2.0 * fs * std::tan(M_PI * f / fs); };
     Zpk a;
@@ -413,8 +555,11 @@ std::shared_ptr<Signal> applyIIR(const std::shared_ptr<Signal>& signal,
                             .arg(name).arg(fs / 2.0);
         return nullptr;
     }
-    if ((family == 1 && rp <= 0) || (family == 2 && rs <= 0)) {
-        if (err) *err = name + ": ripple / attenuation (dB) must be > 0";
+    if ((family == 1 && rp <= 0) || (family == 2 && rs <= 0)
+        || (family == 3 && (rp <= 0 || rs <= rp))) {
+        if (err) *err = (family == 3)
+            ? name + ": need passband ripple Rp > 0 and stopband Rs > Rp (dB)"
+            : name + ": ripple / attenuation (dB) must be > 0";
         return nullptr;
     }
 
@@ -480,6 +625,48 @@ std::shared_ptr<Signal> impl_Cheby1(const FunctionArgs& a, QString* err) {
 }
 std::shared_ptr<Signal> impl_Cheby2(const FunctionArgs& a, QString* err) {
     return iirCommon(a, 2, /*hasRipple=*/true, "Cheby2", err);
+}
+
+// Elliptic (Cauer) IIR — TWO ripple params (Rp passband, then Rs stop) before
+// the cutoff(s): Elliptic(signal, band, order, Rp, Rs, f1 [, f2]). iirCommon
+// only handles a single ripple param, so this has its own arg parser.
+std::shared_ptr<Signal> impl_Elliptic(const FunctionArgs& a, QString* err) {
+    constexpr const char* name = "Elliptic";
+    if (a.size() < 6 || a.size() > 7) {
+        if (err) *err = QString("%1: expected (signal, band, order, Rp, Rs, "
+                                "f1 [, f2])").arg(name);
+        return nullptr;
+    }
+    double bandD = 0, orderD = 0, rp = 0, rs = 0, f1 = 0, f2 = 0;
+    if (!asScalar(a[1], bandD) || !asScalar(a[2], orderD)) {
+        if (err) *err = QString("%1: band and order must be scalars").arg(name);
+        return nullptr;
+    }
+    const int band  = static_cast<int>(std::lround(bandD));
+    const int order = std::max(1, static_cast<int>(std::lround(orderD)));
+    if (band < 0 || band > 3) {
+        if (err) *err = QString("%1: band must be 0=LP, 1=HP, 2=BP, 3=BS").arg(name);
+        return nullptr;
+    }
+    if (!asScalar(a[3], rp) || !asScalar(a[4], rs)) {
+        if (err) *err = QString("%1: Rp and Rs (dB) must be scalars").arg(name);
+        return nullptr;
+    }
+    if (rp <= 0 || rs <= rp) {
+        if (err) *err = QString("%1: need passband ripple Rp > 0 and stopband "
+                                "Rs > Rp (dB)").arg(name);
+        return nullptr;
+    }
+    if (!asScalar(a[5], f1)) { if (err) *err = QString("%1: f1 must be a scalar").arg(name); return nullptr; }
+    const bool isBand = (band == 2 || band == 3);
+    if (isBand) {
+        if (a.size() != 7) { if (err) *err = QString("%1: band-pass/stop need f1 and f2").arg(name); return nullptr; }
+        if (!asScalar(a[6], f2)) { if (err) *err = QString("%1: f2 must be a scalar").arg(name); return nullptr; }
+    } else if (a.size() != 6) {
+        if (err) *err = QString("%1: low/high-pass take a single cutoff").arg(name);
+        return nullptr;
+    }
+    return applyIIR(a[0], /*family=*/3, band, order, f1, f2, rp, rs, name, err);
 }
 
 // ---- Integral(signal) ----
@@ -1570,6 +1757,11 @@ void FunctionRegistry::registerBuiltins() {
         "Chebyshev type II IIR — flat passband, atten_dB attenuation with "
         "ripple in the stopband. band: 0=low 1=high 2=band-pass 3=band-stop. "
         "Causal — wrap in filtfilt() for zero phase.", 5, 6, &impl_Cheby2);
+    add("Elliptic","Elliptic(signal, band, order, Rp, Rs, f1 [, f2])",
+        "Elliptic / Cauer IIR — the steepest rolloff for a given order, with "
+        "Rp dB ripple in the passband AND Rs dB attenuation in the stopband "
+        "(Rs > Rp). band: 0=low 1=high 2=band-pass 3=band-stop. Causal — wrap "
+        "in filtfilt() for zero phase.", 6, 7, &impl_Elliptic);
     add("Reverse",    "Reverse(signal)",
         "Flip the signal in time (values reversed, timestamps preserved). "
         "Reversing twice returns the original.", 1, 1, &impl_Reverse);
@@ -1720,13 +1912,17 @@ FilterFreqResponse filterFreqResponse(const FilterPlotSpec& spec, int nPoints) {
     const double f2 = isBand ? fs / 40.0  : 0.0;          // 2500 Hz
 
     const bool isIIR = (spec.family == "Butterworth"
-                        || spec.family == "Cheby1" || spec.family == "Cheby2");
+                        || spec.family == "Cheby1" || spec.family == "Cheby2"
+                        || spec.family == "Elliptic");
     std::vector<SOSec> sos;
     double alpha = 0.0; int ptN = 1; const bool ptHigh = (spec.band == 1);
     if (isIIR) {
-        const int fam = (spec.family == "Cheby1") ? 1 : (spec.family == "Cheby2") ? 2 : 0;
-        const double rp = (fam == 1) ? spec.ripple : 0.0;
-        const double rs = (fam == 2) ? spec.ripple : 0.0;
+        const int fam = (spec.family == "Cheby1")   ? 1
+                      : (spec.family == "Cheby2")   ? 2
+                      : (spec.family == "Elliptic") ? 3 : 0;
+        const double rp = (fam == 1 || fam == 3) ? spec.ripple     : 0.0;
+        const double rs = (fam == 2)             ? spec.ripple
+                        : (fam == 3)             ? spec.rippleStop : 0.0;
         sos = designIIR(fam, spec.band, std::max(1, spec.order), f1, f2, rp, rs, fs);
     } else {
         const double tau = 1.0 / (2.0 * M_PI * f1);

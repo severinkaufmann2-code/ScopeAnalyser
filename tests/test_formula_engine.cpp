@@ -1019,6 +1019,86 @@ TEST(FormulaEngine, Cheby2LowPassFlatPassbandStopAttenuation) {
     EXPECT_LT(ssAmp(store.get("PH")), 0.05);   // stopband ≤ ~10^(-40/20)=0.01
 }
 
+TEST(FormulaEngine, EllipticLowPassRippleAndStopband) {
+    SignalStore store;
+    const double fs = 1000.0;
+    store.add(makeSine("LOW",  4000, fs,   5.0, 1.0));   // deep in passband
+    store.add(makeSine("HIGH", 4000, fs, 200.0, 1.0));   // deep in stopband
+    FormulaEngine engine(store); QString err;
+    // order 4, Rp = 1 dB passband ripple, Rs = 40 dB stop atten, cutoff 50 Hz
+    ASSERT_TRUE(engine.evaluate("EL = Elliptic(LOW,  0, 4, 1, 40, 50)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("EH = Elliptic(HIGH, 0, 4, 1, 40, 50)", &err)) << err.toStdString();
+    // passband stays within the 1 dB ripple band [10^(-1/20), 1] ≈ [0.891, 1]
+    EXPECT_GT(ssAmp(store.get("EL")), 0.85);
+    EXPECT_LT(ssAmp(store.get("EL")), 1.05);
+    // stopband at 200 Hz must be at least 40 dB down (≤ 10^(-40/20) = 0.01)
+    EXPECT_LT(ssAmp(store.get("EH")), 0.01 * 1.5);
+}
+
+TEST(FormulaEngine, EllipticSteeperThanButterworth) {
+    SignalStore store;
+    const double fs = 1000.0;
+    // 80 Hz tone, just above the 50 Hz cutoff (1.6×fc) — the transition band
+    // where elliptic's much steeper rolloff shows clearly vs Butterworth.
+    store.add(makeSine("S", 4000, fs, 80.0, 1.0));
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("B = Butterworth(S, 0, 4, 50)",     &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("E = Elliptic(S, 0, 4, 1, 40, 50)", &err)) << err.toStdString();
+    // Same order → elliptic attenuates the just-past-cutoff tone far more.
+    EXPECT_LT(ssAmp(store.get("E")), ssAmp(store.get("B")));
+}
+
+TEST(FormulaEngine, EllipticBandPass) {
+    SignalStore store;
+    const double fs = 1000.0;
+    store.add(makeSine("LO",  4000, fs,   10.0, 1.0));   // below band
+    store.add(makeSine("MID", 4000, fs,   50.0, 1.0));   // inside band (40..60)
+    store.add(makeSine("HI",  4000, fs,  200.0, 1.0));   // above band
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("BPlo  = Elliptic(LO,  2, 4, 1, 40, 40, 60)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BPmid = Elliptic(MID, 2, 4, 1, 40, 40, 60)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BPhi  = Elliptic(HI,  2, 4, 1, 40, 40, 60)", &err)) << err.toStdString();
+    EXPECT_GT(ssAmp(store.get("BPmid")), 0.7);
+    EXPECT_LT(ssAmp(store.get("BPlo")),  0.2);
+    EXPECT_LT(ssAmp(store.get("BPhi")),  0.2);
+}
+
+TEST(FormulaEngine, EllipticRejectsBadArgs) {
+    SignalStore store;
+    store.add(makeSine("S", 1000, 1000.0, 5.0, 1.0));
+    FormulaEngine engine(store); QString err;
+    EXPECT_FALSE(engine.evaluate("a = Elliptic(S, 0, 4, 50)", &err));         // missing Rs + ripples
+    EXPECT_FALSE(engine.evaluate("b = Elliptic(S, 0, 4, 1, 40, 50, 60)", &err)); // LP takes one cutoff
+    EXPECT_FALSE(engine.evaluate("c = Elliptic(S, 2, 4, 1, 40, 50)", &err));  // BP needs f2
+    EXPECT_FALSE(engine.evaluate("d = Elliptic(S, 0, 4, 40, 1, 50)", &err));  // Rs must exceed Rp
+    EXPECT_TRUE (engine.evaluate("e = filtfilt(Elliptic, S, 0, 4, 1, 40, 50)", &err)) << err.toStdString();
+}
+
+TEST(FormulaEngine, FiltFiltWithEllipticIsZeroPhase) {
+    SignalStore store;
+    const int center = 500;
+    store.add(makePulse("P", 1000, center, 1000.0));
+    FormulaEngine engine(store); QString err;
+    // Zero-phase: forward+backward elliptic leaves a symmetric pulse with its
+    // peak still centered (mirrors the Butterworth filtfilt test).
+    ASSERT_TRUE(engine.evaluate("FF = filtfilt(Elliptic, P, 0, 4, 1, 40, 30)", &err))
+        << err.toStdString();
+    auto ff = store.get("FF")->readAsDouble();
+    int bestFF = 0; double bv = ff[0];
+    for (int i = 1; i < static_cast<int>(ff.size()); ++i)
+        if (ff[i] > bv) { bv = ff[i]; bestFF = i; }
+    EXPECT_NEAR(bestFF, center, 3);
+
+    // The plain causal elliptic, by contrast, lags — its peak lands later.
+    ASSERT_TRUE(engine.evaluate("CAUS = Elliptic(P, 0, 4, 1, 40, 30)", &err))
+        << err.toStdString();
+    auto cs = store.get("CAUS")->readAsDouble();
+    int bestC = 0; double cb = cs[0];
+    for (int i = 1; i < static_cast<int>(cs.size()); ++i)
+        if (cs[i] > cb) { cb = cs[i]; bestC = i; }
+    EXPECT_GT(bestC, center + 3);
+}
+
 TEST(FormulaEngine, BandPassAndBandStop) {
     SignalStore store;
     const double fs = 1000.0;
