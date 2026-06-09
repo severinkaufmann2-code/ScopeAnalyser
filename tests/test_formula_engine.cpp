@@ -1111,3 +1111,43 @@ TEST(FormulaEngine, FilterResponsePreviewSanity) {
     EXPECT_LT(magAt(rh, 0.1), -15.0);
     EXPECT_GT(magAt(rh, 10.0), -1.0);
 }
+
+TEST(FormulaEngine, FftCutKeepRoundTrip) {
+    // fs = N so 10 Hz / 100 Hz land exactly on bins → clean, no leakage/edges.
+    const double fs = 1024.0; const std::size_t n = 1024;
+    std::vector<double> vals(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const double t = i / fs;
+        vals[i] = std::sin(2*M_PI*10.0*t) + 0.5*std::sin(2*M_PI*100.0*t);
+    }
+    SignalStore store; store.add(makeSeries("X", vals, fs));
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("LO  = FFTKeep(X, 5, 15)",   &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("HI  = FFTKeep(X, 90, 110)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("CUT = FFTCut(X, 90, 110)",  &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("ALL = FFTKeep(X, 0, 520)",  &err)) << err.toStdString();
+    auto mx = [&](const char* nm) {
+        auto v = store.get(nm)->readAsDouble(); double m = 0;
+        for (double x : v) m = std::max(m, std::abs(x));
+        return m;
+    };
+    EXPECT_NEAR(mx("LO"),  1.0, 0.02);   // isolated 10 Hz tone
+    EXPECT_NEAR(mx("HI"),  0.5, 0.02);   // isolated 100 Hz tone
+    EXPECT_NEAR(mx("CUT"), 1.0, 0.02);   // 100 Hz removed → 10 Hz remains
+
+    // Keeping everything up to Nyquist is the identity (within FFT round-off).
+    auto x = store.get("X")->readAsDouble();
+    auto all = store.get("ALL")->readAsDouble();
+    ASSERT_EQ(x.size(), all.size());
+    double maxDiff = 0;
+    for (std::size_t i = 0; i < x.size(); ++i) maxDiff = std::max(maxDiff, std::abs(x[i]-all[i]));
+    EXPECT_LT(maxDiff, 1e-9);
+}
+
+TEST(FormulaEngine, FftCutKeepRejectBadArgs) {
+    SignalStore store; store.add(makeSine("S", 256, 1000.0, 10.0, 1.0));
+    FormulaEngine engine(store); QString err;
+    EXPECT_FALSE(engine.evaluate("a = FFTCut(S, 100, 50)", &err));   // f_hi <= f_lo
+    EXPECT_FALSE(engine.evaluate("b = FFTCut(S, 50)", &err));        // wrong arg count
+    EXPECT_TRUE (engine.evaluate("c = FFTKeep(S, 5, 15)", &err)) << err.toStdString();
+}

@@ -1097,6 +1097,77 @@ std::shared_ptr<Signal> impl_FFT(const FunctionArgs& a, QString* err) {
                             Signal::Domain::Frequency);
 }
 
+// ---- FFTCut / FFTKeep(signal, f_lo_hz, f_hi_hz) — frequency band edit ----
+// A self-contained, phase-preserving FFT round-trip: forward FFT (rectangular
+// window, zero-padded to a power of two, full complex spectrum kept), zero the
+// chosen band [f_lo, f_hi] (FFTCut) or everything outside it (FFTKeep) applied
+// symmetrically to the ± bins, then inverse FFT back to a time-domain signal
+// on the original timestamps. Lets the user remove / isolate frequencies and
+// return to time without leaving the formula. The inverse uses the identity
+// ifft(X) = conj(fft(conj(X)))/N, reusing the forward transform. Note: FFT
+// filtering is circular, so a non-periodic signal can show mild wrap-around at
+// the very ends.
+std::shared_ptr<Signal> fftBandEdit(const FunctionArgs& a, bool keep,
+                                    const char* who, QString* err) {
+    if (a.size() != 3) {
+        if (err) *err = QString("%1 expects (signal, f_lo_hz, f_hi_hz)").arg(who);
+        return nullptr;
+    }
+    auto signal = a[0];
+    double fLo = 0.0, fHi = 0.0;
+    if (!asScalar(a[1], fLo) || !asScalar(a[2], fHi)) {
+        if (err) *err = QString("%1: f_lo and f_hi must be scalars (Hz)").arg(who);
+        return nullptr;
+    }
+    if (fLo < 0.0 || fHi <= fLo) {
+        if (err) *err = QString("%1: need 0 <= f_lo < f_hi").arg(who);
+        return nullptr;
+    }
+    auto view = signal->snapshotForRead();
+    if (view.count < 2) {
+        if (err) *err = QString("%1: signal must have at least 2 samples").arg(who);
+        return nullptr;
+    }
+    auto src = signal->readAsDouble();
+    std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
+    const double durationSec = (ts.back() - ts.front()) * 1e-9;
+    if (durationSec <= 0.0) {
+        if (err) *err = QString("%1: non-monotonic / zero-duration time grid").arg(who);
+        return nullptr;
+    }
+    const double fs = (view.count - 1) / durationSec;
+
+    std::size_t N = 1;
+    while (N < view.count) N <<= 1;
+    std::vector<std::complex<double>> buf(N, {0.0, 0.0});
+    for (std::size_t i = 0; i < view.count; ++i) buf[i] = {src[i], 0.0};
+
+    fftRadix2(buf);
+
+    const double df = fs / static_cast<double>(N);
+    for (std::size_t k = 0; k < N; ++k) {
+        const double absF = static_cast<double>(std::min(k, N - k)) * df;  // |freq| of bin k
+        const bool inBand = (absF >= fLo && absF <= fHi);
+        if (keep ? !inBand : inBand) buf[k] = {0.0, 0.0};
+    }
+
+    // Inverse FFT: ifft(X) = conj(fft(conj(X))) / N.
+    for (auto& c : buf) c = std::conj(c);
+    fftRadix2(buf);
+    const double invN = 1.0 / static_cast<double>(N);
+    std::vector<double> out(view.count);
+    for (std::size_t i = 0; i < view.count; ++i) out[i] = std::conj(buf[i]).real() * invN;
+
+    return makeDoubleSignal(who, ts, out, signal->meta().unit, Signal::Domain::Time);
+}
+
+std::shared_ptr<Signal> impl_FFTCut(const FunctionArgs& a, QString* err) {
+    return fftBandEdit(a, /*keep=*/false, "FFTCut", err);
+}
+std::shared_ptr<Signal> impl_FFTKeep(const FunctionArgs& a, QString* err) {
+    return fftBandEdit(a, /*keep=*/true, "FFTKeep", err);
+}
+
 // ---- PeakHz(signal [, window]) — interpolated dominant peak frequency ----
 //
 // Finds the largest magnitude bin (excluding DC) and refines its location
@@ -1620,6 +1691,15 @@ void FunctionRegistry::registerBuiltins() {
         "its true amplitude. Output X axis is frequency in Hz (numerically; "
         "the chart label still shows 't [s]' — right-click to rename).",
         1, 2, &impl_FFT);
+    add("FFTCut",     "FFTCut(signal, f_lo_hz, f_hi_hz)",
+        "Remove the frequency band [f_lo, f_hi] and return to the time domain "
+        "(FFT → zero the band → inverse FFT). Phase-preserving / zero-phase. "
+        "FFT filtering is circular, so non-periodic data can wrap slightly at "
+        "the ends.", 3, 3, &impl_FFTCut);
+    add("FFTKeep",    "FFTKeep(signal, f_lo_hz, f_hi_hz)",
+        "Keep only the frequency band [f_lo, f_hi] (everything else zeroed) and "
+        "return to the time domain — the band-pass complement of FFTCut. "
+        "Phase-preserving / zero-phase.", 3, 3, &impl_FFTKeep);
     add("PeakHz",     "PeakHz(signal [, window])",
         "Dominant peak frequency in Hz, refined by parabolic interpolation "
         "between FFT bins — far more accurate than the raw bin spacing fs/N. "
