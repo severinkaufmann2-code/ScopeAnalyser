@@ -1,0 +1,133 @@
+name: Linux Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    # Build on the oldest supported Ubuntu (glibc 2.35) so the packaged
+    # binaries stay portable to older distros — mirrors why the Windows job
+    # runs on windows-2022 rather than the local toolchain.
+    runs-on: ubuntu-22.04
+
+    env:
+      # RelWithDebInfo mirrors the project's "linux-release" preset.
+      BUILD_TYPE: RelWithDebInfo
+      QT_VERSION: 6.7.3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The project resolves HDF5 / spdlog / fmt / nlohmann_json / GTest via
+      # find_package from apt on Linux (Qt comes from install-qt-action below);
+      # the rest (HighFive, exprtk, QCustomPlot, ConcurrentQueue, Beckhoff ADS,
+      # mdflib) are pulled in by FetchContent at configure time. The X / GL /
+      # xcb libraries are needed at runtime by Qt's xcb platform plugin (the
+      # off-screen tests load it) and for linuxdeploy to resolve + bundle it.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libhdf5-dev libspdlog-dev libfmt-dev nlohmann-json3-dev libgtest-dev \
+            zlib1g-dev libexpat1-dev \
+            patchelf file desktop-file-utils \
+            libgl1-mesa-dev libegl1 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xkb1
+
+      # CMake (>=3.24 required by the project) + Ninja, pinned recent versions.
+      - name: Install CMake & Ninja
+        uses: lukka/get-cmake@latest
+
+      # Prebuilt Qt6 (qtbase: Core/Gui/Widgets/PrintSupport/Concurrent/Test),
+      # pinned to the same version as the Windows job. Exports QT_ROOT_DIR.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          cache: true
+
+      # --- Configure / Build / Test ------------------------------------------
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+      - name: Build
+        run: cmake --build build --config "$BUILD_TYPE"
+
+      - name: Test
+        env:
+          # No display on the runner; render Qt widgets off-screen.
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build -C "$BUILD_TYPE" --output-on-failure
+
+      # --- Package ------------------------------------------------------------
+      # linuxdeploy bundles the Qt libraries + plugins (xcb platform etc.) into
+      # a self-contained AppDir and patches each binary's rpath to $ORIGIN so it
+      # finds the bundled Qt. All non-Qt dependencies are statically linked, so
+      # the AppDir needs nothing from the host but the base system libraries.
+      # Ship the AppDir as a tarball — it holds all four tools; run any of them
+      # from AppDir/usr/bin (or AppDir/AppRun for the shell app).
+      - name: Package (linuxdeploy)
+        run: |
+          set -eux
+          # Run the deploy-tool AppImages without FUSE (unavailable on runners).
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          ld=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
+          ldqt=https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous
+          curl -fsSL -o linuxdeploy "$ld/linuxdeploy-x86_64.AppImage"
+          curl -fsSL -o linuxdeploy-plugin-qt "$ldqt/linuxdeploy-plugin-qt-x86_64.AppImage"
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          # linuxdeploy discovers the qt plugin as "linuxdeploy-plugin-qt" on PATH.
+          export PATH="$PWD:$PATH"
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+
+          rm -rf AppDir
+          mkdir -p AppDir/usr/share/applications \
+                   AppDir/usr/share/icons/hicolor/256x256/apps
+          printf '%s\n' \
+            '[Desktop Entry]' 'Version=1.0' 'Type=Application' \
+            'Name=ScopeAnalyser' \
+            'Comment=Signal recording, analysis, and data conversion' \
+            'Exec=ScopeAnalyser' 'Icon=ScopeAnalyser' 'Terminal=false' \
+            'Categories=Science;Utility;' \
+            > AppDir/usr/share/applications/ScopeAnalyser.desktop
+          # 1x1 transparent PNG placeholder (linuxdeploy requires an icon).
+          echo 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII=' \
+            | base64 -d > AppDir/usr/share/icons/hicolor/256x256/apps/ScopeAnalyser.png
+
+          ./linuxdeploy --appdir AppDir \
+            --executable build/bin/ScopeAnalyser \
+            --executable build/bin/ScopeRecorder \
+            --executable build/bin/ScopeConverter \
+            --executable build/bin/ScopeAnalyserStandalone \
+            --desktop-file AppDir/usr/share/applications/ScopeAnalyser.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/ScopeAnalyser.png \
+            --plugin qt
+
+          tar -czf ScopeAnalyser-linux-x64.tar.gz AppDir
+          ls -lh ScopeAnalyser-linux-x64.tar.gz
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScopeAnalyser-linux-x64
+          path: ScopeAnalyser-linux-x64.tar.gz
+          if-no-files-found: error
