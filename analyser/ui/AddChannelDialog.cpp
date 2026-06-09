@@ -160,6 +160,8 @@ std::vector<double> genInput(const QString& key, std::size_t n, double dt) {
         else if (key == "step")     v[i] = (t < T / 2.0) ? 0.0 : 1.0;
         else if (key == "pulse")    v[i] = std::max(0.0, 1.0 - std::abs(t - T/2.0) / (T/10.0));
         else if (key == "multi")    v[i] = std::sin(2*M_PI*2*t) + 0.5 * std::sin(2*M_PI*20*t);
+        else if (key == "gappy")    v[i] = (i % 40 < 5) ? 0.0           // periodic dropouts
+                                                        : 0.5 + 0.5 * std::sin(2*M_PI*1.5*t);
         else                        v[i] = std::sin(2*M_PI*2*t);   // "sine" / default
     }
     return v;
@@ -191,8 +193,14 @@ ExampleSpec exampleFor(const QString& fn) {
     if (fn == "Power")      return mk("ramp",     "",     {2});
     if (fn == "Mod")        return mk("rampWide", "",     {1.0});
     if (fn == "Min" || fn == "Max")   return mk("sine", "ramp", {});
+    if (fn == "Atan2")      return mk("sine",     "ramp", {});
+    if (fn == "Replace")    return mk("step",     "",     {1.0, 0.5});
+    if (fn == "ForwardFill")return mk("gappy",    "",     {0.0});
+    if (fn == "Slice")      return mk("sine",     "",     {0.5, 2.0});
+    if (fn == "Gate")       return mk("sine",     "ramp", {0.3, 0.7});
     if (fn == "Resample")   return mk("sine",     "",     {50});
     if (fn == "FFT" || fn == "PeakHz") return mk("multi", "", {});
+    if (fn == "FFTWelch")   return mk("multi",    "step", {0.5, 1.5});
     if (fn == "FFTCut" || fn == "FFTKeep") return mk("multi", "", {15, 25});
     return {};   // ok=false
 }
@@ -298,11 +306,27 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
     setupPlot(magPlot_,   "Magnitude [dB]");
     setupPlot(phasePlot_, "Phase [deg]");
 
-    // Time-domain input→output preview for non-filter functions (linear axes).
-    ioPlot_ = new QCustomPlot(this);
-    ioPlot_->legend->setVisible(true);
-    ioPlot_->legend->setBrush(QColor(255, 255, 255, 190));
-    ioPlot_->setMinimumHeight(240);
+    // Input→output preview for non-filter functions: input (time) on top,
+    // output (time or spectrum) below — so e.g. FFT shows the two-tone in the
+    // time chart AND its spectrum.
+    auto setupIo = [](QCustomPlot* p) {
+        p->legend->setVisible(true);
+        p->legend->setBrush(QColor(255, 255, 255, 190));
+        p->setMinimumHeight(110);
+        p->xAxis->setLabel("t [s]");
+    };
+    ioInPlot_  = new QCustomPlot(this);
+    ioOutPlot_ = new QCustomPlot(this);
+    setupIo(ioInPlot_);
+    setupIo(ioOutPlot_);
+
+    auto* ioPage = new QWidget(this);
+    auto* ioLay = new QVBoxLayout(ioPage);
+    ioLay->setContentsMargins(0, 0, 0, 0);
+    ioLay->addWidget(new QLabel("input:", this));
+    ioLay->addWidget(ioInPlot_);
+    ioLay->addWidget(new QLabel("output:", this));
+    ioLay->addWidget(ioOutPlot_);
 
     // Two preview pages, toggled per hovered function: bode (filters) vs I/O.
     auto* bodePage = new QWidget(this);
@@ -313,7 +337,7 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
 
     previewStack_ = new QStackedWidget(this);
     previewStack_->addWidget(bodePage);   // index 0 — filter response
-    previewStack_->addWidget(ioPlot_);    // index 1 — input/output example
+    previewStack_->addWidget(ioPage);     // index 1 — input/output example
     previewLabel_ = new QLabel("Response (illustrative — shape only):", this);
 
     auto* rightBox = new QWidget(this);
@@ -535,8 +559,10 @@ void AddChannelDialog::plotResponse(const QString& family, int band, int ripDb,
     phasePlot_->xAxis->setRange(0.01, 100.0);
     if (fixedScale) {
         // Identical axes for every filter → directly comparable on hover.
+        // Phase is the principal value (std::arg → within ±180°), so a tight
+        // symmetric band reads well.
         magPlot_->yAxis->setRange(-90.0, 10.0);
-        phasePlot_->yAxis->setRange(-810.0, 90.0);
+        phasePlot_->yAxis->setRange(-150.0, 150.0);
     } else {
         // Builder: auto-fit the single filter being designed.
         magPlot_->yAxis->rescale();
@@ -550,9 +576,10 @@ void AddChannelDialog::plotResponse(const QString& family, int band, int ripDb,
 }
 
 void AddChannelDialog::plotExample(const QString& name) {
-    ioPlot_->clearGraphs();
+    ioInPlot_->clearGraphs();
+    ioOutPlot_->clearGraphs();
     const auto* desc = FunctionRegistry::instance().find(name);
-    if (!desc) { ioPlot_->replot(); return; }
+    if (!desc) { ioInPlot_->replot(); ioOutPlot_->replot(); return; }
 
     const std::size_t N = 300;
     const double dt = 0.01;
@@ -575,6 +602,47 @@ void AddChannelDialog::plotExample(const QString& name) {
         s->append(&t0, reinterpret_cast<const std::byte*>(&val), 1);
         return s;
     };
+    auto addCurve = [](QCustomPlot* p, const QVector<double>& x, const QVector<double>& y,
+                       const QString& nm, QColor c, int w = 1) {
+        auto* g = p->addGraph(); g->setData(x, y); g->setPen(QPen(c, w)); g->setName(nm);
+    };
+    QVector<double> tx(static_cast<int>(N));
+    for (std::size_t i = 0; i < N; ++i) tx[i] = i * dt;
+
+    // filtfilt is a parser special form (its impl is a stub), so demo it by
+    // composing the real impls: Butterworth → Reverse → Butterworth → Reverse.
+    if (name == "filtfilt") {
+        const auto in = genInput("noisy", N, dt);
+        addCurve(ioInPlot_, tx, QVector<double>(in.begin(), in.end()), "in", QColor(31, 119, 180));
+        ioInPlot_->xAxis->setLabel("t [s]"); ioInPlot_->rescaleAxes(); ioInPlot_->replot();
+        const auto* bw  = FunctionRegistry::instance().find("Butterworth");
+        const auto* rev = FunctionRegistry::instance().find("Reverse");
+        std::shared_ptr<scope::core::Signal> out;
+        if (bw && rev) {
+            auto bwArgs = [&](std::shared_ptr<scope::core::Signal> s) {
+                return FunctionArgs{s, makeConst(0), makeConst(4), makeConst(8)};
+            };
+            QString e;
+            if (auto y1 = bw->impl(bwArgs(makeSig(in)), &e))
+                if (auto r1 = rev->impl({y1}, &e))
+                    if (auto y2 = bw->impl(bwArgs(r1), &e))
+                        out = rev->impl({y2}, &e);
+        }
+        previewLabel_->setText("Input → output: filtfilt(Butterworth, …) — zero-phase");
+        if (out) {
+            const auto ov = out->readAsDouble();
+            const auto oview = out->snapshotForRead();
+            QVector<double> ox, oy;
+            for (std::size_t i = 0; i < oview.count; ++i) {
+                ox.push_back(oview.timestamps[i] / 1e9);
+                oy.push_back(i < ov.size() ? ov[i] : 0.0);
+            }
+            addCurve(ioOutPlot_, ox, oy, "out (zero-phase)", QColor(214, 39, 40), 2);
+            ioOutPlot_->xAxis->setLabel("t [s]");
+        }
+        ioOutPlot_->rescaleAxes(); ioOutPlot_->replot();
+        return;
+    }
 
     const ExampleSpec ex = exampleFor(name);
     std::vector<double> in1v, in2v;
@@ -584,71 +652,54 @@ void AddChannelDialog::plotExample(const QString& name) {
         args.push_back(makeSig(in1v));
         if (!ex.in2.isEmpty()) { in2v = genInput(ex.in2, N, dt); args.push_back(makeSig(in2v)); }
         for (double s : ex.scalars) args.push_back(makeConst(s));
-    } else if (desc->minArgs == 1 && desc->maxArgs == 1) {
-        in1v = genInput("sine", N, dt);                 // fallback: unary on a sine
+    } else if (desc->minArgs <= 1) {
+        in1v = genInput("sine", N, dt);                 // fallback: run on a sine
         args.push_back(makeSig(in1v));
     } else {
         previewLabel_->setText("Input → output example: (none for this function)");
-        ioPlot_->replot();
+        ioInPlot_->replot(); ioOutPlot_->replot();
         return;
     }
+    previewLabel_->setText("Input → output example:");
 
+    // ---- input chart (always time) ----
+    addCurve(ioInPlot_, tx, QVector<double>(in1v.begin(), in1v.end()), "in", QColor(31, 119, 180));
+    if (!in2v.empty())
+        addCurve(ioInPlot_, tx, QVector<double>(in2v.begin(), in2v.end()), "in2", QColor(44, 160, 44));
+    ioInPlot_->xAxis->setLabel("t [s]");
+    ioInPlot_->rescaleAxes(); ioInPlot_->replot();
+
+    // ---- output chart (time, spectrum, or a scalar level) ----
     QString err;
     auto out = desc->impl(args, &err);
-
-    QVector<double> tx(static_cast<int>(N));
-    for (std::size_t i = 0; i < N; ++i) tx[i] = i * dt;
-    auto plotVec = [&](const std::vector<double>& v, const QString& nm, QColor c, int w = 1) {
-        if (v.empty()) return;
-        QVector<double> y(v.begin(), v.end());
-        auto* g = ioPlot_->addGraph(); g->setData(tx, y);
-        g->setPen(QPen(c, w)); g->setName(nm);
-    };
-
-    ioPlot_->xAxis->setLabel("t [s]");
-    ioPlot_->yAxis->setLabel(QString());
-    if (!out) {                                          // impl errored on the example
-        plotVec(in1v, "in", QColor(150, 150, 150));
-        ioPlot_->rescaleAxes(); ioPlot_->replot();
-        return;
-    }
-
+    if (!out) { ioOutPlot_->replot(); return; }
     const auto ov = out->readAsDouble();
     const auto oview = out->snapshotForRead();
-    if (oview.count == 1) {                              // scalar result (e.g. PeakHz)
-        plotVec(in1v, "in", QColor(120, 120, 200));
-        if (!ex.in2.isEmpty()) plotVec(in2v, "in2", QColor(120, 200, 120));
-        previewLabel_->setText(QString("Input → output: %1 = %2")
-            .arg(name, QString::number(ov.empty() ? 0.0 : ov[0], 'g', 4)));
-        ioPlot_->rescaleAxes(); ioPlot_->replot();
-        return;
-    }
-    if (out->meta().domain == scope::core::Signal::Domain::Frequency) {   // spectrum out
+
+    if (oview.count == 1) {                              // scalar (e.g. PeakHz)
+        const double val = ov.empty() ? 0.0 : ov[0];
+        addCurve(ioOutPlot_, QVector<double>{tx.front(), tx.back()},
+                 QVector<double>{val, val},
+                 QString("= %1").arg(QString::number(val, 'g', 4)), QColor(214, 39, 40), 2);
+        ioOutPlot_->xAxis->setLabel("t [s]");
+    } else if (out->meta().domain == scope::core::Signal::Domain::Frequency) {
         QVector<double> fx, fy;
         for (std::size_t i = 0; i < oview.count; ++i) {
             fx.push_back(oview.timestamps[i] / 1e9);     // Hz
             fy.push_back(i < ov.size() ? ov[i] : 0.0);
         }
-        auto* g = ioPlot_->addGraph(); g->setData(fx, fy);
-        g->setPen(QPen(QColor(31, 119, 180))); g->setName("spectrum");
-        ioPlot_->xAxis->setLabel("f [Hz]");
-        ioPlot_->yAxis->setLabel("magnitude");
-        ioPlot_->rescaleAxes(); ioPlot_->replot();
-        return;
+        addCurve(ioOutPlot_, fx, fy, "spectrum", QColor(214, 39, 40));
+        ioOutPlot_->xAxis->setLabel("f [Hz]");
+    } else {                                             // time → time
+        QVector<double> ox, oy;
+        for (std::size_t i = 0; i < oview.count; ++i) {
+            ox.push_back(oview.timestamps[i] / 1e9);
+            oy.push_back(i < ov.size() ? ov[i] : 0.0);
+        }
+        addCurve(ioOutPlot_, ox, oy, "out", QColor(214, 39, 40), 2);
+        ioOutPlot_->xAxis->setLabel("t [s]");
     }
-
-    // Time → time: overlay the input(s) and the output (on the output's grid).
-    plotVec(in1v, "in", QColor(160, 160, 160));
-    if (!ex.in2.isEmpty()) plotVec(in2v, "in2", QColor(210, 170, 120));
-    QVector<double> ox, oy;
-    for (std::size_t i = 0; i < oview.count; ++i) {
-        ox.push_back(oview.timestamps[i] / 1e9);
-        oy.push_back(i < ov.size() ? ov[i] : 0.0);
-    }
-    auto* go = ioPlot_->addGraph(); go->setData(ox, oy);
-    go->setPen(QPen(QColor(214, 39, 40), 2)); go->setName("out");
-    ioPlot_->rescaleAxes();
-    ioPlot_->replot();
+    ioOutPlot_->rescaleAxes(); ioOutPlot_->replot();
 }
 
 void AddChannelDialog::onAccept() {

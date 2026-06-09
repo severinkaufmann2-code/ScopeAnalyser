@@ -101,7 +101,8 @@ private:
     QStackedWidget*  previewStack_{nullptr};   // page 0 = bode, 1 = I/O example
     QCustomPlot*     magPlot_{nullptr};
     QCustomPlot*     phasePlot_{nullptr};
-    QCustomPlot*     ioPlot_{nullptr};
+    QCustomPlot*     ioInPlot_{nullptr};        // example input (time)
+    QCustomPlot*     ioOutPlot_{nullptr};       // example output (time or spectrum)
 };
 
 }  // namespace scope::analyser::ui
