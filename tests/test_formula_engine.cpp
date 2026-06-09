@@ -1249,3 +1249,63 @@ TEST(FormulaEngine, RoundOptionalTolerance) {
     EXPECT_DOUBLE_EQ(rt[3], 2.5);   // 0.5 away → left unchanged
     EXPECT_FALSE(engine.evaluate("E = Round(X, 0.1, 1)", &err));  // too many args
 }
+
+TEST(FormulaEngine, RevertFftRoundTrip) {
+    const std::size_t n = 256; const double fs = 256.0;   // power of two → exact
+    std::vector<double> vals(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const double t = i / fs;
+        vals[i] = std::sin(2*M_PI*5*t) + 0.4*std::sin(2*M_PI*30*t) + 0.2*(i / double(n));
+    }
+    SignalStore store; store.add(makeSeries("X", vals, fs));
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("M = RFFTmag(X)",      &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("P = RFFTphase(X)",    &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("Y = revertFFT(M, P)", &err)) << err.toStdString();
+    auto x = store.get("X")->readAsDouble();
+    auto y = store.get("Y")->readAsDouble();
+    ASSERT_EQ(y.size(), x.size());
+    double maxDiff = 0;
+    for (std::size_t i = 0; i < x.size(); ++i) maxDiff = std::max(maxDiff, std::abs(x[i]-y[i]));
+    EXPECT_LT(maxDiff, 1e-9);
+}
+
+TEST(FormulaEngine, RevertFftBandZeroRemovesTone) {
+    const std::size_t n = 1024; const double fs = 1024.0;
+    std::vector<double> vals(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const double t = i / fs;
+        vals[i] = std::sin(2*M_PI*10*t) + 0.5*std::sin(2*M_PI*100*t);
+    }
+    SignalStore store; store.add(makeSeries("X", vals, fs));
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("M  = RFFTmag(X)",          &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("P  = RFFTphase(X)",        &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("M2 = BandZero(M, 90, 110)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("Y  = revertFFT(M2, P)",    &err)) << err.toStdString();
+    auto y = store.get("Y")->readAsDouble();
+    double mx = 0; for (double v : y) mx = std::max(mx, std::abs(v));
+    EXPECT_NEAR(mx, 1.0, 0.02);     // 100 Hz removed → only the 10 Hz tone (amp 1)
+    // BandZero must zero exactly the in-band bins and leave the rest.
+    auto m  = store.get("M")->readAsDouble();
+    auto m2 = store.get("M2")->readAsDouble();
+    auto mv = store.get("M")->snapshotForRead();
+    bool ok = true;
+    for (std::size_t k = 0; k < mv.count; ++k) {
+        const double hz = mv.timestamps[k] / 1e9;
+        if (hz >= 90 && hz <= 110) { if (m2[k] != 0.0)  ok = false; }
+        else                       { if (m2[k] != m[k]) ok = false; }
+    }
+    EXPECT_TRUE(ok);
+}
+
+TEST(FormulaEngine, RevertFftRejectsBadArgs) {
+    SignalStore store;
+    store.add(makeSeries("X", std::vector<double>(256, 1.0), 256.0));
+    store.add(makeSine("S", 128, 128.0, 5.0, 1.0));
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("M = RFFTmag(X)",   &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("P = RFFTphase(S)", &err)) << err.toStdString();  // mismatched length
+    EXPECT_FALSE(engine.evaluate("Y = revertFFT(M, P)",   &err));   // bin counts differ
+    EXPECT_FALSE(engine.evaluate("Z = BandZero(M, 100, 50)", &err)); // f_hi < f_lo
+}

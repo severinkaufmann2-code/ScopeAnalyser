@@ -1371,6 +1371,124 @@ std::shared_ptr<Signal> impl_FFTKeep(const FunctionArgs& a, QString* err) {
     return fftBandEdit(a, /*keep=*/true, "FFTKeep", err);
 }
 
+// ---- RFFTmag / RFFTphase / revertFFT — editable spectrum round-trip --------
+// An invertible FFT pair: RFFTmag + RFFTphase produce the raw single-sided
+// magnitude and phase (no window, no amplitude calibration — unlike FFT, which
+// is for display only), so the spectrum can be edited (e.g. BandZero) and
+// brought back to the time domain with revertFFT. The signal is zero-padded to
+// a power of two, so the reconstructed length is that padded length (exact for
+// power-of-two inputs). Shares the leakage / ringing / circular caveats of any
+// FFT editing.
+std::shared_ptr<Signal> rfftSpectrum(const FunctionArgs& a, bool wantPhase,
+                                     const char* who, QString* err) {
+    if (a.size() != 1) { if (err) *err = QString("%1 expects (signal)").arg(who); return nullptr; }
+    auto signal = a[0];
+    auto view = signal->snapshotForRead();
+    if (view.count < 2) {
+        if (err) *err = QString("%1: signal must have at least 2 samples").arg(who);
+        return nullptr;
+    }
+    auto src = signal->readAsDouble();
+    std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
+    const double durationSec = (ts.back() - ts.front()) * 1e-9;
+    if (durationSec <= 0) {
+        if (err) *err = QString("%1: non-monotonic / zero-duration time grid").arg(who);
+        return nullptr;
+    }
+    const double fs = (view.count - 1) / durationSec;
+
+    std::size_t N = 1;
+    while (N < view.count) N <<= 1;
+    std::vector<std::complex<double>> buf(N, {0.0, 0.0});
+    for (std::size_t i = 0; i < view.count; ++i) buf[i] = {src[i], 0.0};
+    fftRadix2(buf);
+
+    const std::size_t bins = N / 2 + 1;
+    const double df = fs / static_cast<double>(N);
+    std::vector<TimestampNs> outTs(bins);
+    std::vector<double> outV(bins);
+    for (std::size_t k = 0; k < bins; ++k) {
+        outTs[k] = static_cast<TimestampNs>(k * df * 1e9);          // Hz × 1e9
+        outV[k]  = wantPhase ? std::arg(buf[k]) : std::abs(buf[k]);
+    }
+    return makeDoubleSignal(who, outTs, outV,
+                            wantPhase ? "rad" : signal->meta().unit,
+                            Signal::Domain::Frequency);
+}
+std::shared_ptr<Signal> impl_RFFTmag(const FunctionArgs& a, QString* err) {
+    return rfftSpectrum(a, /*wantPhase=*/false, "RFFTmag", err);
+}
+std::shared_ptr<Signal> impl_RFFTphase(const FunctionArgs& a, QString* err) {
+    return rfftSpectrum(a, /*wantPhase=*/true, "RFFTphase", err);
+}
+
+std::shared_ptr<Signal> impl_revertFFT(const FunctionArgs& a, QString* err) {
+    if (a.size() != 2) { if (err) *err = "revertFFT expects (magnitude, phase)"; return nullptr; }
+    auto mag = a[0], ph = a[1];
+    auto mv = mag->snapshotForRead();
+    auto pv = ph->snapshotForRead();
+    if (mv.count < 2 || mv.count != pv.count) {
+        if (err) *err = "revertFFT: magnitude and phase must have the same length (>= 2)";
+        return nullptr;
+    }
+    const auto md = mag->readAsDouble();
+    const auto pd = ph->readAsDouble();
+    const std::size_t bins = mv.count;
+    const std::size_t N = 2 * (bins - 1);
+
+    // Rebuild the full conjugate-symmetric spectrum from the single-sided
+    // magnitude/phase, then inverse-FFT (ifft(X) = conj(fft(conj(X)))/N).
+    std::vector<std::complex<double>> X(N, {0.0, 0.0});
+    for (std::size_t k = 0; k < bins; ++k) {
+        const double m = k < md.size() ? md[k] : 0.0;
+        const double p = k < pd.size() ? pd[k] : 0.0;
+        X[k] = std::polar(m, p);
+    }
+    for (std::size_t k = 1; k + 1 < bins; ++k) X[N - k] = std::conj(X[k]);
+    for (auto& c : X) c = std::conj(c);
+    fftRadix2(X);
+    const double invN = 1.0 / static_cast<double>(N);
+
+    // Recover the time step from the spectrum's Hz spacing: df = bin spacing,
+    // dt = 1 / (N · df).
+    double df = (mv.timestamps[1] - mv.timestamps[0]) / 1e9;
+    if (df <= 0) df = 1.0;
+    const double dt = 1.0 / (static_cast<double>(N) * df);
+    std::vector<TimestampNs> outTs(N);
+    std::vector<double> outV(N);
+    for (std::size_t i = 0; i < N; ++i) {
+        outTs[i] = static_cast<TimestampNs>(std::llround(i * dt * 1e9));
+        outV[i]  = std::conj(X[i]).real() * invN;
+    }
+    return makeDoubleSignal("revertFFT", outTs, outV, mag->meta().unit,
+                            Signal::Domain::Time);
+}
+
+// ---- BandZero(spectrum, f_lo, f_hi) — zero a frequency band in place -------
+// Sets a frequency-domain signal's samples to 0 where their Hz is in
+// [f_lo, f_hi]. The editing primitive for the RFFT/revertFFT round-trip
+// (also works on any frequency-domain signal). Domain is preserved.
+std::shared_ptr<Signal> impl_BandZero(const FunctionArgs& a, QString* err) {
+    if (a.size() != 3) { if (err) *err = "BandZero expects (spectrum, f_lo, f_hi)"; return nullptr; }
+    auto signal = a[0];
+    double fLo = 0.0, fHi = 0.0;
+    if (!asScalar(a[1], fLo) || !asScalar(a[2], fHi)) {
+        if (err) *err = "BandZero: f_lo and f_hi must be scalars (Hz)";
+        return nullptr;
+    }
+    if (fHi < fLo) { if (err) *err = "BandZero: need f_lo <= f_hi"; return nullptr; }
+    auto view = signal->snapshotForRead();
+    auto src = signal->readAsDouble();
+    std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
+    std::vector<double> dst(src.begin(), src.end());
+    for (std::size_t k = 0; k < view.count; ++k) {
+        const double hz = ts[k] / 1e9;
+        if (hz >= fLo && hz <= fHi) dst[k] = 0.0;
+    }
+    return makeDoubleSignal("BandZero", ts, dst, signal->meta().unit,
+                            signal->meta().domain);
+}
+
 // ---- PeakHz(signal [, window]) — interpolated dominant peak frequency ----
 //
 // Finds the largest magnitude bin (excluding DC) and refines its location
@@ -1911,6 +2029,22 @@ void FunctionRegistry::registerBuiltins() {
         "Keep only the frequency band [f_lo, f_hi] (everything else zeroed) and "
         "return to the time domain — the band-pass complement of FFTCut. "
         "Phase-preserving / zero-phase.", 3, 3, &impl_FFTKeep);
+    add("RFFTmag",    "RFFTmag(signal)",
+        "Raw FFT magnitude spectrum for an invertible round-trip (no window / "
+        "calibration, unlike FFT). Edit it (e.g. BandZero), then pair with "
+        "RFFTphase in revertFFT to return to the time domain.", 1, 1, &impl_RFFTmag);
+    add("RFFTphase",  "RFFTphase(signal)",
+        "FFT phase spectrum (radians) to pair with RFFTmag for revertFFT.",
+        1, 1, &impl_RFFTphase);
+    add("revertFFT",  "revertFFT(magnitude, phase)",
+        "Inverse FFT: rebuild a time-domain signal from a magnitude + phase "
+        "spectrum (as produced by RFFTmag / RFFTphase, after any edits). "
+        "Reconstructed length is the next power of two of the original.",
+        2, 2, &impl_revertFFT);
+    add("BandZero",   "BandZero(spectrum, f_lo_hz, f_hi_hz)",
+        "Zero a frequency-domain signal's bins whose Hz is in [f_lo, f_hi] — "
+        "the editing primitive for the RFFTmag → revertFFT round-trip.",
+        3, 3, &impl_BandZero);
     add("PeakHz",     "PeakHz(signal [, window])",
         "Dominant peak frequency in Hz, refined by parabolic interpolation "
         "between FFT bins — far more accurate than the raw bin spacing fs/N. "
