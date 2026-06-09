@@ -1464,32 +1464,34 @@ std::shared_ptr<Signal> impl_revertFFT(const FunctionArgs& a, QString* err) {
                             Signal::Domain::Time);
 }
 
-// ---- BandZero / BandKeep(spectrum, f_lo, f_hi) — band edit in place --------
-// Zero a frequency-domain signal's bins inside the band [f_lo, f_hi]
-// (BandZero) or outside it (BandKeep) — the editing primitives for the
-// RFFTmag → revertFFT round-trip. Length is preserved. They mask by the
-// x-axis value, which is Hz on a frequency signal (the intended use); on a
-// time-domain signal it would instead blank a TIME window in seconds.
+// ---- BandZero / BandKeep(signal, lo, hi) — band/window edit in place -------
+// Zero a signal's samples whose x-axis value is inside [lo, hi] (BandZero) or
+// outside it (BandKeep). Works in BOTH domains: on a frequency-domain signal
+// (e.g. from RFFTmag) lo/hi are in Hz → edits a frequency band; on a
+// time-domain signal they are in seconds → blanks / keeps a time window.
+// Length is preserved. (Editing primitives for the RFFTmag → revertFFT
+// round-trip.)
 std::shared_ptr<Signal> bandMask(const FunctionArgs& a, bool keep,
                                  const char* who, QString* err) {
     if (a.size() != 3) {
-        if (err) *err = QString("%1 expects (spectrum, f_lo, f_hi)").arg(who);
+        if (err) *err = QString("%1 expects (signal, lo, hi)").arg(who);
         return nullptr;
     }
     auto signal = a[0];
-    double fLo = 0.0, fHi = 0.0;
-    if (!asScalar(a[1], fLo) || !asScalar(a[2], fHi)) {
-        if (err) *err = QString("%1: f_lo and f_hi must be scalars (Hz)").arg(who);
+    double lo = 0.0, hi = 0.0;
+    if (!asScalar(a[1], lo) || !asScalar(a[2], hi)) {
+        if (err) *err = QString("%1: lo and hi must be scalars "
+                                "(Hz for a spectrum, seconds for a time signal)").arg(who);
         return nullptr;
     }
-    if (fHi < fLo) { if (err) *err = QString("%1: need f_lo <= f_hi").arg(who); return nullptr; }
+    if (hi < lo) { if (err) *err = QString("%1: need lo <= hi").arg(who); return nullptr; }
     auto view = signal->snapshotForRead();
     auto src = signal->readAsDouble();
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(src.begin(), src.end());
     for (std::size_t k = 0; k < view.count; ++k) {
-        const double hz = ts[k] / 1e9;
-        const bool inBand = (hz >= fLo && hz <= fHi);
+        const double x = ts[k] / 1e9;   // Hz (frequency domain) or seconds (time)
+        const bool inBand = (x >= lo && x <= hi);
         if (keep ? !inBand : inBand) dst[k] = 0.0;
     }
     return makeDoubleSignal(who, ts, dst, signal->meta().unit, signal->meta().domain);
@@ -2053,13 +2055,16 @@ void FunctionRegistry::registerBuiltins() {
         "spectrum (as produced by RFFTmag / RFFTphase, after any edits). "
         "Reconstructed length is the next power of two of the original.",
         2, 2, &impl_revertFFT);
-    add("BandZero",   "BandZero(spectrum, f_lo_hz, f_hi_hz)",
-        "Zero a frequency-domain signal's bins whose Hz is in [f_lo, f_hi] — "
-        "the editing primitive for the RFFTmag → revertFFT round-trip.",
+    add("BandZero",   "BandZero(signal, lo, hi)",
+        "Zero the samples whose x-axis value is in [lo, hi]. Works in both "
+        "domains: on a spectrum (e.g. RFFTmag) lo/hi are Hz → removes a "
+        "frequency band; on a time-domain signal they are seconds → blanks a "
+        "time window. Editing primitive for the RFFTmag → revertFFT round-trip.",
         3, 3, &impl_BandZero);
-    add("BandKeep",   "BandKeep(spectrum, f_lo_hz, f_hi_hz)",
-        "Keep only a frequency-domain signal's bins in [f_lo, f_hi] (zero the "
-        "rest) — the band-pass complement of BandZero for RFFTmag → revertFFT.",
+    add("BandKeep",   "BandKeep(signal, lo, hi)",
+        "Keep only the samples whose x-axis value is in [lo, hi] (zero the rest) "
+        "— the complement of BandZero. Works in both domains: a frequency band "
+        "(Hz) on a spectrum, or a time window (seconds) on a time-domain signal.",
         3, 3, &impl_BandKeep);
     add("PeakHz",     "PeakHz(signal [, window])",
         "Dominant peak frequency in Hz, refined by parabolic interpolation "

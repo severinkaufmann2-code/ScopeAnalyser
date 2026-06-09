@@ -702,6 +702,51 @@ void AddChannelDialog::plotExample(const QString& name) {
         return;
     }
 
+    // RFFT spectrum-editing family — these take frequency-domain inputs, so
+    // build a spectrum from a multi-tone and show it being edited / inverted.
+    auto showSpec = [&](QCustomPlot* p, const std::shared_ptr<scope::core::Signal>& s,
+                        const QString& nm, QColor c) {
+        const auto v = s->readAsDouble();
+        const auto vw = s->snapshotForRead();
+        QVector<double> fx, fy;
+        for (std::size_t i = 0; i < vw.count; ++i) {
+            fx.push_back(vw.timestamps[i] / 1e9);
+            fy.push_back(i < v.size() ? v[i] : 0.0);
+        }
+        addCurve(p, fx, fy, nm, c);
+        p->xAxis->setLabel("f [Hz]");
+        p->rescaleAxes(); p->replot();
+    };
+    if (name == "BandZero" || name == "BandKeep") {
+        const auto in = genInput("multi", N, dt);          // tones at 2 and 20 Hz
+        QString e;
+        const auto* rmag = FunctionRegistry::instance().find("RFFTmag");
+        auto spec = rmag ? rmag->impl({makeSig(in)}, &e) : nullptr;
+        if (spec) {
+            showSpec(ioInPlot_, spec, "spectrum", QColor(31, 119, 180));
+            if (auto edited = desc->impl({spec, makeConst(15), makeConst(25)}, &e))
+                showSpec(ioOutPlot_, edited,
+                         name == "BandKeep" ? "kept 15-25 Hz" : "zeroed 15-25 Hz",
+                         QColor(214, 39, 40));
+        }
+        previewLabel_->setText("Input → output example (spectrum):");
+        ioInPlot_->replot(); ioOutPlot_->replot();
+        return;
+    }
+    if (name == "revertFFT") {
+        const auto in = genInput("multi", N, dt);
+        QString e;
+        const auto* rmag = FunctionRegistry::instance().find("RFFTmag");
+        const auto* rph  = FunctionRegistry::instance().find("RFFTphase");
+        auto m = rmag ? rmag->impl({makeSig(in)}, &e) : nullptr;
+        auto p = rph  ? rph->impl({makeSig(in)}, &e)  : nullptr;
+        if (m) showSpec(ioInPlot_, m, "magnitude", QColor(31, 119, 180));
+        if (m && p) { if (auto out = desc->impl({m, p}, &e)) showTimeOut(out, "out (time)"); }
+        previewLabel_->setText("Input → output: revertFFT (spectrum → time)");
+        ioOutPlot_->replot();
+        return;
+    }
+
     const ExampleSpec ex = exampleFor(name);
     std::vector<double> in1v, in2v;
     FunctionArgs args;
