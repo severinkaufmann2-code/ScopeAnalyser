@@ -329,6 +329,70 @@ struct Parser {
             cur = lex.next();
             if (cur.kind == Tok::LParen) {
                 cur = lex.next();
+
+                // ---- filtfilt(FilterName, signal, params...) : zero-phase ----
+                // Higher-order special form. The first argument is a *filter
+                // function name*, not data (a bare ident would otherwise be a
+                // channel ref), so we capture it, evaluate the remaining args
+                // as that filter's args, then run it forward → Reverse →
+                // forward → Reverse, which cancels the phase shift.
+                if (name == "filtfilt") {
+                    if (cur.kind != Tok::Ident) {
+                        setErr(ctx, "filtfilt: first argument must be a filter "
+                                    "name, e.g. filtfilt(Filter, speed, 0.05)");
+                        return nullptr;
+                    }
+                    const QString innerName = cur.text;
+                    cur = lex.next();
+                    if (!expect(Tok::Comma,
+                                ", after the filter name in filtfilt")) return nullptr;
+                    FunctionArgs ffArgs;
+                    for (;;) {
+                        auto a = parseExpr();
+                        if (!a) return nullptr;
+                        ffArgs.push_back(std::move(a));
+                        if (cur.kind == Tok::Comma) { cur = lex.next(); continue; }
+                        break;
+                    }
+                    if (!expect(Tok::RParen, ") in filtfilt")) return nullptr;
+
+                    auto isFilterable = [](const QString& fn) {
+                        return fn == "Filter" || fn == "Butterworth"
+                            || fn == "Mean"   || fn == "RMS";
+                    };
+                    if (!isFilterable(innerName)) {
+                        setErr(ctx, QString("filtfilt: '%1' can't be applied "
+                            "zero-phase (use Filter, Butterworth, Mean or RMS)")
+                            .arg(innerName));
+                        return nullptr;
+                    }
+                    auto* inner = FunctionRegistry::instance().find(innerName);
+                    auto* rev   = FunctionRegistry::instance().find("Reverse");
+                    if (!inner || !rev) {
+                        setErr(ctx, QString("filtfilt: unknown filter '%1'")
+                                        .arg(innerName));
+                        return nullptr;
+                    }
+                    if ((int)ffArgs.size() < inner->minArgs ||
+                        (inner->maxArgs > 0 && (int)ffArgs.size() > inner->maxArgs)) {
+                        setErr(ctx, QString("filtfilt: %1 expects %2..%3 args, "
+                            "got %4").arg(innerName).arg(inner->minArgs)
+                            .arg(inner->maxArgs).arg(ffArgs.size()));
+                        return nullptr;
+                    }
+                    QString ferr;
+                    auto y1 = inner->impl(ffArgs, &ferr);           // forward
+                    if (!y1) { setErr(ctx, ferr); return nullptr; }
+                    auto r1 = rev->impl({y1}, &ferr);              // reverse
+                    if (!r1) { setErr(ctx, ferr); return nullptr; }
+                    ffArgs[0] = r1;
+                    auto y2 = inner->impl(ffArgs, &ferr);          // backward
+                    if (!y2) { setErr(ctx, ferr); return nullptr; }
+                    auto out = rev->impl({y2}, &ferr);             // reverse back
+                    if (!out) { setErr(ctx, ferr); return nullptr; }
+                    return out;
+                }
+
                 FunctionArgs args;
                 if (cur.kind != Tok::RParen) {
                     for (;;) {

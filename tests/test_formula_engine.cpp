@@ -791,3 +791,133 @@ TEST(FormulaEngine, GateRejectsBadArgs) {
     EXPECT_FALSE(engine.evaluate("b = Gate(S, G, 0.5, 1.5, 0, 2)", &err)); // bad mode
     EXPECT_FALSE(engine.evaluate("c = Gate(S, G, 0.5, 1.5, 0, 1, 9)", &err)); // too many args
 }
+
+// ---- Reverse / Butterworth / filtfilt ------------------------------------
+
+TEST(FormulaEngine, ReverseTwiceIsIdentity) {
+    SignalStore store;
+    store.add(makeRamp("A", 50, 0.01));   // values 0..49
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("R  = Reverse(A)",  &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("RR = Reverse(R)",  &err)) << err.toStdString();
+
+    auto a = store.get("A"); auto r = store.get("R"); auto rr = store.get("RR");
+    ASSERT_TRUE(r); ASSERT_TRUE(rr);
+    auto av = a->readAsDouble(); auto rv = r->readAsDouble(); auto rrv = rr->readAsDouble();
+    ASSERT_EQ(rv.size(), av.size());
+    EXPECT_DOUBLE_EQ(rv.front(), av.back());    // values flipped
+    EXPECT_DOUBLE_EQ(rv.back(),  av.front());
+
+    auto avw = a->snapshotForRead(); auto rrw = rr->snapshotForRead();
+    ASSERT_EQ(rrw.count, avw.count);
+    for (std::size_t i = 0; i < avw.count; ++i) {
+        EXPECT_DOUBLE_EQ(rrv[i], av[i]);                       // values restored
+        EXPECT_EQ(rrw.timestamps[i], avw.timestamps[i]);      // timestamps restored
+    }
+}
+
+TEST(FormulaEngine, ButterworthPassesDC) {
+    SignalStore store;
+    store.add(makeSeries("A", std::vector<double>(200, 5.0), 100.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("B = Butterworth(A, 10, 2)", &err)) << err.toStdString();
+    auto bv = store.get("B")->readAsDouble();
+    EXPECT_NEAR(bv.back(), 5.0, 1e-6);          // unity DC gain → settles to input
+}
+
+TEST(FormulaEngine, ButterworthLowPassSeparatesBands) {
+    SignalStore store;
+    const double fs = 1000.0;
+    store.add(makeSine("LOW",  4000, fs,   5.0, 1.0));   // well below cutoff
+    store.add(makeSine("HIGH", 4000, fs, 200.0, 1.0));   // well above cutoff
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("BL = Butterworth(LOW,  50, 4)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BH = Butterworth(HIGH, 50, 4)", &err)) << err.toStdString();
+    auto amp = [](const std::shared_ptr<Signal>& s) {
+        auto v = s->readAsDouble();
+        double m = 0;
+        for (std::size_t i = v.size() / 2; i < v.size(); ++i) m = std::max(m, std::abs(v[i]));
+        return m;
+    };
+    EXPECT_GT(amp(store.get("BL")), 0.9);       // passband
+    EXPECT_LT(amp(store.get("BH")), 0.1);       // stopband
+}
+
+TEST(FormulaEngine, ButterworthMinus3dBAtCutoff) {
+    SignalStore store;
+    const double fs = 2000.0, fc = 100.0;
+    store.add(makeSine("S", 8000, fs, fc, 1.0));   // sine exactly at the cutoff
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("B = Butterworth(S, 100, 4)", &err)) << err.toStdString();
+    auto v = store.get("B")->readAsDouble();
+    double m = 0;
+    for (std::size_t i = v.size() / 2; i < v.size(); ++i) m = std::max(m, std::abs(v[i]));
+    EXPECT_NEAR(m, 1.0 / std::sqrt(2.0), 0.05); // Butterworth is -3 dB at fc
+}
+
+TEST(FormulaEngine, ButterworthRejectsCutoffAboveNyquist) {
+    SignalStore store;
+    store.add(makeSine("S", 200, 100.0, 5.0, 1.0));   // fs = 100 → Nyquist 50
+    FormulaEngine engine(store);
+    QString err;
+    EXPECT_FALSE(engine.evaluate("B = Butterworth(S, 60, 2)", &err));
+    EXPECT_FALSE(err.isEmpty());
+}
+
+// A symmetric pulse: a causal filter delays its peak; filtfilt keeps it put.
+static std::shared_ptr<Signal> makePulse(QString name, std::size_t n,
+                                         int center, double fs) {
+    std::vector<double> vals(n, 0.0);
+    for (int i = 0; i < static_cast<int>(n); ++i)
+        vals[i] = std::max(0.0, 50.0 - std::abs(i - center));
+    return makeSeries(std::move(name), vals, fs);
+}
+
+TEST(FormulaEngine, FiltFiltIsZeroPhaseFilter) {
+    SignalStore store;
+    const int center = 500;
+    store.add(makePulse("P", 1000, center, 1000.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("F  = Filter(P, 0.02)",          &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("FF = filtfilt(Filter, P, 0.02)", &err)) << err.toStdString();
+    auto argmax = [](const std::shared_ptr<Signal>& s) {
+        auto v = s->readAsDouble();
+        int best = 0; double bv = v[0];
+        for (int i = 1; i < static_cast<int>(v.size()); ++i)
+            if (v[i] > bv) { bv = v[i]; best = i; }
+        return best;
+    };
+    EXPECT_GT(argmax(store.get("F")), center + 3);   // causal filter lags
+    EXPECT_NEAR(argmax(store.get("FF")), center, 2); // zero-phase stays centered
+}
+
+TEST(FormulaEngine, FiltFiltWithButterworthIsZeroPhase) {
+    SignalStore store;
+    const int center = 500;
+    store.add(makePulse("P", 1000, center, 1000.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("FF = filtfilt(Butterworth, P, 30, 4)", &err))
+        << err.toStdString();
+    auto v = store.get("FF")->readAsDouble();
+    int best = 0; double bv = v[0];
+    for (int i = 1; i < static_cast<int>(v.size()); ++i)
+        if (v[i] > bv) { bv = v[i]; best = i; }
+    EXPECT_NEAR(best, center, 2);
+}
+
+TEST(FormulaEngine, FiltFiltRejectsNonFilterAndBadSyntax) {
+    SignalStore store;
+    store.add(makeRamp("A", 50, 0.01));
+    FormulaEngine engine(store);
+    QString err;
+    EXPECT_FALSE(engine.evaluate("X = filtfilt(Abs, A)", &err));       // not a filter
+    EXPECT_FALSE(err.isEmpty());
+    EXPECT_FALSE(engine.evaluate("Y = filtfilt(A, 0.05)", &err));      // 1st arg not a filter name
+    EXPECT_FALSE(engine.evaluate("Z = filtfilt(Filter, A)", &err));    // Filter needs tau
+}

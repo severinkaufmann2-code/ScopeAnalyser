@@ -99,6 +99,121 @@ std::shared_ptr<Signal> impl_Filter(const FunctionArgs& a, QString* err) {
     return makeDoubleSignal("Filter", ts, dst, signal->meta().unit);
 }
 
+// ---- Reverse(signal) — flip the waveform in time ----
+// Values are reversed; timestamps stay ascending starting at the original
+// first timestamp, with the inter-sample spacing reversed (so a causal filter
+// applied to the result sees the reversed dt sequence). Reversing twice
+// restores the original signal exactly — this is the backward step filtfilt()
+// uses to turn any causal filter into a zero-phase one.
+std::shared_ptr<Signal> impl_Reverse(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 1, err, "Reverse")) return nullptr;
+    auto signal = a[0];
+    auto view = signal->snapshotForRead();
+    auto src  = signal->readAsDouble();
+    const std::size_t n = view.count;
+    std::vector<TimestampNs> ts(n);
+    std::vector<double> dst(n);
+    if (n == 0)
+        return makeDoubleSignal("Reverse", ts, dst, signal->meta().unit,
+                                signal->meta().domain);
+    const TimestampNs t0 = view.timestamps[0];
+    const TimestampNs tN = view.timestamps[n - 1];
+    for (std::size_t i = 0; i < n; ++i) {
+        ts[i]  = t0 + (tN - view.timestamps[n - 1 - i]);
+        dst[i] = (n - 1 - i) < src.size() ? src[n - 1 - i] : 0.0;
+    }
+    return makeDoubleSignal("Reverse", ts, dst, signal->meta().unit,
+                            signal->meta().domain);
+}
+
+// ---- Butterworth(signal, cutoff_hz [, order]) — digital low-pass ----
+// Cascade of RBJ low-pass biquads using the per-section Butterworth Q (plus a
+// 1st-order section for odd orders). The sample rate is derived from the
+// timestamps — a uniform-rate assumption; for non-uniform data this is an
+// approximation. DC gain is unity. Causal, so it has phase lag — wrap in
+// filtfilt() for zero phase.
+std::shared_ptr<Signal> impl_Butterworth(const FunctionArgs& a, QString* err) {
+    if (a.size() < 2 || a.size() > 3) {
+        if (err) *err = QString("Butterworth expects 2..3 args, got %1")
+                            .arg(a.size());
+        return nullptr;
+    }
+    auto signal = a[0];
+    double fc = 0.0, orderArg = 2.0;
+    if (!asScalar(a[1], fc) || fc <= 0) {
+        if (err) *err = "Butterworth: cutoff_hz must be a positive scalar";
+        return nullptr;
+    }
+    if (a.size() == 3 && (!asScalar(a[2], orderArg) || orderArg < 1)) {
+        if (err) *err = "Butterworth: order must be an integer >= 1";
+        return nullptr;
+    }
+    const int order = std::max(1, static_cast<int>(std::lround(orderArg)));
+
+    auto view = signal->snapshotForRead();
+    auto src  = signal->readAsDouble();
+    std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
+    std::vector<double> dst(src.begin(), src.end());
+    if (view.count < 2)
+        return makeDoubleSignal("Butterworth", ts, dst, signal->meta().unit);
+
+    const double spanSec = (ts.back() - ts.front()) * 1e-9;
+    if (spanSec <= 0) {
+        if (err) *err = "Butterworth: timestamps must be increasing";
+        return nullptr;
+    }
+    const double fs = (view.count - 1) / spanSec;
+    if (fc >= fs / 2.0) {
+        if (err) *err = QString("Butterworth: cutoff %1 Hz must be below the "
+                                "Nyquist frequency (%2 Hz)")
+                            .arg(fc).arg(fs / 2.0);
+        return nullptr;
+    }
+
+    const double w0   = 2.0 * M_PI * fc / fs;
+    const double cosw = std::cos(w0);
+    const double sinw = std::sin(w0);
+
+    // Direct-form-I biquad applied in place over dst.
+    auto applyBiquad = [&](double b0, double b1, double b2, double a1, double a2) {
+        double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+        for (double& sample : dst) {
+            const double x0 = sample;
+            const double y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            x2 = x1; x1 = x0; y2 = y1; y1 = y0;
+            sample = y0;
+        }
+    };
+
+    const int nBiquads = order / 2;
+    for (int m = 0; m < nBiquads; ++m) {
+        // Butterworth pole-pair angle → section Q. cos(phi) < 0 here, so Q > 0.
+        const double phi = M_PI * (2.0 * m + order + 1.0) / (2.0 * order);
+        const double Q   = -1.0 / (2.0 * std::cos(phi));
+        const double alpha = sinw / (2.0 * Q);
+        const double a0 = 1.0 + alpha;
+        applyBiquad((1.0 - cosw) / 2.0 / a0,
+                    (1.0 - cosw) / a0,
+                    (1.0 - cosw) / 2.0 / a0,
+                    (-2.0 * cosw) / a0,
+                    (1.0 - alpha) / a0);
+    }
+    if (order % 2 == 1) {
+        // Odd order → one real pole: a 1st-order low-pass at fc (bilinear).
+        const double c  = std::tan(w0 / 2.0);
+        const double b0 = c / (1.0 + c);
+        const double a1 = (c - 1.0) / (1.0 + c);
+        double x1 = 0, y1 = 0;
+        for (double& sample : dst) {
+            const double x0 = sample;
+            const double y0 = b0 * x0 + b0 * x1 - a1 * y1;
+            x1 = x0; y1 = y0;
+            sample = y0;
+        }
+    }
+    return makeDoubleSignal("Butterworth", ts, dst, signal->meta().unit);
+}
+
 // ---- Integral(signal) ----
 std::shared_ptr<Signal> impl_Integral(const FunctionArgs& a, QString* err) {
     if (!ensureN(a, 1, err, "Integral")) return nullptr;
@@ -1094,7 +1209,28 @@ void FunctionRegistry::registerBuiltins() {
         registerFunction({n, sig, sum, sum, amin, amax, std::move(impl)});
     };
     add("Filter",     "Filter(signal, tau_seconds)",
-        "1st-order low-pass IIR with time constant tau.", 2, 2, &impl_Filter);
+        "1st-order low-pass IIR with time constant tau (causal — has phase "
+        "lag; wrap in filtfilt() for zero phase).", 2, 2, &impl_Filter);
+    add("Butterworth","Butterworth(signal, cutoff_hz, order)",
+        "Digital Butterworth low-pass (uniform-rate, bilinear). order is "
+        "optional (default 2). Causal — wrap in filtfilt() for zero phase.",
+        2, 3, &impl_Butterworth);
+    add("Reverse",    "Reverse(signal)",
+        "Flip the signal in time (values reversed, timestamps preserved). "
+        "Reversing twice returns the original.", 1, 1, &impl_Reverse);
+    // filtfilt is a higher-order *special form* handled directly in the
+    // parser (its first argument is a filter NAME, not data). This registry
+    // entry exists only so it shows up in autocomplete / help; the impl here
+    // is never reached because the parser intercepts the call first.
+    add("filtfilt",   "filtfilt(FilterName, signal, params...)",
+        "Zero-phase filtering: runs the named filter forward then backward so "
+        "there is no phase lag. e.g. filtfilt(Filter, speed, 0.05) or "
+        "filtfilt(Butterworth, speed, 10, 4).",
+        2, -1, [](const FunctionArgs&, QString* e) {
+            if (e) *e = "filtfilt must name a filter as its first argument, "
+                        "e.g. filtfilt(Filter, speed, 0.05)";
+            return std::shared_ptr<Signal>(nullptr);
+        });
     add("Integral",   "Integral(signal)",
         "Trapezoidal cumulative integration.", 1, 1, &impl_Integral);
     add("Derivative", "Derivative(signal)",
