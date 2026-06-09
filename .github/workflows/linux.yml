@@ -40,6 +40,7 @@ jobs:
             build-essential \
             libhdf5-dev libspdlog-dev libfmt-dev nlohmann-json3-dev libgtest-dev \
             zlib1g-dev libexpat1-dev \
+            libcups2-dev \
             patchelf file desktop-file-utils \
             libgl1-mesa-dev libegl1 libxkbcommon0 libxkbcommon-x11-0 \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
