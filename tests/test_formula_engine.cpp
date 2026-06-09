@@ -1309,3 +1309,31 @@ TEST(FormulaEngine, RevertFftRejectsBadArgs) {
     EXPECT_FALSE(engine.evaluate("Y = revertFFT(M, P)",   &err));   // bin counts differ
     EXPECT_FALSE(engine.evaluate("Z = BandZero(M, 100, 50)", &err)); // f_hi < f_lo
 }
+
+TEST(FormulaEngine, RevertFftBandKeepIsolatesTone) {
+    const std::size_t n = 1024; const double fs = 1024.0;
+    std::vector<double> vals(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const double t = i / fs;
+        vals[i] = std::sin(2*M_PI*10*t) + 0.5*std::sin(2*M_PI*100*t);
+    }
+    SignalStore store; store.add(makeSeries("X", vals, fs));
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("M  = RFFTmag(X)",           &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("P  = RFFTphase(X)",         &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("MK = BandKeep(M, 90, 110)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("Y  = revertFFT(MK, P)",     &err)) << err.toStdString();
+    auto y = store.get("Y")->readAsDouble();
+    double mx = 0; for (double v : y) mx = std::max(mx, std::abs(v));
+    EXPECT_NEAR(mx, 0.5, 0.02);     // only the 100 Hz tone kept (amp 0.5)
+    // BandKeep and BandZero partition the spectrum: keep + zero == original.
+    ASSERT_TRUE(engine.evaluate("MZ = BandZero(M, 90, 110)", &err)) << err.toStdString();
+    auto m  = store.get("M")->readAsDouble();
+    auto mk = store.get("MK")->readAsDouble();
+    auto mz = store.get("MZ")->readAsDouble();
+    ASSERT_EQ(mk.size(), m.size()); ASSERT_EQ(mz.size(), m.size());
+    bool partition = true;
+    for (std::size_t k = 0; k < m.size(); ++k)
+        if (std::abs(mk[k] + mz[k] - m[k]) > 1e-12) partition = false;
+    EXPECT_TRUE(partition);
+}

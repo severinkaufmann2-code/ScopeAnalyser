@@ -1464,29 +1464,41 @@ std::shared_ptr<Signal> impl_revertFFT(const FunctionArgs& a, QString* err) {
                             Signal::Domain::Time);
 }
 
-// ---- BandZero(spectrum, f_lo, f_hi) — zero a frequency band in place -------
-// Sets a frequency-domain signal's samples to 0 where their Hz is in
-// [f_lo, f_hi]. The editing primitive for the RFFT/revertFFT round-trip
-// (also works on any frequency-domain signal). Domain is preserved.
-std::shared_ptr<Signal> impl_BandZero(const FunctionArgs& a, QString* err) {
-    if (a.size() != 3) { if (err) *err = "BandZero expects (spectrum, f_lo, f_hi)"; return nullptr; }
+// ---- BandZero / BandKeep(spectrum, f_lo, f_hi) — band edit in place --------
+// Zero a frequency-domain signal's bins inside the band [f_lo, f_hi]
+// (BandZero) or outside it (BandKeep) — the editing primitives for the
+// RFFTmag → revertFFT round-trip. Length is preserved. They mask by the
+// x-axis value, which is Hz on a frequency signal (the intended use); on a
+// time-domain signal it would instead blank a TIME window in seconds.
+std::shared_ptr<Signal> bandMask(const FunctionArgs& a, bool keep,
+                                 const char* who, QString* err) {
+    if (a.size() != 3) {
+        if (err) *err = QString("%1 expects (spectrum, f_lo, f_hi)").arg(who);
+        return nullptr;
+    }
     auto signal = a[0];
     double fLo = 0.0, fHi = 0.0;
     if (!asScalar(a[1], fLo) || !asScalar(a[2], fHi)) {
-        if (err) *err = "BandZero: f_lo and f_hi must be scalars (Hz)";
+        if (err) *err = QString("%1: f_lo and f_hi must be scalars (Hz)").arg(who);
         return nullptr;
     }
-    if (fHi < fLo) { if (err) *err = "BandZero: need f_lo <= f_hi"; return nullptr; }
+    if (fHi < fLo) { if (err) *err = QString("%1: need f_lo <= f_hi").arg(who); return nullptr; }
     auto view = signal->snapshotForRead();
     auto src = signal->readAsDouble();
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(src.begin(), src.end());
     for (std::size_t k = 0; k < view.count; ++k) {
         const double hz = ts[k] / 1e9;
-        if (hz >= fLo && hz <= fHi) dst[k] = 0.0;
+        const bool inBand = (hz >= fLo && hz <= fHi);
+        if (keep ? !inBand : inBand) dst[k] = 0.0;
     }
-    return makeDoubleSignal("BandZero", ts, dst, signal->meta().unit,
-                            signal->meta().domain);
+    return makeDoubleSignal(who, ts, dst, signal->meta().unit, signal->meta().domain);
+}
+std::shared_ptr<Signal> impl_BandZero(const FunctionArgs& a, QString* err) {
+    return bandMask(a, /*keep=*/false, "BandZero", err);
+}
+std::shared_ptr<Signal> impl_BandKeep(const FunctionArgs& a, QString* err) {
+    return bandMask(a, /*keep=*/true, "BandKeep", err);
 }
 
 // ---- PeakHz(signal [, window]) — interpolated dominant peak frequency ----
@@ -2045,6 +2057,10 @@ void FunctionRegistry::registerBuiltins() {
         "Zero a frequency-domain signal's bins whose Hz is in [f_lo, f_hi] — "
         "the editing primitive for the RFFTmag → revertFFT round-trip.",
         3, 3, &impl_BandZero);
+    add("BandKeep",   "BandKeep(spectrum, f_lo_hz, f_hi_hz)",
+        "Keep only a frequency-domain signal's bins in [f_lo, f_hi] (zero the "
+        "rest) — the band-pass complement of BandZero for RFFTmag → revertFFT.",
+        3, 3, &impl_BandKeep);
     add("PeakHz",     "PeakHz(signal [, window])",
         "Dominant peak frequency in Hz, refined by parabolic interpolation "
         "between FFT bins — far more accurate than the raw bin spacing fs/N. "
