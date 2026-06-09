@@ -33,6 +33,7 @@ jobs:
       # mdflib) are pulled in by FetchContent at configure time. The X / GL /
       # xcb libraries are needed at runtime by Qt's xcb platform plugin (the
       # off-screen tests load it) and for linuxdeploy to resolve + bundle it.
+      # imagemagick is used by linuxdeploy to process the app icon.
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -41,6 +42,7 @@ jobs:
             libhdf5-dev libspdlog-dev libfmt-dev nlohmann-json3-dev libgtest-dev \
             zlib1g-dev libexpat1-dev \
             libcups2-dev \
+            imagemagick \
             patchelf file desktop-file-utils \
             libgl1-mesa-dev libegl1 libxkbcommon0 libxkbcommon-x11-0 \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
@@ -97,6 +99,11 @@ jobs:
           set -eux
           # Run the deploy-tool AppImages without FUSE (unavailable on runners).
           export APPIMAGE_EXTRACT_AND_RUN=1
+          # linuxdeploy reads the app icon through ImageMagick; the runner's
+          # default policy.xml can refuse to read/convert images. Drop it so
+          # `convert` works on the placeholder icon generated below.
+          sudo rm -f /etc/ImageMagick-6/policy.xml /etc/ImageMagick-7/policy.xml || true
+
           ld=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
           ldqt=https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous
           curl -fsSL -o linuxdeploy "$ld/linuxdeploy-x86_64.AppImage"
@@ -116,10 +123,10 @@ jobs:
             'Exec=ScopeAnalyser' 'Icon=ScopeAnalyser' 'Terminal=false' \
             'Categories=Science;Utility;' \
             > AppDir/usr/share/applications/ScopeAnalyser.desktop
-          # 256x256 solid-colour placeholder icon (linuxdeploy requires a
-          # valid icon and runs it through libpng/CImg, so it must decode).
-          echo 'iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAACYUlEQVR42u3UMQEAAAQAQUlUE1U0Cmjghivww0dWD/BTiAAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAYABiAAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAYABiAAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAYABCAEGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAYABAAYAGABgAIABAAYAGABgAIABAAYAGABgAIABAAYAGABgAIABAAYAGABgAIABAAYAGABgAIABAAYAGABgAIABAAYAGABgAIABAAYAGABgAIABgAEABgAYAGAAgAEABgAYAGAAgAEABgAYAGAAgAEABgAYAGAAgAEABgAYAGAAgAEABgAYAGAAgAEABgAYAGAAgAEABgAYAGAAgAEABgAYAGAAgAGAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQAGABgAYACAAQCXBRIPIXZ6SsU0AAAAAElFTkSuQmCC' \
-            | base64 -d > AppDir/usr/share/icons/hicolor/256x256/apps/ScopeAnalyser.png
+          # 256x256 solid-colour placeholder icon, generated with the same
+          # ImageMagick that linuxdeploy later uses to read it.
+          convert -size 256x256 xc:'#1e5fbf' \
+            AppDir/usr/share/icons/hicolor/256x256/apps/ScopeAnalyser.png
 
           ./linuxdeploy --appdir AppDir \
             --executable build/bin/ScopeAnalyser \
