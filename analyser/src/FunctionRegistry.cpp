@@ -9,6 +9,7 @@
 #include <cstring>
 #include <deque>
 #include <limits>
+#include <utility>
 
 namespace scope::analyser {
 
@@ -157,110 +158,269 @@ std::shared_ptr<Signal> impl_Reverse(const FunctionArgs& a, QString* err) {
                             signal->meta().domain);
 }
 
-// ---- Butterworth low-/high-pass (shared core) ----
-// Cascade of RBJ biquads using the per-section Butterworth Q (plus a 1st-order
-// section for odd orders). The sample rate is derived from the timestamps — a
-// uniform-rate assumption; for non-uniform data this is an approximation.
-// Passband gain is unity. Causal, so it has phase lag — wrap in filtfilt() for
-// zero phase. `highpass` selects the high-pass coefficient set.
-static std::shared_ptr<Signal> butterworthImpl(const FunctionArgs& a,
-                                               bool highpass,
-                                               const QString& name,
-                                               QString* err) {
-    if (a.size() < 2 || a.size() > 3) {
-        if (err) *err = QString("%1 expects 2..3 args, got %2")
-                            .arg(name).arg(a.size());
-        return nullptr;
-    }
-    auto signal = a[0];
-    double fc = 0.0, orderArg = 2.0;
-    if (!asScalar(a[1], fc) || fc <= 0) {
-        if (err) *err = QString("%1: cutoff_hz must be a positive scalar").arg(name);
-        return nullptr;
-    }
-    if (a.size() == 3 && (!asScalar(a[2], orderArg) || orderArg < 1)) {
-        if (err) *err = QString("%1: order must be an integer >= 1").arg(name);
-        return nullptr;
-    }
-    const int order = std::max(1, static_cast<int>(std::lround(orderArg)));
+// ---- General IIR filter design (Butterworth / Chebyshev I / II) ----------
+// Pipeline mirrors scipy.signal: analog normalized-LP prototype (zero-pole-
+// gain) → frequency transform (LP/HP/BP/BS) with prewarped band edges →
+// bilinear transform → real second-order sections → direct-form-I cascade.
+// The sample rate is derived from the timestamps (uniform-rate assumption).
+// Causal, so it has phase lag — wrap in filtfilt() for zero phase.
+// band: 0 = low-pass, 1 = high-pass, 2 = band-pass, 3 = band-stop.
+// family: 0 = Butterworth, 1 = Chebyshev I (rp), 2 = Chebyshev II (rs).
+using Cplx = std::complex<double>;
 
+struct Zpk { std::vector<Cplx> z, p; double k{1.0}; };
+struct SOSec { double b0, b1, b2, a1, a2; };
+
+// Analog normalized low-pass prototypes (cutoff = 1 rad/s).
+Zpk butterAp(int n) {
+    Zpk r;
+    for (int i = 0; i < n; ++i) {
+        const double m = -n + 1 + 2 * i;        // -n+1, -n+3, …, n-1
+        r.p.push_back(-std::exp(Cplx(0.0, M_PI * m / (2.0 * n))));
+    }
+    return r;
+}
+
+Zpk cheby1Ap(int n, double rp) {
+    Zpk r;
+    const double eps = std::sqrt(std::pow(10.0, 0.1 * rp) - 1.0);
+    const double mu  = std::asinh(1.0 / eps) / n;
+    for (int i = 0; i < n; ++i) {
+        const double theta = M_PI * (-n + 1 + 2 * i) / (2.0 * n);
+        r.p.push_back(-std::sinh(Cplx(mu, theta)));
+    }
+    Cplx prod(1.0, 0.0);
+    for (const auto& pp : r.p) prod *= -pp;
+    r.k = prod.real();
+    if (n % 2 == 0) r.k /= std::sqrt(1.0 + eps * eps);   // even order: DC = ripple floor
+    return r;
+}
+
+Zpk cheby2Ap(int n, double rs) {
+    Zpk r;
+    const double de = 1.0 / std::sqrt(std::pow(10.0, 0.1 * rs) - 1.0);
+    const double mu = std::asinh(1.0 / de) / n;
+    for (int i = 0; i < n; ++i) {
+        const double m = -n + 1 + 2 * i;
+        if (n % 2 == 1 && m == 0.0) continue;            // odd → middle zero at ∞
+        r.z.push_back(Cplx(0.0, 1.0 / std::sin(m * M_PI / (2.0 * n))));
+    }
+    for (int i = 0; i < n; ++i) {
+        const double m = -n + 1 + 2 * i;
+        Cplx pp = -std::exp(Cplx(0.0, M_PI * m / (2.0 * n)));
+        pp = Cplx(std::sinh(mu) * pp.real(), std::cosh(mu) * pp.imag());
+        r.p.push_back(1.0 / pp);
+    }
+    Cplx numz(1.0, 0.0), nump(1.0, 0.0);
+    for (const auto& z : r.z) numz *= -z;
+    for (const auto& p : r.p) nump *= -p;
+    r.k = (nump / numz).real();
+    return r;
+}
+
+int relDeg(const Zpk& f) { return static_cast<int>(f.p.size()) - static_cast<int>(f.z.size()); }
+
+Zpk lp2lp(Zpk f, double wo) {
+    const int d = relDeg(f);
+    for (auto& z : f.z) z *= wo;
+    for (auto& p : f.p) p *= wo;
+    f.k *= std::pow(wo, d);
+    return f;
+}
+Zpk lp2hp(Zpk f, double wo) {
+    const int d = relDeg(f);
+    Cplx numz(1, 0), nump(1, 0);
+    for (auto& z : f.z) numz *= -z;
+    for (auto& p : f.p) nump *= -p;
+    for (auto& z : f.z) z = wo / z;
+    for (auto& p : f.p) p = wo / p;
+    for (int i = 0; i < d; ++i) f.z.push_back(Cplx(0, 0));   // zeros at origin
+    f.k *= (numz / nump).real();
+    return f;
+}
+Zpk lp2bp(Zpk f, double wo, double bw) {
+    const int d = relDeg(f);
+    for (auto& z : f.z) z *= bw / 2.0;
+    for (auto& p : f.p) p *= bw / 2.0;
+    std::vector<Cplx> z2, p2;
+    for (auto& z : f.z) { Cplx s = std::sqrt(z * z - wo * wo); z2.push_back(z + s); z2.push_back(z - s); }
+    for (auto& p : f.p) { Cplx s = std::sqrt(p * p - wo * wo); p2.push_back(p + s); p2.push_back(p - s); }
+    for (int i = 0; i < d; ++i) z2.push_back(Cplx(0, 0));
+    f.z = z2; f.p = p2;
+    f.k *= std::pow(bw, d);
+    return f;
+}
+Zpk lp2bs(Zpk f, double wo, double bw) {
+    const int d = relDeg(f);
+    Cplx numz(1, 0), nump(1, 0);
+    for (auto& z : f.z) numz *= -z;
+    for (auto& p : f.p) nump *= -p;
+    std::vector<Cplx> z2, p2;
+    for (auto& z : f.z) { Cplx h = (bw / 2.0) / z; Cplx s = std::sqrt(h * h - wo * wo); z2.push_back(h + s); z2.push_back(h - s); }
+    for (auto& p : f.p) { Cplx h = (bw / 2.0) / p; Cplx s = std::sqrt(h * h - wo * wo); p2.push_back(h + s); p2.push_back(h - s); }
+    for (int i = 0; i < d; ++i) { z2.push_back(Cplx(0, wo)); z2.push_back(Cplx(0, -wo)); }
+    f.z = z2; f.p = p2;
+    f.k *= (numz / nump).real();
+    return f;
+}
+Zpk bilinear(Zpk f, double fs) {
+    const double fs2 = 2.0 * fs;
+    const int d = relDeg(f);
+    Cplx numz(1, 0), nump(1, 0);
+    for (auto& z : f.z) numz *= (fs2 - z);
+    for (auto& p : f.p) nump *= (fs2 - p);
+    std::vector<Cplx> z2, p2;
+    for (auto& z : f.z) z2.push_back((fs2 + z) / (fs2 - z));
+    for (auto& p : f.p) p2.push_back((fs2 + p) / (fs2 - p));
+    for (int i = 0; i < d; ++i) z2.push_back(Cplx(-1, 0));   // bilinear maps ∞ → z=-1
+    f.z = z2; f.p = p2;
+    f.k *= (numz / nump).real();
+    return f;
+}
+
+// Factor a conjugate-symmetric root set into real polynomial factors (1 + c1
+// z^-1 + c2 z^-2); a lone real root gives c2 = 0 (a 1st-order factor).
+std::vector<std::pair<double, double>> rootsToFactors(const std::vector<Cplx>& roots) {
+    std::vector<std::pair<double, double>> out;
+    std::vector<double> reals;
+    for (const auto& r : roots) {
+        if (std::abs(r.imag()) < 1e-9)      reals.push_back(r.real());
+        else if (r.imag() > 0.0)            out.push_back({-2.0 * r.real(), std::norm(r)});
+    }
+    std::sort(reals.begin(), reals.end());
+    std::size_t i = 0;
+    for (; i + 1 < reals.size(); i += 2)
+        out.push_back({-(reals[i] + reals[i + 1]), reals[i] * reals[i + 1]});
+    if (i < reals.size()) out.push_back({-reals[i], 0.0});
+    return out;
+}
+
+// Digital zpk → second-order sections. Any pairing is algebraically exact (the
+// cascade product is the full transfer function); fine numerically for the
+// modest orders here.
+std::vector<SOSec> zpk2sos(const Zpk& f) {
+    auto nums = rootsToFactors(f.z);
+    auto dens = rootsToFactors(f.p);
+    while (nums.size() < dens.size()) nums.push_back({0.0, 0.0});
+    while (dens.size() < nums.size()) dens.push_back({0.0, 0.0});
+    std::vector<SOSec> sos;
+    for (std::size_t i = 0; i < dens.size(); ++i)
+        sos.push_back({1.0, nums[i].first, nums[i].second, dens[i].first, dens[i].second});
+    if (!sos.empty()) { sos[0].b0 *= f.k; sos[0].b1 *= f.k; sos[0].b2 *= f.k; }
+    return sos;
+}
+
+std::vector<SOSec> designIIR(int family, int band, int order,
+                             double f1, double f2, double rp, double rs, double fs) {
+    Zpk proto = (family == 1) ? cheby1Ap(order, rp)
+              : (family == 2) ? cheby2Ap(order, rs)
+                              : butterAp(order);
+    auto warp = [&](double f) { return 2.0 * fs * std::tan(M_PI * f / fs); };
+    Zpk a;
+    if (band == 1) {
+        a = lp2hp(proto, warp(f1));
+    } else if (band == 2 || band == 3) {
+        const double w1 = warp(f1), w2 = warp(f2);
+        const double wo = std::sqrt(w1 * w2), bw = w2 - w1;
+        a = (band == 2) ? lp2bp(proto, wo, bw) : lp2bs(proto, wo, bw);
+    } else {
+        a = lp2lp(proto, warp(f1));
+    }
+    return zpk2sos(bilinear(a, fs));
+}
+
+std::shared_ptr<Signal> applyIIR(const std::shared_ptr<Signal>& signal,
+                                 int family, int band, int order,
+                                 double f1, double f2, double rp, double rs,
+                                 const QString& name, QString* err) {
     auto view = signal->snapshotForRead();
     auto src  = signal->readAsDouble();
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(src.begin(), src.end());
-    if (view.count < 2)
-        return makeDoubleSignal(name, ts, dst, signal->meta().unit);
+    if (view.count < 2) return makeDoubleSignal(name, ts, dst, signal->meta().unit);
 
     const double spanSec = (ts.back() - ts.front()) * 1e-9;
-    if (spanSec <= 0) {
-        if (err) *err = QString("%1: timestamps must be increasing").arg(name);
-        return nullptr;
-    }
+    if (spanSec <= 0) { if (err) *err = name + ": timestamps must be increasing"; return nullptr; }
     const double fs = (view.count - 1) / spanSec;
-    if (fc >= fs / 2.0) {
-        if (err) *err = QString("%1: cutoff %2 Hz must be below the Nyquist "
-                                "frequency (%3 Hz)").arg(name).arg(fc).arg(fs / 2.0);
+
+    const bool isBand = (band == 2 || band == 3);
+    if (f1 <= 0 || (isBand && (f2 <= 0 || f2 <= f1))) {
+        if (err) *err = name + (isBand ? ": need 0 < f1 < f2" : ": cutoff must be > 0");
+        return nullptr;
+    }
+    const double hi = isBand ? f2 : f1;
+    if (hi >= fs / 2.0) {
+        if (err) *err = QString("%1: cutoff must be below the Nyquist frequency (%2 Hz)")
+                            .arg(name).arg(fs / 2.0);
+        return nullptr;
+    }
+    if ((family == 1 && rp <= 0) || (family == 2 && rs <= 0)) {
+        if (err) *err = name + ": ripple / attenuation (dB) must be > 0";
         return nullptr;
     }
 
-    const double w0   = 2.0 * M_PI * fc / fs;
-    const double cosw = std::cos(w0);
-    const double sinw = std::sin(w0);
-
-    // Direct-form-I biquad applied in place over dst.
-    auto applyBiquad = [&](double b0, double b1, double b2, double a1, double a2) {
+    const auto sos = designIIR(family, band, order, f1, f2, rp, rs, fs);
+    for (const auto& s : sos) {
         double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-        for (double& sample : dst) {
-            const double x0 = sample;
-            const double y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        for (double& smp : dst) {
+            const double x0 = smp;
+            const double y0 = s.b0 * x0 + s.b1 * x1 + s.b2 * x2 - s.a1 * y1 - s.a2 * y2;
             x2 = x1; x1 = x0; y2 = y1; y1 = y0;
-            sample = y0;
-        }
-    };
-
-    const int nBiquads = order / 2;
-    for (int m = 0; m < nBiquads; ++m) {
-        // Butterworth pole-pair angle → section Q. cos(phi) < 0 here, so Q > 0.
-        const double phi = M_PI * (2.0 * m + order + 1.0) / (2.0 * order);
-        const double Q   = -1.0 / (2.0 * std::cos(phi));
-        const double alpha = sinw / (2.0 * Q);
-        const double a0 = 1.0 + alpha;
-        if (highpass) {
-            applyBiquad( (1.0 + cosw) / 2.0 / a0,
-                        -(1.0 + cosw)       / a0,
-                         (1.0 + cosw) / 2.0 / a0,
-                         (-2.0 * cosw)      / a0,
-                         (1.0 - alpha)      / a0);
-        } else {
-            applyBiquad((1.0 - cosw) / 2.0 / a0,
-                        (1.0 - cosw)       / a0,
-                        (1.0 - cosw) / 2.0 / a0,
-                        (-2.0 * cosw)      / a0,
-                        (1.0 - alpha)      / a0);
-        }
-    }
-    if (order % 2 == 1) {
-        // Odd order → one real pole: a 1st-order section at fc (bilinear).
-        const double c  = std::tan(w0 / 2.0);
-        const double a1 = (c - 1.0) / (1.0 + c);
-        const double b0 = highpass ? 1.0 / (1.0 + c) : c / (1.0 + c);
-        const double b1 = highpass ? -b0 : b0;
-        double x1 = 0, y1 = 0;
-        for (double& sample : dst) {
-            const double x0 = sample;
-            const double y0 = b0 * x0 + b1 * x1 - a1 * y1;
-            x1 = x0; y1 = y0;
-            sample = y0;
+            smp = y0;
         }
     }
     return makeDoubleSignal(name, ts, dst, signal->meta().unit);
 }
 
-std::shared_ptr<Signal> impl_Butterworth(const FunctionArgs& a, QString* err) {
-    return butterworthImpl(a, /*highpass=*/false, "Butterworth", err);
+// Shared front-end for the band-coded IIR functions. Arg layout:
+//   Butterworth(signal, band, order, f1 [, f2])
+//   Cheby1/2   (signal, band, order, ripple_dB, f1 [, f2])
+std::shared_ptr<Signal> iirCommon(const FunctionArgs& a, int family,
+                                  bool hasRipple, const QString& name, QString* err) {
+    const std::size_t base = hasRipple ? 4 : 3;   // index of f1
+    if (a.size() < base + 1 || a.size() > base + 2) {
+        if (err) *err = name + (hasRipple
+            ? ": expected (signal, band, order, ripple_dB, f1 [, f2])"
+            : ": expected (signal, band, order, f1 [, f2]); band 0=LP 1=HP 2=BP 3=BS");
+        return nullptr;
+    }
+    double bandD = 0, orderD = 0, rip = 0, f1 = 0, f2 = 0;
+    if (!asScalar(a[1], bandD) || !asScalar(a[2], orderD)) {
+        if (err) *err = name + ": band and order must be scalars";
+        return nullptr;
+    }
+    const int band  = static_cast<int>(std::lround(bandD));
+    const int order = std::max(1, static_cast<int>(std::lround(orderD)));
+    if (band < 0 || band > 3) {
+        if (err) *err = name + ": band must be 0=LP, 1=HP, 2=BP, 3=BS";
+        return nullptr;
+    }
+    if (hasRipple && !asScalar(a[3], rip)) {
+        if (err) *err = name + ": ripple/attenuation (dB) must be a scalar";
+        return nullptr;
+    }
+    if (!asScalar(a[base], f1)) { if (err) *err = name + ": f1 must be a scalar"; return nullptr; }
+    const bool isBand = (band == 2 || band == 3);
+    if (isBand) {
+        if (a.size() != base + 2) { if (err) *err = name + ": band-pass/stop need f1 and f2"; return nullptr; }
+        if (!asScalar(a[base + 1], f2)) { if (err) *err = name + ": f2 must be a scalar"; return nullptr; }
+    } else if (a.size() != base + 1) {
+        if (err) *err = name + ": low/high-pass take a single cutoff";
+        return nullptr;
+    }
+    const double rpv = (family == 1) ? rip : 0.0;
+    const double rsv = (family == 2) ? rip : 0.0;
+    return applyIIR(a[0], family, band, order, f1, f2, rpv, rsv, name, err);
 }
-std::shared_ptr<Signal> impl_ButterworthHP(const FunctionArgs& a, QString* err) {
-    return butterworthImpl(a, /*highpass=*/true, "ButterworthHP", err);
+
+std::shared_ptr<Signal> impl_Butterworth(const FunctionArgs& a, QString* err) {
+    return iirCommon(a, 0, /*hasRipple=*/false, "Butterworth", err);
+}
+std::shared_ptr<Signal> impl_Cheby1(const FunctionArgs& a, QString* err) {
+    return iirCommon(a, 1, /*hasRipple=*/true, "Cheby1", err);
+}
+std::shared_ptr<Signal> impl_Cheby2(const FunctionArgs& a, QString* err) {
+    return iirCommon(a, 2, /*hasRipple=*/true, "Cheby2", err);
 }
 
 // ---- Integral(signal) ----
@@ -1264,14 +1424,18 @@ void FunctionRegistry::registerBuiltins() {
         "1st-order high-pass: removes slow drift / DC, passes fast changes "
         "(complement of Filter; same cutoff). Causal — wrap in filtfilt() "
         "for zero phase.", 2, 2, &impl_FilterHP);
-    add("Butterworth","Butterworth(signal, cutoff_hz, order)",
-        "Digital Butterworth low-pass (uniform-rate, bilinear). order is "
-        "optional (default 2). Causal — wrap in filtfilt() for zero phase.",
-        2, 3, &impl_Butterworth);
-    add("ButterworthHP","ButterworthHP(signal, cutoff_hz, order)",
-        "Digital Butterworth high-pass (uniform-rate, bilinear). order is "
-        "optional (default 2). Causal — wrap in filtfilt() for zero phase.",
-        2, 3, &impl_ButterworthHP);
+    add("Butterworth","Butterworth(signal, band, order, f1 [, f2])",
+        "Butterworth IIR (maximally flat). band: 0=low 1=high 2=band-pass "
+        "3=band-stop (band-pass/stop need f1 and f2). Causal — wrap in "
+        "filtfilt() for zero phase.", 4, 5, &impl_Butterworth);
+    add("Cheby1","Cheby1(signal, band, order, ripple_dB, f1 [, f2])",
+        "Chebyshev type I IIR — steeper than Butterworth, with ripple_dB "
+        "ripple in the passband. band: 0=low 1=high 2=band-pass 3=band-stop. "
+        "Causal — wrap in filtfilt() for zero phase.", 5, 6, &impl_Cheby1);
+    add("Cheby2","Cheby2(signal, band, order, atten_dB, f1 [, f2])",
+        "Chebyshev type II IIR — flat passband, atten_dB attenuation with "
+        "ripple in the stopband. band: 0=low 1=high 2=band-pass 3=band-stop. "
+        "Causal — wrap in filtfilt() for zero phase.", 5, 6, &impl_Cheby2);
     add("Reverse",    "Reverse(signal)",
         "Flip the signal in time (values reversed, timestamps preserved). "
         "Reversing twice returns the original.", 1, 1, &impl_Reverse);

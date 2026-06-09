@@ -822,7 +822,7 @@ TEST(FormulaEngine, ButterworthPassesDC) {
     store.add(makeSeries("A", std::vector<double>(200, 5.0), 100.0));
     FormulaEngine engine(store);
     QString err;
-    ASSERT_TRUE(engine.evaluate("B = Butterworth(A, 10, 2)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("B = Butterworth(A, 0, 2, 10)", &err)) << err.toStdString();
     auto bv = store.get("B")->readAsDouble();
     EXPECT_NEAR(bv.back(), 5.0, 1e-6);          // unity DC gain → settles to input
 }
@@ -834,8 +834,8 @@ TEST(FormulaEngine, ButterworthLowPassSeparatesBands) {
     store.add(makeSine("HIGH", 4000, fs, 200.0, 1.0));   // well above cutoff
     FormulaEngine engine(store);
     QString err;
-    ASSERT_TRUE(engine.evaluate("BL = Butterworth(LOW,  50, 4)", &err)) << err.toStdString();
-    ASSERT_TRUE(engine.evaluate("BH = Butterworth(HIGH, 50, 4)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BL = Butterworth(LOW,  0, 4, 50)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BH = Butterworth(HIGH, 0, 4, 50)", &err)) << err.toStdString();
     auto amp = [](const std::shared_ptr<Signal>& s) {
         auto v = s->readAsDouble();
         double m = 0;
@@ -852,7 +852,7 @@ TEST(FormulaEngine, ButterworthMinus3dBAtCutoff) {
     store.add(makeSine("S", 8000, fs, fc, 1.0));   // sine exactly at the cutoff
     FormulaEngine engine(store);
     QString err;
-    ASSERT_TRUE(engine.evaluate("B = Butterworth(S, 100, 4)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("B = Butterworth(S, 0, 4, 100)", &err)) << err.toStdString();
     auto v = store.get("B")->readAsDouble();
     double m = 0;
     for (std::size_t i = v.size() / 2; i < v.size(); ++i) m = std::max(m, std::abs(v[i]));
@@ -864,7 +864,7 @@ TEST(FormulaEngine, ButterworthRejectsCutoffAboveNyquist) {
     store.add(makeSine("S", 200, 100.0, 5.0, 1.0));   // fs = 100 → Nyquist 50
     FormulaEngine engine(store);
     QString err;
-    EXPECT_FALSE(engine.evaluate("B = Butterworth(S, 60, 2)", &err));
+    EXPECT_FALSE(engine.evaluate("B = Butterworth(S, 0, 2, 60)", &err));
     EXPECT_FALSE(err.isEmpty());
 }
 
@@ -902,7 +902,7 @@ TEST(FormulaEngine, FiltFiltWithButterworthIsZeroPhase) {
     store.add(makePulse("P", 1000, center, 1000.0));
     FormulaEngine engine(store);
     QString err;
-    ASSERT_TRUE(engine.evaluate("FF = filtfilt(Butterworth, P, 30, 4)", &err))
+    ASSERT_TRUE(engine.evaluate("FF = filtfilt(Butterworth, P, 0, 4, 30)", &err))
         << err.toStdString();
     auto v = store.get("FF")->readAsDouble();
     int best = 0; double bv = v[0];
@@ -968,8 +968,8 @@ TEST(FormulaEngine, ButterworthHighPassSeparatesBands) {
     store.add(makeSine("LOW",  4000, fs,   5.0, 1.0));   // below cutoff → blocked
     store.add(makeSine("HIGH", 4000, fs, 200.0, 1.0));   // above cutoff → passes
     FormulaEngine engine(store); QString err;
-    ASSERT_TRUE(engine.evaluate("BL = ButterworthHP(LOW,  50, 4)", &err)) << err.toStdString();
-    ASSERT_TRUE(engine.evaluate("BH = ButterworthHP(HIGH, 50, 4)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BL = Butterworth(LOW,  1, 4, 50)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BH = Butterworth(HIGH, 1, 4, 50)", &err)) << err.toStdString();
     auto amp = [&](const char* nm) {
         auto v = store.get(nm)->readAsDouble();
         double m = 0; for (std::size_t i = v.size()/2; i < v.size(); ++i) m = std::max(m, std::abs(v[i]));
@@ -978,7 +978,77 @@ TEST(FormulaEngine, ButterworthHighPassSeparatesBands) {
     EXPECT_LT(amp("BL"), 0.1);    // low frequency blocked
     EXPECT_GT(amp("BH"), 0.9);    // high frequency passes
     // and it composes in filtfilt for a zero-phase high-pass
-    ASSERT_TRUE(engine.evaluate("Z = filtfilt(ButterworthHP, HIGH, 50, 4)", &err))
+    ASSERT_TRUE(engine.evaluate("Z = filtfilt(Butterworth, HIGH, 1, 4, 50)", &err))
         << err.toStdString();
     EXPECT_EQ(store.get("Z")->sampleCount(), 4000u);
+}
+
+// Steady-state amplitude over the second half (avoids the startup transient).
+static double ssAmp(const std::shared_ptr<Signal>& s) {
+    auto v = s->readAsDouble();
+    double m = 0;
+    for (std::size_t i = v.size() / 2; i < v.size(); ++i) m = std::max(m, std::abs(v[i]));
+    return m;
+}
+
+TEST(FormulaEngine, Cheby1LowPassRippleAndStopband) {
+    SignalStore store;
+    const double fs = 1000.0;
+    store.add(makeSine("LOW",  4000, fs,   5.0, 1.0));   // deep in passband
+    store.add(makeSine("HIGH", 4000, fs, 200.0, 1.0));   // deep in stopband
+    FormulaEngine engine(store); QString err;
+    // order 4, 1 dB passband ripple, cutoff 50 Hz
+    ASSERT_TRUE(engine.evaluate("PL = Cheby1(LOW,  0, 4, 1, 50)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("PH = Cheby1(HIGH, 0, 4, 1, 50)", &err)) << err.toStdString();
+    // passband stays within the 1 dB ripple band [10^(-1/20), 1] ≈ [0.891, 1]
+    EXPECT_GT(ssAmp(store.get("PL")), 0.85);
+    EXPECT_LT(ssAmp(store.get("PL")), 1.05);
+    EXPECT_LT(ssAmp(store.get("PH")), 0.1);    // stopband
+}
+
+TEST(FormulaEngine, Cheby2LowPassFlatPassbandStopAttenuation) {
+    SignalStore store;
+    const double fs = 1000.0;
+    store.add(makeSine("LOW",  4000, fs,   5.0, 1.0));
+    store.add(makeSine("HIGH", 4000, fs, 200.0, 1.0));
+    FormulaEngine engine(store); QString err;
+    // order 4, 40 dB stopband attenuation, cutoff 50 Hz
+    ASSERT_TRUE(engine.evaluate("PL = Cheby2(LOW,  0, 4, 40, 50)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("PH = Cheby2(HIGH, 0, 4, 40, 50)", &err)) << err.toStdString();
+    EXPECT_GT(ssAmp(store.get("PL")), 0.95);   // flat passband
+    EXPECT_LT(ssAmp(store.get("PH")), 0.05);   // stopband ≤ ~10^(-40/20)=0.01
+}
+
+TEST(FormulaEngine, BandPassAndBandStop) {
+    SignalStore store;
+    const double fs = 1000.0;
+    store.add(makeSine("LO",  4000, fs,   10.0, 1.0));   // below band
+    store.add(makeSine("MID", 4000, fs,   50.0, 1.0));   // inside band (40..60)
+    store.add(makeSine("HI",  4000, fs,  200.0, 1.0));   // above band
+    FormulaEngine engine(store); QString err;
+    // Band-pass 40..60 Hz
+    ASSERT_TRUE(engine.evaluate("BPlo  = Butterworth(LO,  2, 2, 40, 60)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BPmid = Butterworth(MID, 2, 2, 40, 60)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BPhi  = Butterworth(HI,  2, 2, 40, 60)", &err)) << err.toStdString();
+    EXPECT_GT(ssAmp(store.get("BPmid")), 0.7);
+    EXPECT_LT(ssAmp(store.get("BPlo")),  0.2);
+    EXPECT_LT(ssAmp(store.get("BPhi")),  0.2);
+    // Band-stop 40..60 Hz: the complement
+    ASSERT_TRUE(engine.evaluate("BSlo  = Butterworth(LO,  3, 2, 40, 60)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BSmid = Butterworth(MID, 3, 2, 40, 60)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("BShi  = Butterworth(HI,  3, 2, 40, 60)", &err)) << err.toStdString();
+    EXPECT_LT(ssAmp(store.get("BSmid")), 0.3);
+    EXPECT_GT(ssAmp(store.get("BSlo")),  0.8);
+    EXPECT_GT(ssAmp(store.get("BShi")),  0.8);
+}
+
+TEST(FormulaEngine, IirRejectsBadArgs) {
+    SignalStore store;
+    store.add(makeSine("S", 1000, 1000.0, 5.0, 1.0));
+    FormulaEngine engine(store); QString err;
+    EXPECT_FALSE(engine.evaluate("a = Butterworth(S, 5, 4, 50)", &err));     // band out of range
+    EXPECT_FALSE(engine.evaluate("b = Butterworth(S, 2, 4, 50)", &err));     // BP needs f2
+    EXPECT_FALSE(engine.evaluate("c = Butterworth(S, 0, 4, 50, 60)", &err)); // LP takes one cutoff
+    EXPECT_FALSE(engine.evaluate("d = Cheby1(S, 0, 4, 50)", &err));          // missing ripple arg
+    EXPECT_TRUE (engine.evaluate("e = filtfilt(Cheby1, S, 0, 4, 1, 50)", &err)) << err.toStdString();
 }
