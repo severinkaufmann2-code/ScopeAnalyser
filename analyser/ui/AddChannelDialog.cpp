@@ -287,7 +287,6 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
 
     // ---- Functions + live response --------------------------------------
     funcList_ = new QListWidget(this);
-    funcList_->setMouseTracking(true);
     helpBrowser_ = new QTextBrowser(this);
     helpBrowser_->setMaximumHeight(96);
 
@@ -343,7 +342,7 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
     auto* rightBox = new QWidget(this);
     auto* rightLayout = new QVBoxLayout(rightBox);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->addWidget(new QLabel("Functions (hover to preview):", this));
+    rightLayout->addWidget(new QLabel("Functions (click to preview):", this));
     rightLayout->addWidget(funcList_, /*stretch=*/1);
     rightLayout->addWidget(helpBrowser_);
     rightLayout->addWidget(previewLabel_);
@@ -375,9 +374,10 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
     connect(rippleStopSpin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double){ onBuilderChanged(); });
     connect(insertBtn_, &QPushButton::clicked, this, &AddChannelDialog::onInsertFilter);
-    connect(funcList_, &QListWidget::itemEntered, this, &AddChannelDialog::onFunctionHovered);
+    // Update the preview/description on selection (click or keyboard), not on
+    // hover.
     connect(funcList_, &QListWidget::currentItemChanged, this,
-            [this](QListWidgetItem* cur, QListWidgetItem*){ if (cur) onFunctionHovered(cur); });
+            [this](QListWidgetItem* cur, QListWidgetItem*){ if (cur) onFunctionSelected(cur); });
 
     buildHelp();
     refreshCompletions();
@@ -505,7 +505,7 @@ void AddChannelDialog::onInsertFilter() {
         nameEdit_->setText(src + "_" + fam.toLower());
 }
 
-void AddChannelDialog::onFunctionHovered(QListWidgetItem* item) {
+void AddChannelDialog::onFunctionSelected(QListWidgetItem* item) {
     if (!item) return;
     const QString name = item->data(Qt::UserRole).toString();
     if (const auto* d = FunctionRegistry::instance().find(name)) {

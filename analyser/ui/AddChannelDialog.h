@@ -60,7 +60,7 @@ private:
     void rebuildBandCombo();          // band options depend on the family
     void onBuilderChanged();          // refresh field visibility + preview
     void onInsertFilter();            // write the generated formula
-    void onFunctionHovered(QListWidgetItem* item);  // chart the hovered function
+    void onFunctionSelected(QListWidgetItem* item);  // chart/describe on click
     // fixedScale = true (hover) → identical axes for every filter, for easy
     // comparison; false (builder) → auto-fit the one filter being designed.
     void plotResponse(const QString& family, int band, int ripDb, int ripStopDb,
