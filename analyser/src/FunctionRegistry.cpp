@@ -1632,4 +1632,59 @@ void FunctionRegistry::registerBuiltins() {
         2, 2, &impl_Resample);
 }
 
+FilterFreqResponse filterFreqResponse(const FilterPlotSpec& spec, int nPoints) {
+    if (nPoints < 2) nPoints = 2;
+    const double fs = 100000.0;                     // nominal — shape only
+    const bool isBand = (spec.band == 2 || spec.band == 3);
+    const double f1 = isBand ? fs / 200.0 : fs / 100.0;   // 500 Hz / 1000 Hz
+    const double f2 = isBand ? fs / 40.0  : 0.0;          // 2500 Hz
+
+    const bool isIIR = (spec.family == "Butterworth"
+                        || spec.family == "Cheby1" || spec.family == "Cheby2");
+    std::vector<SOSec> sos;
+    double alpha = 0.0; int ptN = 1; const bool ptHigh = (spec.band == 1);
+    if (isIIR) {
+        const int fam = (spec.family == "Cheby1") ? 1 : (spec.family == "Cheby2") ? 2 : 0;
+        const double rp = (fam == 1) ? spec.ripple : 0.0;
+        const double rs = (fam == 2) ? spec.ripple : 0.0;
+        sos = designIIR(fam, spec.band, std::max(1, spec.order), f1, f2, rp, rs, fs);
+    } else {
+        const double tau = 1.0 / (2.0 * M_PI * f1);
+        const double dt  = 1.0 / fs;
+        alpha = dt / (tau + dt);
+        ptN = (spec.family == "Filter") ? 1 : std::max(1, spec.order);
+    }
+
+    FilterFreqResponse out;
+    out.fs = fs;
+    out.fc = isBand ? std::sqrt(f1 * f2) : f1;
+    const double fLo = (isBand ? f1 : f1) / 100.0;
+    const double fHi = fs * 0.47;
+    out.freqHz.reserve(nPoints);
+    out.magDb.reserve(nPoints);
+    out.phaseDeg.reserve(nPoints);
+    for (int i = 0; i < nPoints; ++i) {
+        const double t = static_cast<double>(i) / (nPoints - 1);
+        const double f = fLo * std::pow(fHi / fLo, t);   // log grid
+        const double w = 2.0 * M_PI * f / fs;
+        Cplx H;
+        if (isIIR) {
+            const Cplx z1 = std::exp(Cplx(0, -w)), z2 = std::exp(Cplx(0, -2.0 * w));
+            H = Cplx(1, 0);
+            for (const auto& s : sos)
+                H *= (s.b0 + s.b1 * z1 + s.b2 * z2) / (1.0 + s.a1 * z1 + s.a2 * z2);
+        } else {
+            const Cplx z1 = std::exp(Cplx(0, -w));
+            const Cplx Hlp = alpha / (1.0 - (1.0 - alpha) * z1);
+            const Cplx Hs  = ptHigh ? (Cplx(1, 0) - Hlp) : Hlp;
+            H = Cplx(1, 0);
+            for (int k = 0; k < ptN; ++k) H *= Hs;
+        }
+        out.freqHz.push_back(f);
+        out.magDb.push_back(20.0 * std::log10(std::max(std::abs(H), 1e-9)));
+        out.phaseDeg.push_back(std::arg(H) * 180.0 / M_PI);
+    }
+    return out;
+}
+
 }  // namespace scope::analyser

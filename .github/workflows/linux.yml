@@ -85,7 +85,7 @@ jobs:
         # teardown quirk. They pass with a real display locally and on the
         # Windows runner, so exclude just those two here rather than mask
         # failures across the suite.
-        run: ctest --test-dir build -C "$BUILD_TYPE" --output-on-failure -E 'AnalyserPlotLayoutTest'
+        run: ctest --test-dir build -C "$BUILD_TYPE" --output-on-failure -E 'AnalyserPlotLayoutTest|AddChannelDialogTest'
 
       # --- Package ------------------------------------------------------------
       # linuxdeploy bundles the Qt libraries + plugins (xcb platform etc.) into

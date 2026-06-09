@@ -26,6 +26,27 @@ struct FunctionDescriptor {
     FunctionImpl impl;
 };
 
+// ---- Filter frequency-response preview --------------------------------
+// Computes the magnitude/phase response of a filter family for the Add-Channel
+// help charts. The response is on a NOMINAL sample rate + cutoff (the real
+// cutoff depends on the channel's sample rate), so it shows the *shape* —
+// rolloff steepness, ripple, phase behaviour — against a normalized frequency
+// axis (freqHz / fc). Reuses the same design pipeline the filters run.
+struct FilterPlotSpec {
+    QString family;        // "Filter", "PT", "Butterworth", "Cheby1", "Cheby2"
+    int     band{0};       // 0=low 1=high 2=band-pass 3=band-stop
+    int     order{2};
+    double  ripple{1.0};   // dB — Cheby1 passband ripple / Cheby2 stop attenuation
+};
+struct FilterFreqResponse {
+    std::vector<double> freqHz;     // log-spaced grid (nominal fs)
+    std::vector<double> magDb;
+    std::vector<double> phaseDeg;
+    double fs{0.0};                 // nominal sample rate used
+    double fc{0.0};                 // nominal cutoff (freqHz/fc = normalized axis)
+};
+FilterFreqResponse filterFreqResponse(const FilterPlotSpec& spec, int nPoints = 400);
+
 class FunctionRegistry {
 public:
     static FunctionRegistry& instance();

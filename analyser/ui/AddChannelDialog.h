@@ -4,9 +4,19 @@
 #include <QString>
 #include <QStringList>
 
+#include <vector>
+
 class QLineEdit;
 class QPlainTextEdit;
 class QTextBrowser;
+class QComboBox;
+class QSpinBox;
+class QDoubleSpinBox;
+class QListWidget;
+class QLabel;
+class QPushButton;
+class QListWidgetItem;
+class QCustomPlot;
 
 namespace scope::core { class SignalStore; }
 
@@ -45,6 +55,14 @@ private:
     void refreshCompletions();
     void buildHelp();
 
+    // Filter builder + live response preview.
+    void rebuildBandCombo();          // band options depend on the family
+    void onBuilderChanged();          // refresh field visibility + preview
+    void onInsertFilter();            // write the generated formula
+    void onFunctionHovered(QListWidgetItem* item);  // chart the hovered filter
+    void plotResponse(const QString& family, int band, int ripDb,
+                      const std::vector<int>& orders);
+
     scope::core::SignalStore& store_;
     FormulaEngine&            engine_;
 
@@ -53,6 +71,26 @@ private:
     QTextBrowser*    helpBrowser_{nullptr};
     QStringList      completions_;
     QString          originalName_;   // non-empty → editing
+
+    // Builder widgets.
+    QComboBox*       srcCombo_{nullptr};
+    QComboBox*       familyCombo_{nullptr};
+    QComboBox*       bandCombo_{nullptr};
+    QSpinBox*        orderSpin_{nullptr};
+    QLabel*          orderLabel_{nullptr};
+    QDoubleSpinBox*  tauSpin_{nullptr};
+    QLabel*          tauLabel_{nullptr};
+    QDoubleSpinBox*  f1Spin_{nullptr};
+    QLabel*          f1Label_{nullptr};
+    QDoubleSpinBox*  f2Spin_{nullptr};
+    QLabel*          f2Label_{nullptr};
+    QDoubleSpinBox*  rippleSpin_{nullptr};
+    QLabel*          rippleLabel_{nullptr};
+    QPushButton*     insertBtn_{nullptr};
+
+    QListWidget*     funcList_{nullptr};
+    QCustomPlot*     magPlot_{nullptr};
+    QCustomPlot*     phasePlot_{nullptr};
 };
 
 }  // namespace scope::analyser::ui

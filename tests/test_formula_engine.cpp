@@ -1087,3 +1087,27 @@ TEST(FormulaEngine, PtRejectsBandPass) {
     EXPECT_FALSE(engine.evaluate("b = PT(S, 0, 2)", &err));         // missing tau
     EXPECT_TRUE (engine.evaluate("c = filtfilt(PT, S, 0, 2, 0.05)", &err)) << err.toStdString();
 }
+
+TEST(FormulaEngine, FilterResponsePreviewSanity) {
+    auto magAt = [](const FilterFreqResponse& r, double ratio) {
+        double best = 1e18, m = 0;
+        for (std::size_t i = 0; i < r.freqHz.size(); ++i) {
+            const double d = std::abs(r.freqHz[i] / r.fc - ratio);
+            if (d < best) { best = d; m = r.magDb[i]; }
+        }
+        return m;
+    };
+    // Butterworth low-pass order 4: ~0 dB passband, -3 dB at fc, steep rolloff.
+    FilterPlotSpec lp; lp.family = "Butterworth"; lp.band = 0; lp.order = 4;
+    const auto rl = filterFreqResponse(lp);
+    ASSERT_GT(rl.fc, 0.0);
+    ASSERT_EQ(rl.freqHz.size(), rl.magDb.size());
+    EXPECT_GT(magAt(rl, 0.1),  -1.0);
+    EXPECT_NEAR(magAt(rl, 1.0), -3.0, 1.5);
+    EXPECT_LT(magAt(rl, 8.0), -40.0);
+    // 1st-order high-pass: blocks DC-side, passes high.
+    FilterPlotSpec hp; hp.family = "Filter"; hp.band = 1; hp.order = 1;
+    const auto rh = filterFreqResponse(hp);
+    EXPECT_LT(magAt(rh, 0.1), -15.0);
+    EXPECT_GT(magAt(rh, 10.0), -1.0);
+}

@@ -6,6 +6,7 @@
 // AnalyserPlot so it can call those two directly.
 
 #include "AnalyserPlot.h"
+#include "AddChannelDialog.h"
 
 #include "scope/analyser/FormulaEngine.h"
 #include "scope/core/Signal.h"
@@ -129,4 +130,17 @@ TEST_F(AnalyserPlotLayoutTest, TimeAxisAssignmentsRoundTripThroughWidget) {
     for (const auto& c : out.channelsByDomain.value("time"))
         if (c.name == "torque") torqueAxis = c.axisIndex;
     EXPECT_EQ(torqueAxis, 1) << "axis assignment lost through the widget";
+}
+
+// Smoke test: the Add-Channel dialog (filter builder + response charts) must
+// construct without crashing — exercises the QCustomPlot setup and the initial
+// plotResponse() path. Separate suite so the Linux CI's AnalyserPlotLayoutTest
+// exclusion (offscreen QCustomPlot teardown SIGBUS) also covers it.
+TEST(AddChannelDialogTest, ConstructsAndPreviews) {
+    ensureApp();
+    SignalStore store;
+    addTimeChannel(store, "speed", "m/s");
+    scope::analyser::FormulaEngine engine(store);
+    scope::analyser::ui::AddChannelDialog dlg(store, engine);
+    SUCCEED();
 }
