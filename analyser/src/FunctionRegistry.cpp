@@ -131,6 +131,65 @@ std::shared_ptr<Signal> impl_FilterHP(const FunctionArgs& a, QString* err) {
     return makeDoubleSignal("FilterHP", ts, dst, signal->meta().unit);
 }
 
+// ---- PT(signal, band, order, tau) ----
+// PTn lag filter: `order` cascaded identical 1st-order stages with time
+// constant tau (control-engineering PT1/PT2/…/PTn). Each stage is the same
+// recurrence as Filter (low) or FilterHP (high), so PT(x,0,1,tau) ==
+// Filter(x,tau) and PT(x,1,1,tau) == FilterHP(x,tau) exactly; higher orders
+// just cascade more stages (steeper, still all-real-pole / no overshoot).
+// band: 0 = low, 1 = high. A single time constant can't define a band, so
+// band-pass/stop are rejected — use Butterworth/Cheby for those. Causal —
+// wrap in filtfilt() for zero phase.
+std::shared_ptr<Signal> impl_PT(const FunctionArgs& a, QString* err) {
+    if (a.size() != 4) {
+        if (err) *err = "PT expects (signal, band, order, tau); band 0=low 1=high";
+        return nullptr;
+    }
+    double bandD = 0, orderD = 0, tau = 0;
+    if (!asScalar(a[1], bandD) || !asScalar(a[2], orderD) || !asScalar(a[3], tau)) {
+        if (err) *err = "PT: band, order and tau must be scalars";
+        return nullptr;
+    }
+    const int band  = static_cast<int>(std::lround(bandD));
+    const int order = std::max(1, static_cast<int>(std::lround(orderD)));
+    if (tau <= 0) { if (err) *err = "PT: tau must be a positive scalar (seconds)"; return nullptr; }
+    if (band != 0 && band != 1) {
+        if (err) *err = "PT: band must be 0=low or 1=high (a single time "
+                        "constant can't form a band — use Butterworth/Cheby "
+                        "for band-pass/stop)";
+        return nullptr;
+    }
+
+    auto signal = a[0];
+    auto view = signal->snapshotForRead();
+    auto src  = signal->readAsDouble();
+    std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
+    std::vector<double> dst(src.begin(), src.end());
+    if (view.count == 0) return makeDoubleSignal("PT", ts, dst, signal->meta().unit);
+    const auto dt = samplePeriodsSec(ts);
+
+    for (int stage = 0; stage < order; ++stage) {
+        if (band == 0) {                         // cascaded 1st-order low-pass (EMA)
+            double prev = dst[0];                // y[0] = x[0]
+            for (std::size_t i = 1; i < view.count; ++i) {
+                const double alpha = dt[i] / (tau + dt[i]);
+                prev = alpha * dst[i] + (1.0 - alpha) * prev;
+                dst[i] = prev;
+            }
+        } else {                                 // cascaded 1st-order high-pass (x - lp)
+            double lp = dst[0];
+            dst[0] = 0.0;                         // x[0] - lp[0] == 0
+            for (std::size_t i = 1; i < view.count; ++i) {
+                const double x = dst[i];
+                const double alpha = dt[i] / (tau + dt[i]);
+                lp = alpha * x + (1.0 - alpha) * lp;
+                dst[i] = x - lp;
+            }
+        }
+    }
+    return makeDoubleSignal("PT", ts, dst, signal->meta().unit);
+}
+
 // ---- Reverse(signal) — flip the waveform in time ----
 // Values are reversed; timestamps stay ascending starting at the original
 // first timestamp, with the inter-sample spacing reversed (so a causal filter
@@ -1424,6 +1483,10 @@ void FunctionRegistry::registerBuiltins() {
         "1st-order high-pass: removes slow drift / DC, passes fast changes "
         "(complement of Filter; same cutoff). Causal — wrap in filtfilt() "
         "for zero phase.", 2, 2, &impl_FilterHP);
+    add("PT",         "PT(signal, band, order, tau)",
+        "PTn lag filter: 'order' cascaded 1st-order lags with time constant "
+        "tau. band 0=low 1=high (PT(x,0,1,tau) == Filter). Causal — wrap in "
+        "filtfilt() for zero phase.", 4, 4, &impl_PT);
     add("Butterworth","Butterworth(signal, band, order, f1 [, f2])",
         "Butterworth IIR (maximally flat). band: 0=low 1=high 2=band-pass "
         "3=band-stop (band-pass/stop need f1 and f2). Causal — wrap in "

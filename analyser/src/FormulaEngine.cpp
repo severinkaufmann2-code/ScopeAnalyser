@@ -358,13 +358,13 @@ struct Parser {
 
                     auto isFilterable = [](const QString& fn) {
                         return fn == "Filter"      || fn == "FilterHP"
-                            || fn == "Butterworth" || fn == "Cheby1"
-                            || fn == "Cheby2"      || fn == "Mean"
-                            || fn == "RMS";
+                            || fn == "PT"          || fn == "Butterworth"
+                            || fn == "Cheby1"      || fn == "Cheby2"
+                            || fn == "Mean"        || fn == "RMS";
                     };
                     if (!isFilterable(innerName)) {
                         setErr(ctx, QString("filtfilt: '%1' can't be applied "
-                            "zero-phase (use Filter, FilterHP, Butterworth, "
+                            "zero-phase (use Filter, FilterHP, PT, Butterworth, "
                             "Cheby1, Cheby2, Mean or RMS)").arg(innerName));
                         return nullptr;
                     }

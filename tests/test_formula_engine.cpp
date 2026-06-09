@@ -1052,3 +1052,38 @@ TEST(FormulaEngine, IirRejectsBadArgs) {
     EXPECT_FALSE(engine.evaluate("d = Cheby1(S, 0, 4, 50)", &err));          // missing ripple arg
     EXPECT_TRUE (engine.evaluate("e = filtfilt(Cheby1, S, 0, 4, 1, 50)", &err)) << err.toStdString();
 }
+
+TEST(FormulaEngine, PtMatchesFilterAtOrderOne) {
+    SignalStore store;
+    store.add(makeSine("S", 2000, 1000.0, 7.0, 1.0));
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("LP  = Filter(S, 0.05)",     &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("P0  = PT(S, 0, 1, 0.05)",   &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("HP  = FilterHP(S, 0.05)",   &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("P1  = PT(S, 1, 1, 0.05)",   &err)) << err.toStdString();
+    auto lp = store.get("LP")->readAsDouble(); auto p0 = store.get("P0")->readAsDouble();
+    auto hp = store.get("HP")->readAsDouble(); auto p1 = store.get("P1")->readAsDouble();
+    ASSERT_EQ(lp.size(), p0.size());
+    for (std::size_t i = 0; i < lp.size(); ++i) {
+        EXPECT_NEAR(p0[i], lp[i], 1e-12);   // PT order-1 low  == Filter
+        EXPECT_NEAR(p1[i], hp[i], 1e-12);   // PT order-1 high == FilterHP
+    }
+}
+
+TEST(FormulaEngine, PtHigherOrderIsSteeper) {
+    SignalStore store;
+    store.add(makeSine("S", 8000, 1000.0, 20.0, 1.0));   // above the ~3 Hz corner
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("P1 = PT(S, 0, 1, 0.05)", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("P3 = PT(S, 0, 3, 0.05)", &err)) << err.toStdString();
+    EXPECT_LT(ssAmp(store.get("P3")), ssAmp(store.get("P1")));   // more stages → more attenuation
+}
+
+TEST(FormulaEngine, PtRejectsBandPass) {
+    SignalStore store;
+    store.add(makeSine("S", 1000, 1000.0, 5.0, 1.0));
+    FormulaEngine engine(store); QString err;
+    EXPECT_FALSE(engine.evaluate("a = PT(S, 2, 2, 0.05)", &err));   // band-pass not supported
+    EXPECT_FALSE(engine.evaluate("b = PT(S, 0, 2)", &err));         // missing tau
+    EXPECT_TRUE (engine.evaluate("c = filtfilt(PT, S, 0, 2, 0.05)", &err)) << err.toStdString();
+}
