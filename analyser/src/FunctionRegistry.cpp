@@ -853,7 +853,23 @@ std::shared_ptr<Signal> impl_Ceil(const FunctionArgs& a, QString* err) {
     return elementwiseUnary(a, err, "Ceil",  [](double v){ return std::ceil(v); });
 }
 std::shared_ptr<Signal> impl_Round(const FunctionArgs& a, QString* err) {
-    return elementwiseUnary(a, err, "Round", [](double v){ return std::round(v); });
+    if (a.size() < 1 || a.size() > 2) {
+        if (err) *err = QString("Round expects 1..2 args, got %1").arg(a.size());
+        return nullptr;
+    }
+    if (a.size() == 1)
+        return elementwiseUnary(a, err, "Round", [](double v){ return std::round(v); });
+    // With a tolerance: snap to the nearest integer only when within ±tol of
+    // it (cleans up near-integer values); otherwise leave the sample as-is.
+    double tol = 0.0;
+    if (!asScalar(a[1], tol) || tol < 0.0) {
+        if (err) *err = "Round: tolerance must be a non-negative scalar";
+        return nullptr;
+    }
+    return elementwiseUnary(FunctionArgs{a[0]}, err, "Round", [tol](double v){
+        const double r = std::round(v);
+        return (std::abs(v - r) <= tol) ? r : v;
+    });
 }
 std::shared_ptr<Signal> impl_Sign(const FunctionArgs& a, QString* err) {
     return elementwiseUnary(a, err, "Sign", [](double v){
@@ -1832,8 +1848,11 @@ void FunctionRegistry::registerBuiltins() {
         "Element-wise round towards −∞.", 1, 1, &impl_Floor);
     add("Ceil",       "Ceil(signal)",
         "Element-wise round towards +∞.", 1, 1, &impl_Ceil);
-    add("Round",      "Round(signal)",
-        "Element-wise round to nearest integer.", 1, 1, &impl_Round);
+    add("Round",      "Round(signal [, tolerance])",
+        "Element-wise round to nearest integer. With an optional tolerance, a "
+        "sample snaps to the nearest integer only when within ±tolerance of it "
+        "(else it's left unchanged) — handy for cleaning up near-integer noise.",
+        1, 2, &impl_Round);
     add("Sign",       "Sign(signal)",
         "Element-wise sign: −1, 0, or +1.", 1, 1, &impl_Sign);
     add("Power",      "Power(base, exponent)",

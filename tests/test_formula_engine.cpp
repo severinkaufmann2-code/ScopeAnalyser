@@ -1231,3 +1231,21 @@ TEST(FormulaEngine, FftCutKeepRejectBadArgs) {
     EXPECT_FALSE(engine.evaluate("b = FFTCut(S, 50)", &err));        // wrong arg count
     EXPECT_TRUE (engine.evaluate("c = FFTKeep(S, 5, 15)", &err)) << err.toStdString();
 }
+
+TEST(FormulaEngine, RoundOptionalTolerance) {
+    SignalStore store;
+    store.add(makeSeries("X", {0.98, 1.4, 2.02, 2.5}, 100.0));
+    FormulaEngine engine(store); QString err;
+    ASSERT_TRUE(engine.evaluate("R0 = Round(X)",      &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("RT = Round(X, 0.1)", &err)) << err.toStdString();
+    auto r0 = store.get("R0")->readAsDouble();
+    auto rt = store.get("RT")->readAsDouble();
+    ASSERT_EQ(r0.size(), 4u); ASSERT_EQ(rt.size(), 4u);
+    EXPECT_DOUBLE_EQ(r0[0], 1.0); EXPECT_DOUBLE_EQ(r0[1], 1.0);
+    EXPECT_DOUBLE_EQ(r0[2], 2.0); EXPECT_DOUBLE_EQ(r0[3], 3.0);   // plain round
+    EXPECT_DOUBLE_EQ(rt[0], 1.0);   // 0.98 within 0.1 of 1 → snaps
+    EXPECT_DOUBLE_EQ(rt[1], 1.4);   // 0.4 away → left unchanged
+    EXPECT_DOUBLE_EQ(rt[2], 2.0);   // 2.02 within 0.1 → snaps
+    EXPECT_DOUBLE_EQ(rt[3], 2.5);   // 0.5 away → left unchanged
+    EXPECT_FALSE(engine.evaluate("E = Round(X, 0.1, 1)", &err));  // too many args
+}
