@@ -16,6 +16,7 @@ class QListWidget;
 class QLabel;
 class QPushButton;
 class QListWidgetItem;
+class QStackedWidget;
 class QCustomPlot;
 
 namespace scope::core { class SignalStore; }
@@ -59,9 +60,14 @@ private:
     void rebuildBandCombo();          // band options depend on the family
     void onBuilderChanged();          // refresh field visibility + preview
     void onInsertFilter();            // write the generated formula
-    void onFunctionHovered(QListWidgetItem* item);  // chart the hovered filter
+    void onFunctionHovered(QListWidgetItem* item);  // chart the hovered function
+    // fixedScale = true (hover) → identical axes for every filter, for easy
+    // comparison; false (builder) → auto-fit the one filter being designed.
     void plotResponse(const QString& family, int band, int ripDb, int ripStopDb,
-                      const std::vector<int>& orders);
+                      const std::vector<int>& orders, bool fixedScale);
+    // Time-domain input→output example for a non-filter function: runs the
+    // real impl on a representative input and plots in/out.
+    void plotExample(const QString& name);
 
     scope::core::SignalStore& store_;
     FormulaEngine&            engine_;
@@ -91,8 +97,11 @@ private:
     QPushButton*     insertBtn_{nullptr};
 
     QListWidget*     funcList_{nullptr};
+    QLabel*          previewLabel_{nullptr};
+    QStackedWidget*  previewStack_{nullptr};   // page 0 = bode, 1 = I/O example
     QCustomPlot*     magPlot_{nullptr};
     QCustomPlot*     phasePlot_{nullptr};
+    QCustomPlot*     ioPlot_{nullptr};
 };
 
 }  // namespace scope::analyser::ui

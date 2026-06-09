@@ -23,6 +23,7 @@
 #include <QScrollBar>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStringListModel>
 #include <QTextBrowser>
 #include <QTextCursor>
@@ -31,6 +32,7 @@
 #include <qcustomplot.h>
 
 #include <array>
+#include <cmath>
 
 namespace scope::analyser::ui {
 
@@ -138,6 +140,63 @@ bool filterPreviewSpec(const QString& fn, QString& family, int& band,
     return false;
 }
 
+// ---- Input→output examples for non-filter functions ----------------------
+struct ExampleSpec { QString in1, in2; std::vector<double> scalars; bool ok{false}; };
+
+// A representative input waveform on an N-sample grid (dt seconds).
+std::vector<double> genInput(const QString& key, std::size_t n, double dt) {
+    std::vector<double> v(n);
+    auto noise = [](std::size_t i) {            // deterministic pseudo-noise in [-1,1]
+        const double s = std::sin(static_cast<double>(i) * 12.9898) * 43758.5453;
+        return 2.0 * (s - std::floor(s)) - 1.0;
+    };
+    const double T = n * dt;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double t = i * dt;
+        if      (key == "noisy")    v[i] = std::sin(2*M_PI*2*t) + 0.25 * noise(i);
+        else if (key == "ramp")     v[i] = t / T;
+        else if (key == "rampWide") v[i] = 12.0 * t / T;
+        else if (key == "posRamp")  v[i] = 0.1 + 2.0 * t / T;
+        else if (key == "step")     v[i] = (t < T / 2.0) ? 0.0 : 1.0;
+        else if (key == "pulse")    v[i] = std::max(0.0, 1.0 - std::abs(t - T/2.0) / (T/10.0));
+        else if (key == "multi")    v[i] = std::sin(2*M_PI*2*t) + 0.5 * std::sin(2*M_PI*20*t);
+        else                        v[i] = std::sin(2*M_PI*2*t);   // "sine" / default
+    }
+    return v;
+}
+
+// Per-function example recipe. ok=false → caller falls back (unary → sine) or
+// shows "no auto example". Extra entries for functions that may not exist are
+// harmless (only real, hovered functions are ever looked up).
+ExampleSpec exampleFor(const QString& fn) {
+    auto mk = [](QString a, QString b, std::vector<double> s) {
+        ExampleSpec e; e.in1 = std::move(a); e.in2 = std::move(b);
+        e.scalars = std::move(s); e.ok = true; return e;
+    };
+    if (fn == "Integral")   return mk("step",     "",     {});
+    if (fn == "Derivative") return mk("sine",     "",     {});
+    if (fn == "Mean")       return mk("noisy",    "",     {0.3});
+    if (fn == "RMS")        return mk("noisy",    "",     {0.3});
+    if (fn == "RollingMin") return mk("noisy",    "",     {0.3});
+    if (fn == "RollingMax") return mk("noisy",    "",     {0.3});
+    if (fn == "Shift")      return mk("pulse",    "",     {0.5});
+    if (fn == "Abs")        return mk("sine",     "",     {});
+    if (fn == "Sqrt")       return mk("posRamp",  "",     {});
+    if (fn == "Log" || fn == "Log10") return mk("posRamp", "", {});
+    if (fn == "Exp")        return mk("ramp",     "",     {});
+    if (fn == "Sin" || fn == "Cos")   return mk("rampWide", "", {});
+    if (fn == "Sign")       return mk("sine",     "",     {});
+    if (fn == "Floor" || fn == "Ceil" || fn == "Round") return mk("rampWide", "", {});
+    if (fn == "Limit")      return mk("sine",     "",     {-0.5, 0.5});
+    if (fn == "Power")      return mk("ramp",     "",     {2});
+    if (fn == "Mod")        return mk("rampWide", "",     {1.0});
+    if (fn == "Min" || fn == "Max")   return mk("sine", "ramp", {});
+    if (fn == "Resample")   return mk("sine",     "",     {50});
+    if (fn == "FFT" || fn == "PeakHz") return mk("multi", "", {});
+    if (fn == "FFTCut" || fn == "FFTKeep") return mk("multi", "", {15, 25});
+    return {};   // ok=false
+}
+
 }  // namespace
 
 AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
@@ -239,15 +298,32 @@ AddChannelDialog::AddChannelDialog(scope::core::SignalStore& store,
     setupPlot(magPlot_,   "Magnitude [dB]");
     setupPlot(phasePlot_, "Phase [deg]");
 
+    // Time-domain input→output preview for non-filter functions (linear axes).
+    ioPlot_ = new QCustomPlot(this);
+    ioPlot_->legend->setVisible(true);
+    ioPlot_->legend->setBrush(QColor(255, 255, 255, 190));
+    ioPlot_->setMinimumHeight(240);
+
+    // Two preview pages, toggled per hovered function: bode (filters) vs I/O.
+    auto* bodePage = new QWidget(this);
+    auto* bodeLay = new QVBoxLayout(bodePage);
+    bodeLay->setContentsMargins(0, 0, 0, 0);
+    bodeLay->addWidget(magPlot_);
+    bodeLay->addWidget(phasePlot_);
+
+    previewStack_ = new QStackedWidget(this);
+    previewStack_->addWidget(bodePage);   // index 0 — filter response
+    previewStack_->addWidget(ioPlot_);    // index 1 — input/output example
+    previewLabel_ = new QLabel("Response (illustrative — shape only):", this);
+
     auto* rightBox = new QWidget(this);
     auto* rightLayout = new QVBoxLayout(rightBox);
     rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->addWidget(new QLabel("Functions (hover a filter to preview):", this));
-    rightLayout->addWidget(funcList_, /*stretch=*/2);
+    rightLayout->addWidget(new QLabel("Functions (hover to preview):", this));
+    rightLayout->addWidget(funcList_, /*stretch=*/1);
     rightLayout->addWidget(helpBrowser_);
-    rightLayout->addWidget(new QLabel("Response (illustrative — shape only):", this));
-    rightLayout->addWidget(magPlot_,   /*stretch=*/2);
-    rightLayout->addWidget(phasePlot_, /*stretch=*/2);
+    rightLayout->addWidget(previewLabel_);
+    rightLayout->addWidget(previewStack_, /*stretch=*/3);
 
     auto* split = new QSplitter(Qt::Horizontal, this);
     split->addWidget(leftBox);
@@ -360,8 +436,10 @@ void AddChannelDialog::onBuilderChanged() {
                                           : isElliptic ? "Passband Rp:" : "Ripple:");
 
     const int order = isFirstOrder ? 1 : orderSpin_->value();
+    previewStack_->setCurrentIndex(0);
+    previewLabel_->setText("Response (filter being designed):");
     plotResponse(fam, band, static_cast<int>(rippleSpin_->value()),
-                 static_cast<int>(rippleStopSpin_->value()), {order});
+                 static_cast<int>(rippleStopSpin_->value()), {order}, /*fixedScale=*/false);
 }
 
 void AddChannelDialog::onInsertFilter() {
@@ -413,12 +491,20 @@ void AddChannelDialog::onFunctionHovered(QListWidgetItem* item) {
     QString family; int band = 0; std::vector<int> orders;
     if (filterPreviewSpec(name, family, band, orders)) {
         const int rip = (family == "Cheby2") ? 40 : 1;   // Cheby2 spinbox is atten
-        plotResponse(family, band, rip, /*ripStopDb=*/40, orders);
+        previewLabel_->setText("Response (illustrative — shape only):");
+        previewStack_->setCurrentIndex(0);               // bode page
+        // Hover view: fixed identical axes so filters are easy to compare.
+        plotResponse(family, band, rip, /*ripStopDb=*/40, orders, /*fixedScale=*/true);
+    } else {
+        previewLabel_->setText("Input → output example:");
+        previewStack_->setCurrentIndex(1);               // I/O page
+        plotExample(name);
     }
 }
 
 void AddChannelDialog::plotResponse(const QString& family, int band, int ripDb,
-                                    int ripStopDb, const std::vector<int>& orders) {
+                                    int ripStopDb, const std::vector<int>& orders,
+                                    bool fixedScale) {
     static const std::array<QColor, 3> cols{
         QColor(31, 119, 180), QColor(255, 127, 14), QColor(44, 160, 44)};
     magPlot_->clearGraphs();
@@ -446,14 +532,123 @@ void AddChannelDialog::plotResponse(const QString& family, int band, int ripDb,
         auto* gp = phasePlot_->addGraph(); gp->setData(x, ph);  gp->setPen(QPen(c)); gp->setName(nm);
     }
     magPlot_->xAxis->setRange(0.01, 100.0);
-    magPlot_->yAxis->setRange(-80.0, 6.0);
     phasePlot_->xAxis->setRange(0.01, 100.0);
-    phasePlot_->yAxis->rescale();
+    if (fixedScale) {
+        // Identical axes for every filter → directly comparable on hover.
+        magPlot_->yAxis->setRange(-90.0, 10.0);
+        phasePlot_->yAxis->setRange(-810.0, 90.0);
+    } else {
+        // Builder: auto-fit the single filter being designed.
+        magPlot_->yAxis->rescale();
+        phasePlot_->yAxis->rescale();
+    }
     const bool legend = orders.size() > 1;
     magPlot_->legend->setVisible(legend);
     phasePlot_->legend->setVisible(legend);
     magPlot_->replot();
     phasePlot_->replot();
+}
+
+void AddChannelDialog::plotExample(const QString& name) {
+    ioPlot_->clearGraphs();
+    const auto* desc = FunctionRegistry::instance().find(name);
+    if (!desc) { ioPlot_->replot(); return; }
+
+    const std::size_t N = 300;
+    const double dt = 0.01;
+    std::vector<scope::core::TimestampNs> ts(N);
+    for (std::size_t i = 0; i < N; ++i)
+        ts[i] = static_cast<scope::core::TimestampNs>(i * dt * 1e9);
+    auto makeSig = [&](const std::vector<double>& v) {
+        scope::core::Signal::Meta m;
+        m.dataType = scope::core::DataType::Float64;
+        m.domain = scope::core::Signal::Domain::Time;
+        auto s = std::make_shared<scope::core::Signal>(m);
+        s->append(ts.data(), reinterpret_cast<const std::byte*>(v.data()), v.size());
+        return s;
+    };
+    auto makeConst = [&](double val) {
+        scope::core::Signal::Meta m;
+        m.dataType = scope::core::DataType::Float64;
+        auto s = std::make_shared<scope::core::Signal>(m);
+        scope::core::TimestampNs t0 = 0;
+        s->append(&t0, reinterpret_cast<const std::byte*>(&val), 1);
+        return s;
+    };
+
+    const ExampleSpec ex = exampleFor(name);
+    std::vector<double> in1v, in2v;
+    FunctionArgs args;
+    if (ex.ok) {
+        in1v = genInput(ex.in1, N, dt);
+        args.push_back(makeSig(in1v));
+        if (!ex.in2.isEmpty()) { in2v = genInput(ex.in2, N, dt); args.push_back(makeSig(in2v)); }
+        for (double s : ex.scalars) args.push_back(makeConst(s));
+    } else if (desc->minArgs == 1 && desc->maxArgs == 1) {
+        in1v = genInput("sine", N, dt);                 // fallback: unary on a sine
+        args.push_back(makeSig(in1v));
+    } else {
+        previewLabel_->setText("Input → output example: (none for this function)");
+        ioPlot_->replot();
+        return;
+    }
+
+    QString err;
+    auto out = desc->impl(args, &err);
+
+    QVector<double> tx(static_cast<int>(N));
+    for (std::size_t i = 0; i < N; ++i) tx[i] = i * dt;
+    auto plotVec = [&](const std::vector<double>& v, const QString& nm, QColor c, int w = 1) {
+        if (v.empty()) return;
+        QVector<double> y(v.begin(), v.end());
+        auto* g = ioPlot_->addGraph(); g->setData(tx, y);
+        g->setPen(QPen(c, w)); g->setName(nm);
+    };
+
+    ioPlot_->xAxis->setLabel("t [s]");
+    ioPlot_->yAxis->setLabel(QString());
+    if (!out) {                                          // impl errored on the example
+        plotVec(in1v, "in", QColor(150, 150, 150));
+        ioPlot_->rescaleAxes(); ioPlot_->replot();
+        return;
+    }
+
+    const auto ov = out->readAsDouble();
+    const auto oview = out->snapshotForRead();
+    if (oview.count == 1) {                              // scalar result (e.g. PeakHz)
+        plotVec(in1v, "in", QColor(120, 120, 200));
+        if (!ex.in2.isEmpty()) plotVec(in2v, "in2", QColor(120, 200, 120));
+        previewLabel_->setText(QString("Input → output: %1 = %2")
+            .arg(name, QString::number(ov.empty() ? 0.0 : ov[0], 'g', 4)));
+        ioPlot_->rescaleAxes(); ioPlot_->replot();
+        return;
+    }
+    if (out->meta().domain == scope::core::Signal::Domain::Frequency) {   // spectrum out
+        QVector<double> fx, fy;
+        for (std::size_t i = 0; i < oview.count; ++i) {
+            fx.push_back(oview.timestamps[i] / 1e9);     // Hz
+            fy.push_back(i < ov.size() ? ov[i] : 0.0);
+        }
+        auto* g = ioPlot_->addGraph(); g->setData(fx, fy);
+        g->setPen(QPen(QColor(31, 119, 180))); g->setName("spectrum");
+        ioPlot_->xAxis->setLabel("f [Hz]");
+        ioPlot_->yAxis->setLabel("magnitude");
+        ioPlot_->rescaleAxes(); ioPlot_->replot();
+        return;
+    }
+
+    // Time → time: overlay the input(s) and the output (on the output's grid).
+    plotVec(in1v, "in", QColor(160, 160, 160));
+    if (!ex.in2.isEmpty()) plotVec(in2v, "in2", QColor(210, 170, 120));
+    QVector<double> ox, oy;
+    for (std::size_t i = 0; i < oview.count; ++i) {
+        ox.push_back(oview.timestamps[i] / 1e9);
+        oy.push_back(i < ov.size() ? ov[i] : 0.0);
+    }
+    auto* go = ioPlot_->addGraph(); go->setData(ox, oy);
+    go->setPen(QPen(QColor(214, 39, 40), 2)); go->setName("out");
+    ioPlot_->rescaleAxes();
+    ioPlot_->replot();
 }
 
 void AddChannelDialog::onAccept() {

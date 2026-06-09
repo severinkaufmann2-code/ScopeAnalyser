@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QListWidget>
 
 #include <memory>
 #include <vector>
@@ -142,5 +143,13 @@ TEST(AddChannelDialogTest, ConstructsAndPreviews) {
     addTimeChannel(store, "speed", "m/s");
     scope::analyser::FormulaEngine engine(store);
     scope::analyser::ui::AddChannelDialog dlg(store, engine);
+
+    // Selecting each function fires onFunctionHovered → plotResponse (filters)
+    // or plotExample (everything else, which runs the real impl on a synthetic
+    // input). Walk the whole list to make sure none crash.
+    auto* list = dlg.findChild<QListWidget*>();
+    ASSERT_NE(list, nullptr);
+    EXPECT_GT(list->count(), 0);
+    for (int i = 0; i < list->count(); ++i) list->setCurrentRow(i);
     SUCCEED();
 }
