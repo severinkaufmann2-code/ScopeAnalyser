@@ -1130,6 +1130,23 @@ void AnalyserPlot::openChartDialog() {
         return;
     }
 
+    // The CSV loader recognised a vendor-specific layout and parsed it with
+    // format-specific guesses (channel names, units, time scaling). Warn the
+    // user before committing the channels — the mapping could be wrong, and
+    // the Converter offers full manual control if so.
+    if (!r.autoDetectedFormat.isEmpty()) {
+        const auto resp = QMessageBox::warning(this, "Auto-detected format",
+            QString("'%1' was automatically detected as a %2 and loaded "
+                    "without the Converter.\n\nChannel names, units and timing "
+                    "were guessed from the file and may be wrong — verify the "
+                    "plotted data, or open it in the Converter for full "
+                    "control.\n\nLoad %3 channel(s)?")
+                .arg(QFileInfo(path).fileName(), r.autoDetectedFormat)
+                .arg(r.channels.size()),
+            QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Ok);
+        if (resp != QMessageBox::Ok) return;
+    }
+
     for (auto& s : r.channels) {
         auto meta = s->meta();
         meta.name = uniqueStoreName(store_, meta.name);

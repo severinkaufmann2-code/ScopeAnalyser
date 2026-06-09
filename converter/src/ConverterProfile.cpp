@@ -2,7 +2,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include <QFile>
+#include <QStringList>
+#include <QTextStream>
+
+#include <array>
 #include <fstream>
+#include <optional>
 
 namespace scope::converter {
 
@@ -248,6 +254,165 @@ bool profileFromScopeMetadata(const std::filesystem::path& path,
         if (errorOut) *errorOut = QString::fromUtf8(e.what());
         return false;
     }
+}
+
+// ---- TwinCAT Scope CSV ------------------------------------------------------
+namespace {
+
+bool looksNumeric(const QString& cell) {
+    QString t = cell.trimmed();
+    if (t.isEmpty()) return false;
+    t.replace(',', '.');   // accept either decimal mark while sniffing
+    bool ok = false;
+    t.toDouble(&ok);
+    return ok;
+}
+
+// TwinCAT writes "(None)" for a unitless channel; treat that as no unit.
+QString stripTwinCatUnit(const QString& u) {
+    const QString t = u.trimmed();
+    if (t.isEmpty() || t.compare("(None)", Qt::CaseInsensitive) == 0)
+        return QString();
+    return t;
+}
+
+}  // namespace
+
+std::optional<TwinCatScopeLayout> detectTwinCatScopeCsv(
+    const std::filesystem::path& path) {
+    QFile f(QString::fromStdString(path.string()));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return std::nullopt;
+    QTextStream ts(&f);
+
+    // The preamble + per-channel header block is ~25 rows; the first data
+    // row always lands within the first few dozen lines. Read 100 to be safe.
+    QStringList raw;
+    raw.reserve(100);
+    for (int i = 0; i < 100 && !ts.atEnd(); ++i) raw.push_back(ts.readLine());
+    if (raw.isEmpty()) return std::nullopt;
+
+    // Pick the delimiter that exposes the channel "Name" row — col0 == "Name"
+    // && col2 == "Name" (the repeated per-channel key pattern, distinct from
+    // the single "Name<sep><export-name>" preamble line). Take the delimiter
+    // giving the widest such row.
+    const std::array<QChar, 3> delims{QChar('\t'), QChar(';'), QChar(',')};
+    QChar delim('\t');
+    int   nameRowIdx = -1;
+    int   bestCols   = 0;
+    for (QChar d : delims) {
+        for (int i = 0; i < raw.size(); ++i) {
+            const QStringList c = raw[i].split(d);
+            if (c.size() >= 4 && c[0].trimmed() == "Name"
+                              && c[2].trimmed() == "Name"
+                              && c.size() > bestCols) {
+                bestCols   = c.size();
+                delim      = d;
+                nameRowIdx = i;
+            }
+        }
+    }
+    if (nameRowIdx < 0) return std::nullopt;
+
+    std::vector<QStringList> rows;
+    rows.reserve(raw.size());
+    for (const auto& line : raw) rows.push_back(line.split(delim));
+
+    auto findKeyRow = [&](const QString& key) -> int {
+        for (int i = 0; i < static_cast<int>(rows.size()); ++i)
+            if (!rows[i].isEmpty() && rows[i][0].trimmed() == key) return i;
+        return -1;
+    };
+    const int sampleRowIdx = findKeyRow("SampleTime[ms]");
+    if (sampleRowIdx < 0) return std::nullopt;   // confirms TwinCAT Scope
+    const int unitRowIdx = findKeyRow("Unit");
+
+    // Data starts at the first row after the name row whose first cell is a
+    // number (every header row carries a text key in column 0).
+    int dataStartRow = -1;
+    for (int i = nameRowIdx + 1; i < static_cast<int>(rows.size()); ++i) {
+        if (rows[i].isEmpty()) continue;
+        if (looksNumeric(rows[i][0])) { dataStartRow = i; break; }
+    }
+    if (dataStartRow < 0) return std::nullopt;
+
+    // Decimal mark: a comma in a value cell of the first data row (when the
+    // delimiter isn't itself a comma) means a comma-decimal export.
+    QChar decimal('.');
+    if (delim != QChar(',')) {
+        for (const QString& cell : rows[dataStartRow])
+            if (cell.contains(',')) { decimal = QChar(','); break; }
+    }
+
+    TwinCatScopeLayout layout;
+    layout.delimiter    = delim;
+    layout.decimal      = decimal;
+    layout.nameRow      = nameRowIdx;
+    layout.dataStartRow = dataStartRow;
+
+    const QStringList& nameRow = rows[nameRowIdx];
+    const int nChannels = nameRow.size() / 2;
+    for (int j = 0; j < nChannels; ++j) {
+        const int vcol = 2 * j + 1;
+        TwinCatScopeChannel ch;
+        ch.name = (vcol < nameRow.size()) ? nameRow[vcol].trimmed() : QString();
+        if (ch.name.isEmpty()) continue;   // unnamed pair → skip
+        ch.timeCol  = 2 * j;
+        ch.valueCol = vcol;
+        if (unitRowIdx >= 0 && vcol < rows[unitRowIdx].size())
+            ch.unit = stripTwinCatUnit(rows[unitRowIdx][vcol]);
+        if (vcol < rows[sampleRowIdx].size()) {
+            bool ok = false;
+            const double smp = rows[sampleRowIdx][vcol].trimmed().toDouble(&ok);
+            if (ok) ch.sampleTimeMs = smp;
+        }
+        layout.channels.push_back(std::move(ch));
+    }
+    if (layout.channels.empty()) return std::nullopt;
+    return layout;
+}
+
+bool profileFromTwinCatScope(const std::filesystem::path& path,
+                             ConverterProfile* out,
+                             QString* errorOut) {
+    if (!out) return false;
+    auto layout = detectTwinCatScopeCsv(path);
+    if (!layout) {
+        if (errorOut) *errorOut = "Not a TwinCAT Scope export.";
+        return false;
+    }
+    ConverterProfile prof;
+    prof.sourceType       = "csv";
+    prof.columnDelimiter  = QString(layout->delimiter);
+    // Keep CsvSource's line-by-line branch (so blank lines stay as rows and
+    // the data-start index lines up); readLine tolerates LF or CRLF.
+    prof.rowDelimiter     = "\r\n";
+    prof.decimalSeparator = QString(layout->decimal);
+    prof.headerRow        = layout->dataStartRow;   // 0-based first data row
+    for (const auto& ch : layout->channels) {
+        // Pin each column's data range explicitly to the first data row so it
+        // shows as e.g. "25:*" in the mapping table (not the misleading
+        // "all", which only skips the header block via the Header-row
+        // default). Keeping the range in the visible per-column mapping also
+        // means the generic CsvSource import doesn't depend on any
+        // out-of-band header-row state.
+        ColumnMapping x;
+        x.columnId = columnLetter(ch.timeCol);
+        x.role     = ColumnMapping::Role::XTime;
+        x.unit     = "ms";
+        x.rowStart = layout->dataStartRow;
+        prof.columns.push_back(std::move(x));
+
+        ColumnMapping y;
+        y.columnId      = columnLetter(ch.valueCol);
+        y.role          = ColumnMapping::Role::Signal;
+        y.signalName    = ch.name;
+        y.unit          = ch.unit;
+        y.xSourceColumn = columnLetter(ch.timeCol);
+        y.rowStart      = layout->dataStartRow;
+        prof.columns.push_back(std::move(y));
+    }
+    *out = std::move(prof);
+    return true;
 }
 
 }  // namespace scope::converter

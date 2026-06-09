@@ -785,6 +785,55 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         }
     });
 
+    // ---- Auto-detect mapping (dropdown + Apply in the mapping panel) ----
+    connect(impl_->mapping, &ui::MappingPanel::autoDetectRequested, this,
+            [this](const QString& detectorId) {
+        if (impl_->activeIndex < 0) {
+            QMessageBox::information(this, "No file", "Open a CSV first.");
+            return;
+        }
+        auto& f = *impl_->files[impl_->activeIndex];
+        if (f.type != FileType::Csv) return;
+
+        ConverterProfile prof;
+        QString err;
+        bool ok = false;
+        if (detectorId == "twincat") {
+            ok = converter::profileFromTwinCatScope(
+                std::filesystem::path(f.path.toStdString()), &prof, &err);
+        }
+        if (!ok) {
+            QMessageBox::information(this, "Auto-detect",
+                QString("No recognised structure for the selected detector "
+                        "was found in this file.%1")
+                    .arg(err.isEmpty() ? QString() : "\n\n" + err));
+            return;
+        }
+
+        // Rebuild the CsvSource with the detected delimiter so the preview
+        // and a subsequent Apply parse the right columns, then push the
+        // profile into the panel (suppress the parse-options churn).
+        try {
+            f.csv = std::make_unique<CsvSource>(
+                std::filesystem::path(f.path.toStdString()),
+                prof.columnDelimiter, prof.rowDelimiter);
+            f.previewModel = f.csv->previewModel("file");
+        } catch (const std::exception& e) {
+            QMessageBox::warning(this, "Auto-detect failed",
+                QString::fromUtf8(e.what()));
+            return;
+        }
+        f.profile = prof;
+        impl_->suppressSave = true;
+        impl_->mapping->setProfile(prof);
+        impl_->preview->setModel(f.previewModel.get());
+        impl_->suppressSave = false;
+        impl_->statusLabel->setText(
+            QString("%1: auto-detected %2 channel(s) — review, then Apply")
+                .arg(f.displayName)
+                .arg(static_cast<int>(prof.columns.size()) / 2));
+    });
+
     // ---- Save / Load profile (per-file scaconv) ---------------------
     connect(impl_->mapping, &ui::MappingPanel::saveProfileRequested, this, [this]{
         if (impl_->activeIndex < 0) {

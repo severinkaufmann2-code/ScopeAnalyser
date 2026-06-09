@@ -1,8 +1,10 @@
 #pragma once
 
+#include <QChar>
 #include <QString>
 
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 namespace scope::converter {
@@ -96,5 +98,45 @@ struct ConverterProfile {
 bool profileFromScopeMetadata(const std::filesystem::path& path,
                               ConverterProfile* out,
                               QString* errorOut = nullptr);
+
+// ---- TwinCAT Scope CSV auto-detection ---------------------------------
+// A TwinCAT Measurement / Scope export is a Tab- (or ';'-) delimited file
+// with a metadata preamble, then a multi-row per-channel header block —
+// each channel occupies *two* columns (a time column and a value column),
+// keyed in column 0 by "Name" / "Data-Type" / "SampleTime[ms]" / "Unit" /
+// … — followed by data rows of alternating (time_ms, value) pairs. Each
+// channel runs at its own rate, so the value/time columns are ragged
+// (a channel that ends early leaves its cells empty for later rows). This
+// layout can't be expressed by the generic single-header CSV loader, so we
+// detect + parse it directly.
+struct TwinCatScopeChannel {
+    QString name;
+    QString unit;
+    int     timeCol{-1};
+    int     valueCol{-1};
+    double  sampleTimeMs{0.0};
+};
+struct TwinCatScopeLayout {
+    QChar delimiter{QChar('\t')};
+    QChar decimal{QChar('.')};
+    int   nameRow{-1};        // 0-based line index of the channel "Name" row
+    int   dataStartRow{-1};   // 0-based line index of the first data row
+    std::vector<TwinCatScopeChannel> channels;
+};
+
+// Peek the header of `path`; return a layout iff it looks like a TwinCAT
+// Scope export. Reads only the first ~100 lines, so it's cheap even on a
+// multi-hundred-MB file.
+std::optional<TwinCatScopeLayout> detectTwinCatScopeCsv(
+    const std::filesystem::path& path);
+
+// Build a ConverterProfile from a TwinCAT Scope export — delimiter /
+// decimal / data-start row plus one XTime[ms] column and one pinned
+// Y-signal column per channel — so the Converter's mapping panel fills in
+// with one click. Returns false (and leaves `out` untouched) if the file
+// isn't a TwinCAT Scope export.
+bool profileFromTwinCatScope(const std::filesystem::path& path,
+                             ConverterProfile* out,
+                             QString* errorOut = nullptr);
 
 }  // namespace scope::converter

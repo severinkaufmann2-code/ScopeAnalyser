@@ -170,6 +170,16 @@ MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
     decimalEdit_ = new QLineEdit(".", this);
     decimalEdit_->setMaximumWidth(40);
 
+    // Auto-detect: pick a known vendor layout and let the host fill the
+    // mapping in one click. Currently TwinCAT Scope exports only; the
+    // userData carries the detector id the host dispatches on.
+    autoDetectCombo_ = new QComboBox(this);
+    autoDetectCombo_->addItem("TwinCAT Scope export", "twincat");
+    autoDetectBtn_ = new QPushButton("Apply auto-detect", this);
+    autoDetectBtn_->setToolTip(
+        "Detect the channel layout for the chosen format and fill the mapping "
+        "below. Review it, then click \"Apply (import signals)\" to import.");
+
     // Profile-level sample-rate widgets used to live here; they're now
     // per-channel (in ChannelEditDialog). The data fields stay on the profile
     // struct for back-compat with older .scaconv files.
@@ -180,6 +190,13 @@ MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
 
     auto* opts = new QGridLayout();
     int row = 0;
+    opts->addWidget(new QLabel("Auto-detect mapping:", this), row, 0);
+    auto* adr = new QHBoxLayout();
+    adr->addWidget(autoDetectCombo_);
+    adr->addWidget(autoDetectBtn_);
+    adr->addStretch();
+    opts->addLayout(adr, row++, 1);
+
     opts->addWidget(new QLabel("Column separator:", this), row, 0);
     auto* csr = new QHBoxLayout();
     csr->addWidget(colSepCombo_); csr->addWidget(colSepCustom_); csr->addStretch();
@@ -256,6 +273,9 @@ MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
     syncCustomVisibility();
 
     connect(applyBtn_, &QPushButton::clicked, this, &MappingPanel::applyRequested);
+    connect(autoDetectBtn_, &QPushButton::clicked, this, [this]{
+        emit autoDetectRequested(autoDetectCombo_->currentData().toString());
+    });
     connect(saveBtn_,  &QPushButton::clicked, this, &MappingPanel::saveProfileRequested);
     connect(loadBtn_,  &QPushButton::clicked, this, &MappingPanel::loadProfileRequested);
     connect(addBtn_,   &QPushButton::clicked, this, &MappingPanel::onAddChannel);

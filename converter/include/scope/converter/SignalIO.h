@@ -73,6 +73,12 @@ struct LoadResult {
     // PlotLayout::fromJsonString to restore axes / view mode / channel
     // assignments.
     QString layoutJson;
+
+    // Non-empty when the CSV loader auto-detected a non-generic layout it
+    // parsed with format-specific assumptions (currently "TwinCAT Scope
+    // export"). The host warns the user the channel mapping / units were
+    // guessed and may be wrong. Empty for normal / generic loads.
+    QString autoDetectedFormat;
 };
 
 // Load all signals from a single file. CSV import here handles the

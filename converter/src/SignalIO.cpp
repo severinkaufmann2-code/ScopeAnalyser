@@ -1,5 +1,6 @@
 #include "scope/converter/SignalIO.h"
 
+#include "scope/converter/ConverterProfile.h"
 #include "scope/core/Hdf5Session.h"
 #include "scope/core/Mdf4Session.h"
 
@@ -47,10 +48,97 @@ void splitNameUnit(const QString& header, QString* name, QString* unit) {
     }
 }
 
+// Stream a TwinCAT Scope export into one Signal per channel. The layout
+// (delimiter, decimal, per-channel time/value columns, data-start row) is
+// sniffed from the header by detectTwinCatScopeCsv; here we just skip to the
+// data and read each row's (time_ms, value) pairs. Time is milliseconds →
+// ns. Ragged columns (a channel that ends early leaves empty cells) are
+// handled by skipping the pair when either cell is blank. Returns false if
+// the file isn't a TwinCAT Scope export (caller falls back to the generic
+// CSV path). Streaming keeps memory flat on multi-hundred-MB exports.
+bool loadTwinCatScopeCsv(const std::filesystem::path& path,
+                         std::vector<std::shared_ptr<Signal>>* out,
+                         QString* errorOut) {
+    auto layout = detectTwinCatScopeCsv(path);
+    if (!layout) return false;
+
+    QFile f(QString::fromStdString(path.string()));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (errorOut) *errorOut = "Couldn't open file.";
+        return false;
+    }
+    QTextStream ts(&f);
+    const QChar sep          = layout->delimiter;
+    const bool  commaDecimal = (layout->decimal == QChar(','));
+    const std::size_t n      = layout->channels.size();
+
+    std::vector<std::vector<TimestampNs>> tsBufs(n);
+    std::vector<std::vector<double>>      vsBufs(n);
+
+    int lineIdx = 0;
+    while (!ts.atEnd()) {
+        const QString line = ts.readLine();
+        if (lineIdx++ < layout->dataStartRow) continue;
+        if (line.isEmpty()) continue;
+        const QStringList parts = line.split(sep);
+        for (std::size_t k = 0; k < n; ++k) {
+            const auto& ch = layout->channels[k];
+            if (ch.timeCol >= parts.size() || ch.valueCol >= parts.size())
+                continue;
+            QString tStr = parts[ch.timeCol].trimmed();
+            QString vStr = parts[ch.valueCol].trimmed();
+            if (tStr.isEmpty() || vStr.isEmpty()) continue;   // ragged tail
+            if (commaDecimal) { tStr.replace(',', '.'); vStr.replace(',', '.'); }
+            bool okT = false, okV = false;
+            const double tMs = tStr.toDouble(&okT);
+            const double v   = vStr.toDouble(&okV);
+            if (!okT || !okV) continue;
+            tsBufs[k].push_back(static_cast<TimestampNs>(tMs * 1e6));
+            vsBufs[k].push_back(v);
+        }
+    }
+
+    bool any = false;
+    for (std::size_t k = 0; k < n; ++k) {
+        if (tsBufs[k].empty()) continue;
+        Signal::Meta m;
+        m.name         = layout->channels[k].name;
+        m.unit         = layout->channels[k].unit;
+        m.dataType     = scope::core::DataType::Float64;
+        m.domain       = Signal::Domain::Time;
+        m.sourceSymbol = QString::fromStdString(path.filename().string());
+        auto sig = std::make_shared<Signal>(m);
+        sig->append(tsBufs[k].data(),
+                    reinterpret_cast<const std::byte*>(vsBufs[k].data()),
+                    tsBufs[k].size());
+        out->push_back(std::move(sig));
+        any = true;
+    }
+    if (!any && errorOut)
+        *errorOut = "TwinCAT Scope export had no parseable data.";
+    return any;
+}
+
 bool loadCsvChart(const std::filesystem::path& path,
                   std::vector<std::shared_ptr<Signal>>* out,
                   QString* errorOut,
-                  QString* layoutJsonOut = nullptr) {
+                  QString* layoutJsonOut = nullptr,
+                  QString* autoDetectedOut = nullptr) {
+    // TwinCAT Scope exports have a multi-row header block + per-channel
+    // (time, value) column pairs that the generic header/heuristic path
+    // below can't read. Detect + stream them directly so they open without
+    // the Converter. Conservative: anything that isn't unmistakably a
+    // TwinCAT export falls through to the generic loader unchanged.
+    {
+        std::vector<std::shared_ptr<Signal>> twChans;
+        QString twErr;
+        if (loadTwinCatScopeCsv(path, &twChans, &twErr)) {
+            *out = std::move(twChans);
+            if (autoDetectedOut) *autoDetectedOut = "TwinCAT Scope export";
+            return true;
+        }
+    }
+
     QFile f(QString::fromStdString(path.string()));
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (errorOut) *errorOut = "Couldn't open file.";
@@ -367,7 +455,8 @@ LoadResult loadFile(const std::filesystem::path& path, FileFormat fmt) {
             return r;
         }
         case FileFormat::Csv:
-            r.ok = loadCsvChart(path, &r.channels, &r.error, &r.layoutJson);
+            r.ok = loadCsvChart(path, &r.channels, &r.error, &r.layoutJson,
+                                &r.autoDetectedFormat);
             return r;
         case FileFormat::Auto:
         default:

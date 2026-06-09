@@ -398,6 +398,12 @@ std::vector<std::shared_ptr<Signal>> CsvSource::apply(
             for (int row = lo; row <= hi; ++row) {
                 const auto& r = rows_[row];
                 if (yCol >= r.size() || xCol >= r.size()) continue;
+                // A blank X cell means this channel has no sample on this row
+                // (a common ragged / sparse-column layout). Skip it rather
+                // than synthesise a spurious (t=0, v=0) point. This is a
+                // generic rule — the importer stays unaware of any specific
+                // source format.
+                if (r[xCol].trimmed().isEmpty()) continue;
                 TimestampNs t = 0; double v = 0.0;
                 bool xOk = true, yOk = true;
                 if (freqX) tryFreqStorage(r[xCol], xMap.unit, &t, &xOk);

@@ -1,5 +1,6 @@
 #include "scope/converter/CsvSource.h"
 #include "scope/converter/ConverterProfile.h"
+#include "scope/converter/SignalIO.h"
 #include "scope/core/Signal.h"
 
 #include <gtest/gtest.h>
@@ -870,5 +871,122 @@ TEST(CsvConverter, ValuePlateaus_AllSameCollapsesToOne) {
     auto sigs = src.apply(makePlateauProfile(ColumnMapping::ValuePlateauMode::KeepFirst), &err);
     ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
     EXPECT_EQ(sigs[0]->sampleCount(), 1u);
+    std::filesystem::remove(path);
+}
+
+// ---- TwinCAT Scope export auto-detection -----------------------------------
+
+// Write a minimal TwinCAT Scope export: Tab-delimited, CRLF, a metadata
+// preamble, a per-channel header block (each channel = two columns), then
+// (time_ms, value) data pairs. ChA runs at 1 ms for 4 samples; ChB ends
+// early (its columns go empty) so the export is ragged.
+static void writeTwinCatFixture(const std::filesystem::path& path) {
+    std::ofstream f(path, std::ios::binary);
+    auto W = [&](const std::string& s) { f << s << "\r\n"; };
+    W("Name\tExport_Test\t");
+    W("File\tC:\\x.csv\t");
+    W("Starttime of export\t123456\tMonday\t00:00:00.000");
+    W("");
+    W("");
+    W("Name\tChA\tName\tChB");
+    W("Data-Type\tREAL64\tData-Type\tINT16");
+    W("SampleTime[ms]\t1\tSampleTime[ms]\t2");
+    W("Unit\t(None)\tUnit\tmm");
+    W("");
+    W("0\t10\t0\t100");
+    W("1\t11\t2\t200");
+    W("2\t12\t\t");      // ChB ended → its two cells are empty (ragged)
+    W("3\t13\t\t");
+}
+
+TEST(CsvConverter, TwinCatScopeAutoDetectViaLoadFile) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_twincat.csv";
+    writeTwinCatFixture(path);
+
+    auto r = loadFile(path);   // FileFormat::Auto → Csv → TwinCAT branch
+    ASSERT_TRUE(r.ok) << r.error.toStdString();
+    EXPECT_EQ(r.autoDetectedFormat, QString("TwinCAT Scope export"));
+    ASSERT_EQ(r.channels.size(), 2u);
+
+    auto byName = [&](const QString& n) -> std::shared_ptr<Signal> {
+        for (auto& s : r.channels) if (s->meta().name == n) return s;
+        return nullptr;
+    };
+    auto a = byName("ChA");
+    auto b = byName("ChB");
+    ASSERT_TRUE(a);
+    ASSERT_TRUE(b);
+    EXPECT_EQ(a->meta().unit, QString());     // "(None)" → empty
+    EXPECT_EQ(b->meta().unit, QString("mm"));
+    EXPECT_EQ(a->sampleCount(), 4u);
+    EXPECT_EQ(b->sampleCount(), 2u);          // ragged tail dropped, no (0,0)
+
+    auto av = a->snapshotForRead();
+    EXPECT_EQ(av.timestamps[1], static_cast<TimestampNs>(1e6));   // 1 ms → ns
+    EXPECT_EQ(av.timestamps[3], static_cast<TimestampNs>(3e6));
+    EXPECT_DOUBLE_EQ(a->readAsDouble()[3], 13.0);
+
+    auto bv = b->snapshotForRead();
+    ASSERT_EQ(bv.count, 2u);
+    EXPECT_EQ(bv.timestamps[1], static_cast<TimestampNs>(2e6));   // ChB at 2 ms
+    EXPECT_DOUBLE_EQ(b->readAsDouble()[1], 200.0);
+
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, TwinCatScopeProfileBuilderAndRaggedApply) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_twincat_prof.csv";
+    writeTwinCatFixture(path);
+
+    ConverterProfile prof;
+    QString err;
+    ASSERT_TRUE(profileFromTwinCatScope(path, &prof, &err)) << err.toStdString();
+    EXPECT_EQ(prof.columnDelimiter, QString("\t"));
+    EXPECT_EQ(prof.decimalSeparator, QString("."));
+    ASSERT_EQ(prof.columns.size(), 4u);       // 2 channels × (X + Y)
+
+    EXPECT_EQ(prof.columns[0].columnId, QString("A"));
+    EXPECT_EQ(prof.columns[0].role, ColumnMapping::Role::XTime);
+    EXPECT_EQ(prof.columns[0].unit, QString("ms"));
+    // Range pinned explicitly to the first data row (idx 10 in this fixture)
+    // so the mapping table shows "11:*", not the misleading "all".
+    EXPECT_EQ(prof.columns[0].rowStart, 10);
+    EXPECT_EQ(prof.columns[1].columnId, QString("B"));
+    EXPECT_EQ(prof.columns[1].role, ColumnMapping::Role::Signal);
+    EXPECT_EQ(prof.columns[1].signalName, QString("ChA"));
+    EXPECT_EQ(prof.columns[1].xSourceColumn, QString("A"));
+    EXPECT_EQ(prof.columns[1].rowStart, 10);
+    EXPECT_EQ(prof.columns[3].signalName, QString("ChB"));
+    EXPECT_EQ(prof.columns[3].unit, QString("mm"));
+    EXPECT_EQ(prof.columns[3].xSourceColumn, QString("C"));
+
+    // The built profile, fed back through CsvSource, must reproduce the
+    // ragged lengths — exercises the empty-X-cell skip in CsvSource::apply.
+    CsvSource src(path, prof.columnDelimiter, prof.rowDelimiter);
+    auto sigs = src.apply(prof, &err);
+    ASSERT_EQ(sigs.size(), 2u) << err.toStdString();
+    auto byName = [&](const QString& n) -> std::shared_ptr<Signal> {
+        for (auto& s : sigs) if (s->meta().name == n) return s;
+        return nullptr;
+    };
+    ASSERT_TRUE(byName("ChA"));
+    ASSERT_TRUE(byName("ChB"));
+    EXPECT_EQ(byName("ChA")->sampleCount(), 4u);
+    EXPECT_EQ(byName("ChB")->sampleCount(), 2u);   // no spurious (0,0) points
+
+    std::filesystem::remove(path);
+}
+
+TEST(CsvConverter, GenericCsvNotAutoDetectedAsTwinCat) {
+    auto path = std::filesystem::temp_directory_path() / "scope_test_generic.csv";
+    {
+        std::ofstream f(path);
+        f << "t [s],speed [rpm]\n0,0\n0.1,10\n";
+    }
+    auto r = loadFile(path);
+    ASSERT_TRUE(r.ok) << r.error.toStdString();
+    EXPECT_TRUE(r.autoDetectedFormat.isEmpty());   // generic path, no popup
+    ASSERT_EQ(r.channels.size(), 1u);
+    EXPECT_EQ(r.channels[0]->meta().name, QString("speed"));
     std::filesystem::remove(path);
 }

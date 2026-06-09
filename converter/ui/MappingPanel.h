@@ -38,6 +38,10 @@ signals:
     void saveProfileRequested();
     void loadProfileRequested();
     void parseOptionsChanged();
+    // The user picked an auto-detector in the dropdown and clicked Apply.
+    // The host runs the matching detector on the active file and fills the
+    // mapping (delimiter, decimal, header row, channel columns).
+    void autoDetectRequested(const QString& detectorId);
 
 private slots:
     void onAddChannel();
@@ -49,6 +53,9 @@ private:
     QPushButton*  addBtn_;
     QPushButton*  editBtn_;
     QPushButton*  removeBtn_;
+
+    QComboBox*    autoDetectCombo_{nullptr};
+    QPushButton*  autoDetectBtn_{nullptr};
 
     QComboBox*    colSepCombo_;
     QLineEdit*    colSepCustom_;
