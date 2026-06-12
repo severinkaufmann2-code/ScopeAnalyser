@@ -91,3 +91,7 @@ passes 5/5 isolated and on suite rerun.
 Final form per user: "⤢ XY Fit" (diagonal arrow — fits X and all Y axes,
 Home) and "↕ Y Fit" (vertical arrow — fits Y axes to the current X
 window), adjacent at the left of the plot toolbar.
+
+## Refinement 2 (user): fit buttons are arrows-only + "Fit"
+Final final form: "⤢ Fit" (X + all Y axes) and "↕ Fit" (Y axes within the
+current X window) — the arrow alone distinguishes them; tooltips explain.
