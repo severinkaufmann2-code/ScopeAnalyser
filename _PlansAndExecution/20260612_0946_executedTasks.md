@@ -146,3 +146,20 @@ guards in StyleKit; 25/25 ASan iterations clean, 3× full native suite
 green (210 tests, zero crashes). windows.yml fixture exclusion reverted
 (it had masked this real bug); linux.yml exclusion kept (pre-existing,
 different SIGBUS documented before this session).
+
+## HTML export v2: mirrors the Analyser (user-approved plan)
+
+The exported page now reproduces the on-screen view: channel panel on the
+left (checkbox + swatch + live cursor value), toolbar with the same boxed
+[⤢ ↕] Fit and [↔+ ↔− ↕+ ↕−] Zoom groups, Δ Measure (two clicks → Δx/Δy/
+1/|Δx|, right-click clears), Line/Points/Line+points selector, and the
+same multi-Y-axis arrangement (labels, left/right sides, axis colours,
+per-channel assignment + visibility + the app's trace-colour derivation —
+light palette, as the page is light). Mouse: wheel = X zoom at cursor,
+Shift+wheel = Y, drag = box zoom, dbl-click = fit; manually zoomed Y axes
+stop auto-fitting until Fit (the app's rule, incl. the 5% margin).
+Plumbing: HtmlExportView structs; AnalyserPlot::htmlExportView() snapshots
+the live widget; ScopePlot colour derivation exposed as theme-explicit
+statics. +2 tests (spec content; widget-level view mirroring). 212/212
+green; embedded JS syntax-checked with node. XY view has no HTML
+counterpart (documented).

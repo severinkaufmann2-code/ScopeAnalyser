@@ -89,6 +89,12 @@ public:
     // Repeats after a handful of channels; the first one is the axis colour
     // itself.
     QColor deriveChannelColor(int axisIndex, int channelIndexOnAxis) const;
+    // Theme-explicit variants of the two above (the instance methods pick
+    // light/dark from the widget palette). Used by exporters that render
+    // onto a known background (e.g. the light interactive-HTML page).
+    static QColor axisBaseColorFor(bool dark, int axisIndex);
+    static QColor deriveChannelColorFor(bool dark, int axisIndex,
+                                        int channelIndexOnAxis);
 
     // Zoom helpers (multiply axis range; <1 = zoom in)
     void zoomXBy(double factor);

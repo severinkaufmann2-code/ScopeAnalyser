@@ -1,5 +1,6 @@
 #pragma once
 
+#include "scope/converter/HtmlExport.h"
 #include "scope/core/SignalStore.h"
 #include "scope/plot/PlotLayout.h"
 
@@ -106,6 +107,12 @@ private:
     // switch viewMode, rebuild the table.
     scope::plot::PlotLayout currentLayout();
     void applyLayout(const scope::plot::PlotLayout& layout);
+
+    // The current per-domain view (axes, channel→axis assignments,
+    // visibility, display colours) for the interactive-HTML exporter —
+    // so the exported page mirrors what's on screen. Colours use the
+    // light palette (the page is light) via the same derivation rule.
+    scope::converter::HtmlExportView htmlExportView();
 
     scope::core::SignalStore& store_;
     FormulaEngine&            engine_;

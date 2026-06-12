@@ -128,3 +128,44 @@ TEST(HtmlExport, EmptyStoreFailsWithMessage) {
     EXPECT_FALSE(ok);
     EXPECT_FALSE(err.isEmpty());
 }
+
+// The view parameter controls everything the Analyser mirrors into the
+// page: axis labels/sides/colours, channel order, axis assignment, initial
+// visibility, and trace colours.
+TEST(HtmlExport, ViewControlsAxesAssignmentVisibilityAndColors) {
+    SignalStore store;
+    store.add(makeSig("a", "", Signal::Domain::Time, 0, 1'000'000LL, {1, 2}));
+    store.add(makeSig("b", "", Signal::Domain::Time, 0, 1'000'000LL, {3, 4}));
+
+    HtmlExportView view;
+    HtmlAxis y1;  y1.label = "Y1";  y1.right = false; y1.color = "#1e1e1e";
+    HtmlAxis y2;  y2.label = "bar"; y2.right = true;  y2.color = "#d95319";
+    view.time.axes = {y1, y2};
+    HtmlChannel ca; ca.name = "a"; ca.axisIndex = 0; ca.visible = true;  ca.color = "#112233";
+    HtmlChannel cb; cb.name = "b"; cb.axisIndex = 1; cb.visible = false; cb.color = "#445566";
+    view.time.channels = {ca, cb};
+
+    const auto path = std::filesystem::temp_directory_path() / "scope_html_view_test.html";
+    QString err;
+    ASSERT_TRUE(exportInteractiveHtml(QString::fromStdString(path.string()),
+                                      store, view, &err))
+        << err.toStdString();
+    QString html;
+    {
+        QFile f(QString::fromStdString(path.string()));
+        ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+        html = QString::fromUtf8(f.readAll());
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+
+    EXPECT_TRUE(html.contains(
+        "axes:[{label:\"Y1\",right:false,color:\"#1e1e1e\"},"
+        "{label:\"bar\",right:true,color:\"#d95319\"}]"));
+    EXPECT_TRUE(html.contains("{label:\"a\",color:\"#112233\",axis:0,visible:true}"));
+    EXPECT_TRUE(html.contains("{label:\"b\",color:\"#445566\",axis:1,visible:false}"));
+    // The toolbar/measure/mode machinery is present.
+    EXPECT_TRUE(html.contains("Δ Measure"));
+    EXPECT_TRUE(html.contains("Line + points"));
+    EXPECT_TRUE(html.contains("CHANNELS"));
+}

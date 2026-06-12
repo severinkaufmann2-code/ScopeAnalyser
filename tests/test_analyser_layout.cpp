@@ -88,6 +88,9 @@ protected:
         ASSERT_GE(i, 0) << name.toStdString() << " not in XY combo";
         p.xyXCombo_->setCurrentIndex(i);
     }
+    scope::converter::HtmlExportView htmlView(AnalyserPlot& p) {
+        return p.htmlExportView();
+    }
 };
 
 }  // namespace scope::analyser::ui
@@ -426,4 +429,49 @@ TEST_F(AnalyserPlotLayoutTest, ChannelColorsStableWhenTogglingVisibility) {
     EXPECT_EQ(colorOf("A"), a0);
     EXPECT_EQ(colorOf("B"), b0);
     EXPECT_EQ(colorOf("C"), c0);
+}
+
+// The interactive-HTML exporter receives exactly what's on screen: axes
+// (label + side), channel→axis assignments, and visibility.
+TEST_F(AnalyserPlotLayoutTest, HtmlExportViewMirrorsTheScreen) {
+    SignalStore store;
+    scope::analyser::FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    addTimeChannel(store, "speed",  "rpm");
+    addTimeChannel(store, "torque", "Nm");
+
+    scope::plot::PlotLayout in;
+    in.viewMode = "time";
+    QList<scope::plot::PlotLayoutAxis> axes;
+    axes.append({"rpm", "left",  true, 0.0, 6000.0});
+    axes.append({"Nm",  "right", true, 0.0, 500.0});
+    in.axesByDomain.insert("time", axes);
+    QList<scope::plot::PlotLayoutChannel> chans;
+    { scope::plot::PlotLayoutChannel c; c.name = "speed";  c.axisIndex = 0; c.domain = "time"; chans.append(c); }
+    { scope::plot::PlotLayoutChannel c; c.name = "torque"; c.axisIndex = 1; c.domain = "time"; chans.append(c); }
+    in.channelsByDomain.insert("time", chans);
+    apply(plot, in);
+    setRowVisible(plot, "speed", false);
+
+    const auto v = htmlView(plot);
+    ASSERT_EQ(v.time.axes.size(), 2);
+    EXPECT_EQ(v.time.axes[0].label, "rpm");
+    EXPECT_FALSE(v.time.axes[0].right);
+    EXPECT_EQ(v.time.axes[1].label, "Nm");
+    EXPECT_TRUE(v.time.axes[1].right);
+
+    ASSERT_EQ(v.time.channels.size(), 2);
+    int iSpeed = v.time.channels[0].name == "speed" ? 0 : 1;
+    const auto& sp = v.time.channels[iSpeed];
+    const auto& tq = v.time.channels[1 - iSpeed];
+    EXPECT_EQ(sp.axisIndex, 0);
+    EXPECT_FALSE(sp.visible) << "hidden channel must export unchecked";
+    EXPECT_EQ(tq.axisIndex, 1);
+    EXPECT_TRUE(tq.visible);
+    // Colours follow the app's light-palette derivation per axis.
+    EXPECT_EQ(sp.color,
+              scope::plot::ScopePlot::deriveChannelColorFor(false, 0, 0).name());
+    EXPECT_EQ(tq.color,
+              scope::plot::ScopePlot::deriveChannelColorFor(false, 1, 0).name());
 }

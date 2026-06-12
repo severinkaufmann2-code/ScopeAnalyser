@@ -205,10 +205,12 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         if (!path.endsWith(".html", Qt::CaseInsensitive)) path += ".html";
 
         struct Outcome { bool ok{false}; QString err; };
+        const auto view = htmlExportView();
         const auto outcome = converter::ui::runWithBusyDialog(
             this, tr("Exporting HTML…"), [&]() -> Outcome {
                 Outcome o;
-                o.ok = converter::exportInteractiveHtml(path, store_, &o.err);
+                o.ok = converter::exportInteractiveHtml(path, store_, view,
+                                                        &o.err);
                 return o;
             });
         if (!outcome.ok) {
@@ -948,6 +950,54 @@ scope::plot::PlotLayout AnalyserPlot::currentLayout() {
         layout.channels = layout.channelsByDomain.value(activeKey);
     }
     return layout;
+}
+
+scope::converter::HtmlExportView AnalyserPlot::htmlExportView() {
+    // Freshen the active domain's snapshot so the export matches the screen
+    // (the inactive domain keeps its last-shown state, like currentLayout).
+    snapshotIntoDomain(activeDomain());
+
+    using Domain = scope::core::Signal::Domain;
+    auto build = [&](Domain d) {
+        converter::HtmlChartView cv;
+        const auto& st = stateByDomain_.value(static_cast<int>(d));
+        QList<scope::plot::PlotLayoutAxis> axes = st.axes;
+        if (axes.isEmpty()) {
+            scope::plot::PlotLayoutAxis a;
+            a.label = "Y1";
+            a.side  = "left";
+            axes.append(a);
+        }
+        for (int i = 0; i < axes.size(); ++i) {
+            converter::HtmlAxis ha;
+            ha.label = axes[i].label;
+            ha.right = axes[i].side == "right";
+            ha.color = scope::plot::ScopePlot::axisBaseColorFor(false, i).name();
+            cv.axes.append(ha);
+        }
+        QHash<int, int> perAxis;
+        for (const auto& name : store_.channelNames()) {
+            auto sig = store_.get(name);
+            if (!sig || sig->meta().domain != d || sig->sampleCount() == 0)
+                continue;
+            const auto rs = st.rowState.value(name, {true, 0});
+            converter::HtmlChannel hc;
+            hc.name      = name;
+            hc.axisIndex = std::clamp(rs.second, 0,
+                                      static_cast<int>(cv.axes.size()) - 1);
+            hc.visible   = rs.first;
+            const int onAxis = perAxis[hc.axisIndex]++;
+            hc.color = scope::plot::ScopePlot::deriveChannelColorFor(
+                           false, hc.axisIndex, onAxis).name();
+            cv.channels.append(hc);
+        }
+        return cv;
+    };
+
+    converter::HtmlExportView v;
+    v.time      = build(Domain::Time);
+    v.frequency = build(Domain::Frequency);
+    return v;
 }
 
 void AnalyserPlot::saveLayoutDialog() {

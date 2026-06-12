@@ -669,15 +669,26 @@ int ScopePlot::closestYAxisToPos(QPointF pixelPos) const {
 }
 
 QColor ScopePlot::axisBaseColor(int axisIndex) const {
+    const bool dark = palette().color(QPalette::Base).lightness() < 128;
+    return axisBaseColorFor(dark, axisIndex);
+}
+
+QColor ScopePlot::axisBaseColorFor(bool dark, int axisIndex) {
     if (axisIndex < 0) axisIndex = 0;
-    const auto& axisColors = axisPaletteFor(this);
+    const auto& axisColors = dark ? kAxisPaletteDark : kAxisPaletteLight;
     return axisColors[axisIndex % axisColors.size()];
 }
 
 QColor ScopePlot::deriveChannelColor(int axisIndex, int channelIndexOnAxis) const {
+    const bool dark = palette().color(QPalette::Base).lightness() < 128;
+    return deriveChannelColorFor(dark, axisIndex, channelIndexOnAxis);
+}
+
+QColor ScopePlot::deriveChannelColorFor(bool dark, int axisIndex,
+                                        int channelIndexOnAxis) {
     // The first channel on each axis renders in the axis's exact base colour
     // (so the trace and the axis label match perfectly).
-    const QColor base = axisBaseColor(axisIndex);
+    const QColor base = axisBaseColorFor(dark, axisIndex);
     if (channelIndexOnAxis == 0) return base;
 
     int h, s, v, a;
@@ -688,7 +699,7 @@ QColor ScopePlot::deriveChannelColor(int axisIndex, int channelIndexOnAxis) cons
     // (skipping its neutral first entry). This is the common single-axis,
     // many-channels case.
     if (s < 40) {
-        const auto& pal = axisPaletteFor(this);
+        const auto& pal = dark ? kAxisPaletteDark : kAxisPaletteLight;
         const int n = static_cast<int>(pal.size()) - 1;
         return pal[1 + ((channelIndexOnAxis - 1) % n)];
     }
