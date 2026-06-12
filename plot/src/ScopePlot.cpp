@@ -9,6 +9,7 @@
 #include <QIcon>
 #include <QInputDialog>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -235,19 +236,24 @@ ScopePlot::ScopePlot(QWidget* parent)
         return b;
     };
 
-    // The two fit actions sit together; the arrow says which axes: diagonal
-    // = X and all Y axes, vertical = Y axes only (within the current X
-    // window).
-    makeBtn(QString::fromUtf8("⤢ Fit"),
+    // The two fit actions are compact arrow buttons sharing one "Fit"
+    // caption: ⤢ fits X and all Y axes, ↕ fits only the Y axes within the
+    // current X window. Tooltips spell it out.
+    makeBtn(QString::fromUtf8("⤢"),
             "Fit all data into view — X and all Y axes  (Home)",
             &ScopePlot::fitAll);
-    makeBtnLambda(QString::fromUtf8("↕ Fit"),
+    makeBtnLambda(QString::fromUtf8("↕"),
                   "Fit each Y axis to the data inside the current X "
                   "window. X range stays the same.",
                   [this]{
                       const auto xr = impl_->plot->xAxis->range();
                       rescaleYAxesToWindow(xr.lower, xr.upper);
                   });
+    {
+        auto* fitLabel = new QLabel(QString::fromUtf8("Fit"), impl_->toolbar);
+        fitLabel->setProperty("scopeRole", "dim");
+        tb->addWidget(fitLabel);
+    }
     tb->addSpacing(8);
     makeBtnLambda(QString::fromUtf8("↔ +"),
                   "Zoom X in  (Ctrl+Scroll up)",
