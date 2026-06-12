@@ -235,12 +235,12 @@ ScopePlot::ScopePlot(QWidget* parent)
         return b;
     };
 
-    // The two fit actions sit together: fit everything, or fit only the Y
-    // axes to what's inside the current X window.
-    makeBtn(QString::fromUtf8("⤢  Fit"),
-            "Fit all data into view  (Home)",
+    // The two fit actions sit together: fit everything (X and Y), or fit
+    // only the Y axes to what's inside the current X window.
+    makeBtn(QString::fromUtf8("XY Fit"),
+            "Fit all data into view — X and all Y axes  (Home)",
             &ScopePlot::fitAll);
-    makeBtnLambda(QString::fromUtf8("↕ → Y"),
+    makeBtnLambda(QString::fromUtf8("Y Fit"),
                   "Fit each Y axis to the data inside the current X "
                   "window. X range stays the same.",
                   [this]{
