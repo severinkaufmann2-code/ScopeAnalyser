@@ -55,6 +55,12 @@ std::size_t Signal::sampleCount() const {
     return sampleCount_.load(std::memory_order_acquire);
 }
 
+TimestampNs Signal::displayOriginNs() const {
+    std::lock_guard lock(mtx_);
+    if (meta_.sourceStartNs != kNoSourceStart) return meta_.sourceStartNs;
+    return timestamps_.empty() ? 0 : timestamps_.front();
+}
+
 Signal::ReadView Signal::snapshotForRead() const {
     std::lock_guard lock(mtx_);
     return ReadView{

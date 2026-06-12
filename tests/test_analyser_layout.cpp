@@ -362,3 +362,40 @@ TEST_F(AnalyserPlotLayoutTest, XyOutsideYRangeLeavesGapNotFabricatedPoints) {
         }
     }
 }
+
+// A sliced channel stays at its true position on the time axis no matter
+// what else is visible. (The reported bug: with the source hidden, the slice
+// became the earliest visible channel, redefined the axis origin, and slid
+// to 0. It now carries its source's origin and the axis anchors on it.)
+TEST_F(AnalyserPlotLayoutTest, SlicedChannelKeepsTruePositionWhenShownAlone) {
+    SignalStore store;
+    scope::analyser::FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    // 0 … 2.5 s at 4 Hz starting at 4 s — every x value exactly representable.
+    std::vector<double> vs(11);
+    for (int i = 0; i < 11; ++i) vs[i] = i;
+    addChannelAt(store, "A", Signal::Domain::Time,
+                 4'000'000'000LL, 250'000'000LL, vs);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("S = Slice(A, 0.25, 0.75)", &err))
+        << err.toStdString();
+
+    auto* gs = qobject_cast<QCPGraph*>(plottableFor(plot, "S"));
+    ASSERT_NE(gs, nullptr);
+    ASSERT_EQ(gs->data()->size(), 3);
+    EXPECT_DOUBLE_EQ(gs->data()->at(0)->key, 0.25);   // with the source visible
+
+    setRowVisible(plot, "A", false);                   // slice shown alone
+    gs = qobject_cast<QCPGraph*>(plottableFor(plot, "S"));
+    ASSERT_NE(gs, nullptr);
+    ASSERT_EQ(gs->data()->size(), 3);
+    EXPECT_DOUBLE_EQ(gs->data()->at(0)->key, 0.25)
+        << "slice must not slide to 0 when its source is hidden";
+    EXPECT_DOUBLE_EQ(gs->data()->at(2)->key, 0.75);
+
+    setRowVisible(plot, "A", true);                    // and back
+    gs = qobject_cast<QCPGraph*>(plottableFor(plot, "S"));
+    ASSERT_NE(gs, nullptr);
+    EXPECT_DOUBLE_EQ(gs->data()->at(0)->key, 0.25);
+}

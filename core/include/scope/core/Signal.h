@@ -5,6 +5,7 @@
 #include <QString>
 
 #include <atomic>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -28,6 +29,12 @@ public:
     // shows those signals on a separate view.
     enum class Domain : std::uint8_t { Time, Frequency };
 
+    // Sentinel for Meta::sourceStartNs: "no known source origin". A real
+    // origin can legitimately be 0 (files imported with relative time), so
+    // "unset" needs an impossible value.
+    static constexpr TimestampNs kNoSourceStart =
+        std::numeric_limits<TimestampNs>::min();
+
     struct Meta {
         QString name;
         QString unit;
@@ -37,12 +44,16 @@ public:
         std::uint32_t parentTaskCycleUs{0};
         QString sourceSymbol;          // PLC symbol, file column, or formula
         Domain  domain{Domain::Time};
-        // For a Frequency-domain signal derived from a time signal: the
-        // source's first timestamp (ns), so revertFFT can reconstruct on
-        // the original time origin. In-memory only — not persisted to
-        // files (a reloaded spectrum reverts to 0 = unknown). Elementwise
-        // spectrum edits (BandZero, arithmetic, …) carry it through.
-        TimestampNs sourceStartNs{0};
+        // The time origin of the signal this one was derived from (ns).
+        // Two uses, both in-memory only (not persisted to files):
+        //  - Spectra (RFFTmag/…): the time-domain source's first timestamp,
+        //    so revertFFT reconstructs on the original axis.
+        //  - Derived time signals that drop leading samples (Slice, Gate):
+        //    the source's first timestamp, so the chart anchors the segment
+        //    at its true position even when shown alone.
+        // kNoSourceStart = unknown (display anchors at the signal's own
+        // first sample). Derived-signal functions carry it through.
+        TimestampNs sourceStartNs{kNoSourceStart};
     };
 
     explicit Signal(Meta meta);
@@ -75,6 +86,12 @@ public:
     // Convenience for visualisations that don't care about types: returns
     // values cast to double. Slow path; do NOT use on the hot record path.
     std::vector<double> readAsDouble() const;
+
+    // The time-axis origin this signal is anchored/selected against:
+    // Meta::sourceStartNs when known (derived signals), else the first
+    // sample's timestamp (0 if empty). This is the single rule shared by
+    // the chart's axis base and the time windows of Slice/BandZero/BandKeep.
+    TimestampNs displayOriginNs() const;
 
 private:
     Meta meta_;

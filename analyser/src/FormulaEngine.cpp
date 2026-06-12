@@ -159,8 +159,9 @@ std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
     const TimestampNs outStartNs =
         aConst ? b->meta().sourceStartNs
       : bConst ? a->meta().sourceStartNs
-      : (a->meta().sourceStartNs != 0 ? a->meta().sourceStartNs
-                                      : b->meta().sourceStartNs);
+      : (a->meta().sourceStartNs != Signal::kNoSourceStart
+             ? a->meta().sourceStartNs
+             : b->meta().sourceStartNs);
 
     auto makeSig = [&](const std::vector<TimestampNs>& ts,
                        const std::vector<double>& vs) {

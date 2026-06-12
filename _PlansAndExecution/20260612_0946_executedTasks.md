@@ -55,3 +55,21 @@
   asserts NaN, +2 new tests (origin survives BandZero/arithmetic edits;
   domain preservation across 5 function classes). **199/199 green**;
   offscreen GUI smoke run OK.
+
+## Follow-up (user report): sliced channel slid around depending on visibility
+
+Cause: the chart's X origin was "earliest first sample among the VISIBLE
+channels", so hiding the source made the slice itself the origin and it
+slid from 30–50 s to 0–20 s. Fix: derived signals that drop leading
+samples (Slice, Gate) record their source's origin in Meta::sourceStartNs
+(sentinel kNoSourceStart = unset, since 0 is a real origin for 0-based
+imports); the time-view axis anchors on Signal::displayOriginNs()
+(origin if known, else own first sample); Slice/BandZero/BandKeep windows
+select in those same chart coordinates — correct even when chained
+(Slice of a Slice measures from the original origin); filters, calculus
+and arithmetic propagate the anchor. +4 regression tests (chained slice
+windows, Gate origin, 0-based anchor, widget-level "slice stays at
+0.25–0.75 when shown alone"). 203/203 green. Note: one flaky SEGFAULT in
+AnalyserPlotLayoutTest teardown reproduced once in a full ctest run —
+the known offscreen QCustomPlot teardown issue already excluded on CI,
+passes 5/5 isolated and on suite rerun.

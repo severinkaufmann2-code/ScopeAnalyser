@@ -27,7 +27,7 @@ std::shared_ptr<Signal> makeDoubleSignal(const QString& sourceFormula,
                                          const std::vector<double>& vals,
                                          const QString& unit = "",
                                          Signal::Domain domain = Signal::Domain::Time,
-                                         TimestampNs sourceStartNs = 0) {
+                                         TimestampNs sourceStartNs = Signal::kNoSourceStart) {
     Signal::Meta meta;
     meta.name = sourceFormula;          // overridden by caller before add()
     meta.unit = unit;
@@ -93,14 +93,19 @@ std::shared_ptr<Signal> impl_Filter(const FunctionArgs& a, QString* err) {
     auto src  = signal->readAsDouble();
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(view.count);
-    if (view.count == 0) return makeDoubleSignal("Filter", ts, dst, signal->meta().unit);
+    if (view.count == 0)
+        return makeDoubleSignal("Filter", ts, dst, signal->meta().unit,
+                                signal->meta().domain,
+                                signal->meta().sourceStartNs);
     auto dt = samplePeriodsSec(ts);
     dst[0] = src[0];
     for (std::size_t i = 1; i < view.count; ++i) {
         const double alpha = dt[i] / (tau + dt[i]);
         dst[i] = alpha * src[i] + (1.0 - alpha) * dst[i - 1];
     }
-    return makeDoubleSignal("Filter", ts, dst, signal->meta().unit);
+    return makeDoubleSignal("Filter", ts, dst, signal->meta().unit,
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 // ---- FilterHP(signal, tau_seconds) ----
@@ -122,7 +127,9 @@ std::shared_ptr<Signal> impl_FilterHP(const FunctionArgs& a, QString* err) {
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(view.count);
     if (view.count == 0)
-        return makeDoubleSignal("FilterHP", ts, dst, signal->meta().unit);
+        return makeDoubleSignal("FilterHP", ts, dst, signal->meta().unit,
+                                signal->meta().domain,
+                                signal->meta().sourceStartNs);
     auto dt = samplePeriodsSec(ts);
     double lp = src[0];     // low-pass accumulator (same recurrence as Filter)
     dst[0] = 0.0;           // x[0] - lp == 0
@@ -131,7 +138,9 @@ std::shared_ptr<Signal> impl_FilterHP(const FunctionArgs& a, QString* err) {
         lp = alpha * src[i] + (1.0 - alpha) * lp;
         dst[i] = src[i] - lp;
     }
-    return makeDoubleSignal("FilterHP", ts, dst, signal->meta().unit);
+    return makeDoubleSignal("FilterHP", ts, dst, signal->meta().unit,
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 // ---- PT(signal, band, order, tau) ----
@@ -168,7 +177,10 @@ std::shared_ptr<Signal> impl_PT(const FunctionArgs& a, QString* err) {
     auto src  = signal->readAsDouble();
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(src.begin(), src.end());
-    if (view.count == 0) return makeDoubleSignal("PT", ts, dst, signal->meta().unit);
+    if (view.count == 0)
+        return makeDoubleSignal("PT", ts, dst, signal->meta().unit,
+                                signal->meta().domain,
+                                signal->meta().sourceStartNs);
     const auto dt = samplePeriodsSec(ts);
 
     for (int stage = 0; stage < order; ++stage) {
@@ -190,7 +202,9 @@ std::shared_ptr<Signal> impl_PT(const FunctionArgs& a, QString* err) {
             }
         }
     }
-    return makeDoubleSignal("PT", ts, dst, signal->meta().unit);
+    return makeDoubleSignal("PT", ts, dst, signal->meta().unit,
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 // ---- Reverse(signal) — flip the waveform in time ----
@@ -542,7 +556,10 @@ std::shared_ptr<Signal> applyIIR(const std::shared_ptr<Signal>& signal,
     auto src  = signal->readAsDouble();
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(src.begin(), src.end());
-    if (view.count < 2) return makeDoubleSignal(name, ts, dst, signal->meta().unit);
+    if (view.count < 2)
+        return makeDoubleSignal(name, ts, dst, signal->meta().unit,
+                                signal->meta().domain,
+                                signal->meta().sourceStartNs);
 
     const double spanSec = (ts.back() - ts.front()) * 1e-9;
     if (spanSec <= 0) { if (err) *err = name + ": timestamps must be increasing"; return nullptr; }
@@ -577,7 +594,9 @@ std::shared_ptr<Signal> applyIIR(const std::shared_ptr<Signal>& signal,
             smp = y0;
         }
     }
-    return makeDoubleSignal(name, ts, dst, signal->meta().unit);
+    return makeDoubleSignal(name, ts, dst, signal->meta().unit,
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 // Shared front-end for the band-coded IIR functions. Arg layout:
@@ -681,7 +700,10 @@ std::shared_ptr<Signal> impl_Integral(const FunctionArgs& a, QString* err) {
     auto src  = signal->readAsDouble();
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(view.count, 0.0);
-    if (view.count == 0) return makeDoubleSignal("Integral", ts, dst);
+    if (view.count == 0)
+        return makeDoubleSignal("Integral", ts, dst, "",
+                                signal->meta().domain,
+                                signal->meta().sourceStartNs);
 
     double acc = 0.0;
     dst[0] = 0.0;
@@ -690,7 +712,9 @@ std::shared_ptr<Signal> impl_Integral(const FunctionArgs& a, QString* err) {
         acc += 0.5 * (src[i] + src[i - 1]) * dt;
         dst[i] = acc;
     }
-    return makeDoubleSignal("Integral", ts, dst);
+    return makeDoubleSignal("Integral", ts, dst, "",
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 // ---- Derivative(signal) — plain Δy/Δx (central difference) ----
@@ -714,7 +738,10 @@ std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
     auto src  = signal->readAsDouble();
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(view.count, 0.0);
-    if (view.count < 2) return makeDoubleSignal("Derivative", ts, dst);
+    if (view.count < 2)
+        return makeDoubleSignal("Derivative", ts, dst, "",
+                                signal->meta().domain,
+                                signal->meta().sourceStartNs);
 
     for (std::size_t i = 1; i + 1 < view.count; ++i) {
         const double dt = (ts[i + 1] - ts[i - 1]) * 1e-9;
@@ -726,7 +753,9 @@ std::shared_ptr<Signal> impl_Derivative(const FunctionArgs& a, QString* err) {
         const double dtB = (ts.back() - ts[ts.size() - 2]) * 1e-9;
         if (dtB != 0) dst.back() = (src.back() - src[src.size() - 2]) / dtB;
     }
-    return makeDoubleSignal("Derivative", ts, dst);
+    return makeDoubleSignal("Derivative", ts, dst, "",
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 // ---- Rolling reductions over a time window (seconds) ----
@@ -918,8 +947,9 @@ std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
     const TimestampNs outStartNs =
         aConst ? b->meta().sourceStartNs
       : bConst ? a->meta().sourceStartNs
-      : (a->meta().sourceStartNs != 0 ? a->meta().sourceStartNs
-                                      : b->meta().sourceStartNs);
+      : (a->meta().sourceStartNs != Signal::kNoSourceStart
+             ? a->meta().sourceStartNs
+             : b->meta().sourceStartNs);
 
     auto makeSig = [&](const std::vector<TimestampNs>& ts,
                        const std::vector<double>& vs) {
@@ -1161,10 +1191,12 @@ std::shared_ptr<Signal> impl_ForwardFill(const FunctionArgs& a, QString* err) {
 }
 
 // ---- Slice(signal, t_start, t_end) — keep samples with t in [start, end] ----
-// On a time-domain signal t_start/t_end are seconds SINCE THE SIGNAL'S FIRST
-// SAMPLE — the values the user reads off the chart, which displays relative
-// seconds (recordings carry absolute epoch timestamps). On a spectrum they
-// are absolute Hz. The kept samples retain their original timestamps.
+// The window is in the coordinates the chart shows for this signal: seconds
+// since its ORIGIN — the source's start for derived signals (sourceStartNs,
+// carried through Slice/Gate/filters), else its own first sample. So slicing
+// what you see at 0.3–0.4 s selects exactly that, even on an already-sliced
+// channel. On a spectrum the window is absolute Hz. The kept samples retain
+// their original timestamps and stay anchored at their true position.
 std::shared_ptr<Signal> impl_Slice(const FunctionArgs& a, QString* err) {
     if (!ensureN(a, 3, err, "Slice")) return nullptr;
     double tStartSec = 0, tEndSec = 0;
@@ -1179,21 +1211,22 @@ std::shared_ptr<Signal> impl_Slice(const FunctionArgs& a, QString* err) {
     auto view = signal->snapshotForRead();
     auto src  = signal->readAsDouble();
     const bool timeDomain = signal->meta().domain == Signal::Domain::Time;
-    const TimestampNs base =
-        (timeDomain && view.count > 0) ? view.timestamps[0] : 0;
+    const TimestampNs origin  = signal->displayOriginNs();
+    const TimestampNs selBase = timeDomain ? origin : 0;
     std::vector<TimestampNs> ts;
     std::vector<double> dst;
     ts.reserve(view.count);
     dst.reserve(view.count);
     for (std::size_t i = 0; i < view.count; ++i) {
-        const TimestampNs rel = view.timestamps[i] - base;
+        const TimestampNs rel = view.timestamps[i] - selBase;
         if (rel < tLo || rel > tHi) continue;
         ts.push_back(view.timestamps[i]);
         dst.push_back(i < src.size() ? src[i] : 0.0);
     }
     return makeDoubleSignal("Slice", ts, dst, signal->meta().unit,
                             signal->meta().domain,
-                            signal->meta().sourceStartNs);
+                            timeDomain ? origin
+                                       : signal->meta().sourceStartNs);
 }
 
 // ---- FFT(signal [, window]) — single-sided amplitude spectrum ----
@@ -1509,7 +1542,9 @@ std::shared_ptr<Signal> impl_revertFFT(const FunctionArgs& a, QString* err) {
     double df = (mv.timestamps[1] - mv.timestamps[0]) / 1e9;
     if (df <= 0) df = 1.0;
     const double dt = 1.0 / (static_cast<double>(N) * df);
-    const TimestampNs t0 = mag->meta().sourceStartNs;
+    const TimestampNs t0 =
+        mag->meta().sourceStartNs != Signal::kNoSourceStart
+            ? mag->meta().sourceStartNs : 0;
     std::vector<TimestampNs> outTs(N);
     std::vector<double> outV(N);
     for (std::size_t i = 0; i < N; ++i) {
@@ -1524,10 +1559,11 @@ std::shared_ptr<Signal> impl_revertFFT(const FunctionArgs& a, QString* err) {
 // Zero a signal's samples whose x-axis value is inside [lo, hi] (BandZero) or
 // outside it (BandKeep). Works in BOTH domains: on a frequency-domain signal
 // (e.g. from RFFTmag) lo/hi are in Hz → edits a frequency band; on a
-// time-domain signal they are seconds SINCE THE SIGNAL'S FIRST SAMPLE — the
-// values the user reads off the chart (recordings carry absolute epoch
-// timestamps). Length is preserved. (Editing primitives for the RFFTmag →
-// revertFFT round-trip.)
+// time-domain signal they are seconds since the signal's ORIGIN — its
+// source's start for derived signals (sourceStartNs), else its own first
+// sample. That matches the position the chart shows, even for an already
+// sliced/gated channel. Length is preserved. (Editing primitives for the
+// RFFTmag → revertFFT round-trip.)
 std::shared_ptr<Signal> bandMask(const FunctionArgs& a, bool keep,
                                  const char* who, QString* err) {
     if (a.size() != 3) {
@@ -1545,18 +1581,19 @@ std::shared_ptr<Signal> bandMask(const FunctionArgs& a, bool keep,
     auto view = signal->snapshotForRead();
     auto src = signal->readAsDouble();
     const bool timeDomain = signal->meta().domain == Signal::Domain::Time;
-    const TimestampNs base =
-        (timeDomain && view.count > 0) ? view.timestamps[0] : 0;
+    const TimestampNs origin  = signal->displayOriginNs();
+    const TimestampNs selBase = timeDomain ? origin : 0;
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(src.begin(), src.end());
     for (std::size_t k = 0; k < view.count; ++k) {
-        const double x = (ts[k] - base) / 1e9;  // Hz (spectrum) or rel. seconds
+        const double x = (ts[k] - selBase) / 1e9;  // Hz (spectrum) or rel. s
         const bool inBand = (x >= lo && x <= hi);
         if (keep ? !inBand : inBand) dst[k] = 0.0;
     }
     return makeDoubleSignal(who, ts, dst, signal->meta().unit,
                             signal->meta().domain,
-                            signal->meta().sourceStartNs);
+                            timeDomain ? origin
+                                       : signal->meta().sourceStartNs);
 }
 std::shared_ptr<Signal> impl_BandZero(const FunctionArgs& a, QString* err) {
     return bandMask(a, /*keep=*/false, "BandZero", err);
@@ -1816,8 +1853,14 @@ std::shared_ptr<Signal> impl_Gate(const FunctionArgs& a, QString* err) {
         }
     }
 
+    // Like Slice: keep the source's origin so the gated segments stay at
+    // their true position on the chart even when shown without the source.
+    const TimestampNs origin =
+        signal->meta().domain != Signal::Domain::Time
+            ? signal->meta().sourceStartNs
+            : signal->displayOriginNs();
     return makeDoubleSignal("Gate", outTs, outVs,
-                            signal->meta().unit, signal->meta().domain);
+                            signal->meta().unit, signal->meta().domain, origin);
 }
 
 // ---- FFTWelch(signal, gate, low, high [, min_length [, window]]) ----

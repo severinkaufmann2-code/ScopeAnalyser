@@ -470,3 +470,68 @@ TEST(FunctionCorrectness, ShapePreservingFunctionsKeepFrequencyDomain) {
             << name << " lost the Frequency domain";
     }
 }
+
+// ===========================================================================
+// Source-origin anchoring: Slice/Gate remember where their samples came from
+// (Meta::sourceStartNs); time windows are measured in chart coordinates even
+// when chained; downstream maths keeps the anchor.
+// ===========================================================================
+
+TEST(FunctionCorrectness, SliceWindowsMatchTheChartEvenWhenChained) {
+    SignalStore store;
+    const TimestampNs t0 = 1'750'000'000'000'000'000LL;   // epoch-style start
+    store.add(seriesAt("A", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10.0, t0));
+    FormulaEngine engine(store);
+    QString err;
+
+    ASSERT_TRUE(engine.evaluate("S = Slice(A, 0.2, 0.5)", &err)) << err.toStdString();
+    auto s = store.get("S");
+    ASSERT_TRUE(s);
+    EXPECT_EQ(s->meta().sourceStartNs, t0);
+    EXPECT_EQ(s->displayOriginNs(), t0);
+
+    // Chained slice: the window is still measured from A's origin — the
+    // position the chart shows for S — not from S's own first sample.
+    ASSERT_TRUE(engine.evaluate("S2 = Slice(S, 0.3, 0.4)", &err)) << err.toStdString();
+    const auto v2 = store.get("S2")->readAsDouble();
+    ASSERT_EQ(v2.size(), 2u);
+    EXPECT_DOUBLE_EQ(v2[0], 3.0);
+    EXPECT_DOUBLE_EQ(v2[1], 4.0);
+    EXPECT_EQ(store.get("S2")->meta().sourceStartNs, t0);
+
+    // Downstream processing keeps the anchor.
+    ASSERT_TRUE(engine.evaluate("F = Filter(S, 0.05)", &err)) << err.toStdString();
+    EXPECT_EQ(store.get("F")->meta().sourceStartNs, t0);
+    ASSERT_TRUE(engine.evaluate("D = S * 2 + 1", &err)) << err.toStdString();
+    EXPECT_EQ(store.get("D")->meta().sourceStartNs, t0);
+}
+
+TEST(FunctionCorrectness, GateRemembersSourceOrigin) {
+    SignalStore store;
+    const TimestampNs t0 = 1'750'000'000'000'000'000LL;
+    store.add(seriesAt("A", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10.0, t0));
+    store.add(seriesAt("G", {0, 0, 1, 1, 1, 0, 0, 0, 0, 0}, 10.0, t0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("R = Gate(A, G, 0.5, 1.5, 0, 1)", &err))
+        << err.toStdString();
+    EXPECT_EQ(store.get("R")->meta().sourceStartNs, t0);
+    const auto v = store.get("R")->readAsDouble();
+    ASSERT_EQ(v.size(), 3u);   // gate is high at samples 2, 3, 4
+    EXPECT_DOUBLE_EQ(v.front(), 2.0);
+}
+
+// An import starting exactly at t = 0 is a real origin, not "unknown" — its
+// slice must anchor at 0 too (this is why kNoSourceStart isn't 0).
+TEST(FunctionCorrectness, SliceOfZeroBasedImportAnchorsAtZero) {
+    SignalStore store;
+    store.add(seriesAt("A", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10.0, /*startNs=*/0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("S = Slice(A, 0.2, 0.5)", &err)) << err.toStdString();
+    auto s = store.get("S");
+    ASSERT_TRUE(s);
+    EXPECT_EQ(s->meta().sourceStartNs, 0);
+    EXPECT_NE(s->meta().sourceStartNs, Signal::kNoSourceStart);
+    EXPECT_EQ(s->displayOriginNs(), 0);
+}

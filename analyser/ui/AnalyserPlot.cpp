@@ -781,7 +781,18 @@ void AnalyserPlot::redrawForActiveChannels() {
             auto sig = store_.get(name);
             if (!sig) continue;
             auto view = sig->snapshotForRead();
-            if (view.count > 0) base = std::min(base, view.timestamps[0] / 1e9);
+            if (view.count == 0) continue;
+            double cand = view.timestamps[0] / 1e9;
+            // Derived channels that drop leading samples (Slice, Gate)
+            // remember their source's origin — anchor the axis there so the
+            // segment stays at its true position (e.g. 30–50 s) even when
+            // shown without the source. Frequency view: spectra carry the
+            // source's TIME origin in the same field, which must not move
+            // the Hz axis.
+            if (viewMode_ == ViewMode::Time) {
+                cand = std::min(cand, sig->displayOriginNs() / 1e9);
+            }
+            base = std::min(base, cand);
         }
         if (base == std::numeric_limits<double>::infinity()) base = 0;
 
