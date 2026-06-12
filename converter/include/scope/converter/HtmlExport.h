@@ -31,13 +31,22 @@ struct HtmlChartView {
 struct HtmlExportView {
     HtmlChartView time;
     HtmlChartView frequency;
+    // The view the page opens in: "time", "frequency" or "xy" (with
+    // xyChannel naming the X channel). Falls back to the first domain
+    // that has channels.
+    QString initialView{"time"};
+    QString xyChannel;
 };
 
 // Write a fully self-contained interactive HTML chart that mirrors the
-// Analyser's layout: a channel panel on the left (checkbox + colour swatch
+// Analyser's layout: a View selector (Time / Frequency / XY with an
+// X-channel picker), a channel panel on the left (checkbox + colour swatch
 // + live value under the cursor), a toolbar with Fit / Zoom button groups,
 // a Δ Measure tool and the Line / Points / Line+points selector, and the
 // same multi-Y-axis arrangement (labels, left/right sides, colours).
+// The XY view pairs channels exactly like the app: index-paired on shared
+// timestamps, otherwise Y linearly interpolated onto X's sample times,
+// with gaps (never fabricated points) outside Y's recorded range.
 //
 // The vendored uPlot library (MIT, ~50 KB) is embedded, so the file works
 // offline in any browser. Channels with different sample grids are merged

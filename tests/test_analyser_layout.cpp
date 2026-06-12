@@ -474,4 +474,12 @@ TEST_F(AnalyserPlotLayoutTest, HtmlExportViewMirrorsTheScreen) {
               scope::plot::ScopePlot::deriveChannelColorFor(false, 0, 0).name());
     EXPECT_EQ(tq.color,
               scope::plot::ScopePlot::deriveChannelColorFor(false, 1, 0).name());
+    EXPECT_EQ(v.initialView, "time");
+
+    // Switch the app to XY — the export opens there too, with the X channel.
+    setViewIndex(plot, 2);
+    setXyXChannel(plot, "speed");
+    const auto v2 = htmlView(plot);
+    EXPECT_EQ(v2.initialView, "xy");
+    EXPECT_EQ(v2.xyChannel, "speed");
 }

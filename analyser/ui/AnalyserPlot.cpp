@@ -997,6 +997,10 @@ scope::converter::HtmlExportView AnalyserPlot::htmlExportView() {
     converter::HtmlExportView v;
     v.time      = build(Domain::Time);
     v.frequency = build(Domain::Frequency);
+    v.initialView = (viewMode_ == ViewMode::XY)        ? "xy"
+                  : (viewMode_ == ViewMode::Frequency) ? "frequency"
+                                                       : "time";
+    v.xyChannel = xyChannel_;
     return v;
 }
 

@@ -163,3 +163,18 @@ the live widget; ScopePlot colour derivation exposed as theme-explicit
 statics. +2 tests (spec content; widget-level view mirroring). 212/212
 green; embedded JS syntax-checked with node. XY view has no HTML
 counterpart (documented).
+
+## HTML export v3: View selector + XY (user-approved plan)
+
+One chart block with a VIEW selector (Time / Frequency / XY) replacing the
+stacked blocks; opens in the app's current view incl. the XY X channel
+(HtmlExportView.initialView/xyChannel). XY: X-channel dropdown (all
+channels, "(freq)" tagged), Y candidates = same-domain minus X with their
+axis/colour/visibility; uPlot mode-2 (per-series x/y) so loops render;
+pairing mirrors the app — index-paired on shared timestamps, Y linearly
+interpolated in time onto X's samples, gaps outside Y's range; the
+pairXY function was extracted from the generated page and executed in
+node against hand-computed vectors (interp, identity, X-gap cases — all
+pass). Measure/zoom/fit/mode work in every view (1/|Δx| Hz line only in
+Time). Per-channel visibility persists across view switches. 218/218
+tests green.

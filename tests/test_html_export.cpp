@@ -90,10 +90,11 @@ TEST(HtmlExport, SplitsTimeAndFrequencyIntoTwoCharts) {
     bool ok = false;
     const QString html = exportToString(store, &ok);
     ASSERT_TRUE(ok);
-    EXPECT_TRUE(html.contains("\"Time\""));
-    EXPECT_TRUE(html.contains("\"Frequency\""));
-    EXPECT_TRUE(html.contains("\"f [Hz]\""));
+    EXPECT_TRUE(html.contains("time:{xLabel:\"t [s]\""));
+    EXPECT_TRUE(html.contains("frequency:{xLabel:\"f [Hz]\""));
     EXPECT_TRUE(html.contains("[0,1,2],[9,8,7]"));   // Hz axis + magnitudes
+    // The View selector machinery is present.
+    EXPECT_TRUE(html.contains("XY  (channel vs channel)"));
 }
 
 TEST(HtmlExport, UnionGridFillsMissingSamplesWithNull) {
@@ -162,10 +163,46 @@ TEST(HtmlExport, ViewControlsAxesAssignmentVisibilityAndColors) {
     EXPECT_TRUE(html.contains(
         "axes:[{label:\"Y1\",right:false,color:\"#1e1e1e\"},"
         "{label:\"bar\",right:true,color:\"#d95319\"}]"));
-    EXPECT_TRUE(html.contains("{label:\"a\",color:\"#112233\",axis:0,visible:true}"));
-    EXPECT_TRUE(html.contains("{label:\"b\",color:\"#445566\",axis:1,visible:false}"));
+    EXPECT_TRUE(html.contains(
+        "{name:\"a\",label:\"a\",color:\"#112233\",axis:0,visible:true}"));
+    EXPECT_TRUE(html.contains(
+        "{name:\"b\",label:\"b\",color:\"#445566\",axis:1,visible:false}"));
     // The toolbar/measure/mode machinery is present.
     EXPECT_TRUE(html.contains("Δ Measure"));
     EXPECT_TRUE(html.contains("Line + points"));
     EXPECT_TRUE(html.contains("CHANNELS"));
+}
+
+// The page opens in the view the Analyser was showing, including the XY
+// X channel.
+TEST(HtmlExport, InitialViewAndXyChannelAreEmbedded) {
+    SignalStore store;
+    store.add(makeSig("a", "", Signal::Domain::Time, 0, 1'000'000LL, {1, 2}));
+    store.add(makeSig("b", "", Signal::Domain::Time, 0, 1'000'000LL, {3, 4}));
+
+    HtmlExportView view;
+    HtmlAxis y1; y1.label = "Y1"; y1.color = "#1e1e1e";
+    view.time.axes = {y1};
+    HtmlChannel ca; ca.name = "a"; ca.color = "#112233";
+    HtmlChannel cb; cb.name = "b"; cb.color = "#445566";
+    view.time.channels = {ca, cb};
+    view.initialView = "xy";
+    view.xyChannel = "a";
+
+    const auto path = std::filesystem::temp_directory_path() / "scope_html_xy_test.html";
+    QString err;
+    ASSERT_TRUE(exportInteractiveHtml(QString::fromStdString(path.string()),
+                                      store, view, &err))
+        << err.toStdString();
+    QString html;
+    {
+        QFile f(QString::fromStdString(path.string()));
+        ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+        html = QString::fromUtf8(f.readAll());
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+
+    EXPECT_TRUE(html.contains("makeApp({view:\"xy\",xyChannel:\"a\""));
+    EXPECT_TRUE(html.contains("function pairXY"));
 }
