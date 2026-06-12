@@ -424,3 +424,76 @@ TEST(CsvWriter, MetadataHeaderCanBeDisabled) {
     in.close();  // close before removing (Windows locks open files)
     std::filesystem::remove(path);
 }
+
+// ---- Custom export time range -------------------------------------------
+
+// For signals whose timestamps start at 0 the custom range behaves as the
+// dialog suggests: [0.25 s, 0.75 s] keeps the middle half.
+TEST(CsvWriter, SaveChartCustomRangeOnZeroBasedSignals) {
+    scope::core::SignalStore store;
+    store.add(makeRamp("speed", 11, 0.1, 0.0, 1.0, "rpm"));   // t = 0.0 … 1.0 s
+
+    const auto base = std::filesystem::temp_directory_path()
+                    / "scope_chart_range0.csv";
+    ChartSaveFilters filters;
+    filters.useCustomRange = true;
+    filters.fromSec = 0.25;
+    filters.toSec   = 0.75;
+    QStringList messages; QString err;
+    auto result = saveChartFromStore(
+        QString::fromStdString(base.string()), store, FileFormat::Csv,
+        filters, SaveOptions{}, &messages, &err);
+    ASSERT_EQ(result, ChartSaveResult::Ok) << err.toStdString();
+
+    auto loaded = loadFile(base);
+    ASSERT_TRUE(loaded.ok) << loaded.error.toStdString();
+    ASSERT_EQ(loaded.channels.size(), 1u);
+    // Samples at 0.3 / 0.4 / 0.5 / 0.6 / 0.7 s survive the [0.25, 0.75] cut.
+    EXPECT_EQ(loaded.channels[0]->sampleCount(), 5u);
+    std::filesystem::remove(base);
+}
+
+// Finding B1 (KNOWN ISSUE, see _PlansAndExecution/20260612_1005_Plans.md):
+// the Save-chart dialog is pre-filled with the chart's X range, which is in
+// seconds RELATIVE to the recording start — but saveChartFromStore compares
+// those seconds against ABSOLUTE timestamps. For recorder data (epoch-based
+// nanoseconds) every custom range the user can see therefore matches
+// nothing. Desired: the range applies relative to the earliest first sample
+// of the exported time channels (the same origin the CSV writer and the
+// chart use). Reproduce with --gtest_also_run_disabled_tests.
+TEST(CsvWriter, DISABLED_SaveChartCustomRangeMatchesChartRelativeSeconds) {
+    scope::core::SignalStore store;
+    {
+        Signal::Meta m; m.name = "speed"; m.unit = "rpm";
+        m.dataType = DataType::Float64; m.domain = Signal::Domain::Time;
+        auto s = std::make_shared<Signal>(m);
+        const TimestampNs t0 = 1'750'000'000'000'000'000LL;   // epoch start
+        std::vector<TimestampNs> ts(11);
+        std::vector<double>      vs(11);
+        for (int i = 0; i < 11; ++i) {
+            ts[i] = t0 + static_cast<TimestampNs>(i) * 100'000'000LL;  // 0.1 s
+            vs[i] = i;
+        }
+        s->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), 11);
+        store.add(s);
+    }
+
+    const auto base = std::filesystem::temp_directory_path()
+                    / "scope_chart_range_epoch.csv";
+    ChartSaveFilters filters;
+    filters.useCustomRange = true;
+    filters.fromSec = 0.25;        // what the user reads off the chart
+    filters.toSec   = 0.75;
+    QStringList messages; QString err;
+    auto result = saveChartFromStore(
+        QString::fromStdString(base.string()), store, FileFormat::Csv,
+        filters, SaveOptions{}, &messages, &err);
+    ASSERT_EQ(result, ChartSaveResult::Ok)
+        << "custom range must select chart-relative seconds, got: "
+        << err.toStdString();
+    auto loaded = loadFile(base);
+    ASSERT_TRUE(loaded.ok) << loaded.error.toStdString();
+    ASSERT_EQ(loaded.channels.size(), 1u);
+    EXPECT_EQ(loaded.channels[0]->sampleCount(), 5u);
+    std::filesystem::remove(base);
+}
