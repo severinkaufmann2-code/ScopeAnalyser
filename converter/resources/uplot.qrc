@@ -2,5 +2,6 @@
     <qresource prefix="/uplot">
         <file alias="uPlot.iife.min.js">uplot/uPlot.iife.min.js</file>
         <file alias="uPlot.min.css">uplot/uPlot.min.css</file>
+        <file alias="scope_page.js">scope_page.js</file>
     </qresource>
 </RCC>
