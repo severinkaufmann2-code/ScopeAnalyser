@@ -139,11 +139,6 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         "Edit the selected formula channel (double-click also works).");
     auto* removeChBtn = smallBtn(style::Glyph::Minus,
         "Remove the selected channel from the store.");
-    auto* addAxisBtn  = smallBtn(style::Glyph::Plus,
-        "Add a Y axis (alternates left / right). Assign channels to it in "
-        "the Axis column.");
-    auto* delAxisBtn  = smallBtn(style::Glyph::Minus,
-        "Remove the last Y axis (it must have no channels assigned).");
 
     auto* chHeader = new QHBoxLayout();
     chHeader->setSpacing(2);
@@ -153,13 +148,8 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     chHeader->addWidget(editChBtn);
     chHeader->addWidget(removeChBtn);
 
-    auto* axHeader = new QHBoxLayout();
-    axHeader->setSpacing(2);
-    axHeader->addWidget(style::sectionLabel("Y axes", this));
-    axHeader->addStretch();
-    axHeader->addWidget(addAxisBtn);
-    axHeader->addWidget(delAxisBtn);
-
+    // Y axes are managed in the plot toolbar (Y+ / Y−) and per-axis via
+    // right-click on the axis itself.
     auto* leftPanel = new QWidget(this);
     leftPanel->setMinimumWidth(250);
     auto* leftLayout = new QVBoxLayout(leftPanel);
@@ -171,7 +161,6 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     leftLayout->addSpacing(4);
     leftLayout->addLayout(chHeader);
     leftLayout->addWidget(table_, /*stretch=*/1);
-    leftLayout->addLayout(axHeader);
 
     auto* split = new QSplitter(Qt::Horizontal, this);
     split->addWidget(leftPanel);
@@ -275,22 +264,6 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
             QMessageBox::Yes | QMessageBox::Cancel);
         if (resp == QMessageBox::Yes) store_.remove(name);
     });
-    connect(addAxisBtn, &QToolButton::clicked, this, [this]{
-        scope_->addYAxis();
-        rebuildAxisCombos();
-    });
-    connect(delAxisBtn, &QToolButton::clicked, this, [this]{
-        const int last = scope_->yAxisCount() - 1;
-        if (last <= 0) return;
-        QString err;
-        if (!scope_->removeYAxis(last, &err)) {
-            QMessageBox::information(this, "Can't remove", err);
-            return;
-        }
-        rebuildAxisCombos();
-        recolorChannels();
-        redrawForActiveChannels();
-    });
 
     // A new/replaced source fires channelAdded, which may feed derived
     // channels. Coalesce a burst (e.g. opening a multi-channel file) into a
@@ -309,8 +282,14 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     // channelDataChanged (a growing recording) is intentionally NOT wired to
     // a redraw: the chart stays frozen while recording / streaming and only
     // refreshes on an explicit Redraw. See redrawAll().
+    // Axes are added/removed/renamed from the plot's toolbar (Y+ / Y−) and
+    // its axis context menu — refresh the per-row combos and re-derive the
+    // colours, which depend on each channel's axis index.
     connect(scope_, &scope::plot::ScopePlot::yAxesChanged,
-            this, [this]{ rebuildAxisCombos(); });
+            this, [this]{
+        rebuildAxisCombos();
+        recolorChannels();
+    });
     // Light/dark flips change the axis base palette → re-derive trace pens
     // and table swatches.
     connect(scope_, &scope::plot::ScopePlot::themePaletteChanged,
@@ -487,23 +466,23 @@ void AnalyserPlot::onVisibilityChanged(int row) {
 }
 
 void AnalyserPlot::recolorChannels() {
-    // For each axis, give the Nth channel on it the Nth shade derived from
-    // that axis's base colour. The table row mirrors the trace colour as a
-    // swatch; hidden channels get a hollow placeholder instead.
+    // For each axis, the Nth ROW assigned to it gets the Nth shade of that
+    // axis's base colour — counted over all rows, visible or not, so
+    // toggling a channel's visibility never re-colours the other traces.
+    // Hidden rows keep their reserved colour as a hollow swatch.
     QHash<int, int> perAxisCounter;
     for (int r = 0; r < table_->rowCount(); ++r) {
         auto* nameItem = table_->item(r, ColName);
         const QString name = nameItem->text();
-        if (!plotted_.contains(name)) {
-            nameItem->setIcon(style::hollowSwatch(
-                palette().color(QPalette::PlaceholderText)));
-            continue;
-        }
         const int axisIdx = axisIndexForRow(r);
         const int onAxis  = perAxisCounter[axisIdx]++;
         const QColor c = scope_->deriveChannelColor(axisIdx, onAxis);
-        plotted_[name]->setPen(QPen(c));
-        nameItem->setIcon(style::colorSwatch(c));
+        if (plotted_.contains(name)) {
+            plotted_[name]->setPen(QPen(c));
+            nameItem->setIcon(style::colorSwatch(c));
+        } else {
+            nameItem->setIcon(style::hollowSwatch(c));
+        }
     }
 }
 

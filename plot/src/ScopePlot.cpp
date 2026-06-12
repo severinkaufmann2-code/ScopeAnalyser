@@ -6,11 +6,15 @@
 #include <QContextMenuEvent>
 #include <QFileDialog>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QInputDialog>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
 #include <QShortcut>
 #include <QComboBox>
 #include <QToolButton>
@@ -77,6 +81,38 @@ const std::array<QColor, 8>& axisPaletteFor(const QWidget* w) {
 QPointF toPlotCoords(QCustomPlot* plot, QPointF pixel) {
     return {plot->xAxis->pixelToCoord(pixel.x()),
             plot->yAxis->pixelToCoord(pixel.y())};
+}
+
+// Small painted camera icon for the screenshot button — drawn here so the
+// plot lib keeps zero dependency on the style lib. The mid gray reads on
+// both the light and dark theme.
+QIcon cameraIcon() {
+    QIcon icon;
+    const QColor c(0x8a, 0x91, 0x9c);
+    for (int size : {16, 20, 24, 32}) {
+        for (int dpr : {1, 2}) {
+            QPixmap pm(size * dpr, size * dpr);
+            pm.fill(Qt::transparent);
+            {
+                QPainter p(&pm);
+                p.setRenderHint(QPainter::Antialiasing);
+                p.scale(size * dpr / 24.0, size * dpr / 24.0);
+                p.setPen(QPen(c, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                // Body, viewfinder bump, lens.
+                p.drawRoundedRect(QRectF(3, 7, 18, 12.5), 2.5, 2.5);
+                QPainterPath bump;
+                bump.moveTo(8.6, 7);
+                bump.lineTo(10, 4.4);
+                bump.lineTo(14, 4.4);
+                bump.lineTo(15.4, 7);
+                p.drawPath(bump);
+                p.drawEllipse(QPointF(12, 13.2), 3.6, 3.6);
+            }
+            pm.setDevicePixelRatio(dpr);
+            icon.addPixmap(pm);
+        }
+    }
+    return icon;
 }
 
 void styleAxis(QCPAxis* ax, const QColor& c) {
@@ -199,9 +235,19 @@ ScopePlot::ScopePlot(QWidget* parent)
         return b;
     };
 
+    // The two fit actions sit together: fit everything, or fit only the Y
+    // axes to what's inside the current X window.
     makeBtn(QString::fromUtf8("⤢  Fit"),
             "Fit all data into view  (Home)",
             &ScopePlot::fitAll);
+    makeBtnLambda(QString::fromUtf8("↕ → Y"),
+                  "Fit each Y axis to the data inside the current X "
+                  "window. X range stays the same.",
+                  [this]{
+                      const auto xr = impl_->plot->xAxis->range();
+                      rescaleYAxesToWindow(xr.lower, xr.upper);
+                  });
+    tb->addSpacing(8);
     makeBtnLambda(QString::fromUtf8("↔ +"),
                   "Zoom X in  (Ctrl+Scroll up)",
                   [this]{ zoomXBy(kZoomStep); });
@@ -214,14 +260,6 @@ ScopePlot::ScopePlot(QWidget* parent)
     makeBtnLambda(QString::fromUtf8("↕ −"),
                   "Zoom all Y out  (Shift+Scroll down)",
                   [this]{ zoomYBy(1.0 / kZoomStep); });
-    tb->addSpacing(8);
-    makeBtnLambda(QString::fromUtf8("↕ → Y"),
-                  "Fit each Y axis to the data inside the current X "
-                  "window. X range stays the same.",
-                  [this]{
-                      const auto xr = impl_->plot->xAxis->range();
-                      rescaleYAxesToWindow(xr.lower, xr.upper);
-                  });
     tb->addSpacing(8);
     {
         auto* mb = new QToolButton(impl_->toolbar);
@@ -266,10 +304,26 @@ ScopePlot::ScopePlot(QWidget* parent)
     makeBtnLambda(QString::fromUtf8("Y+"),
                   "Add a new Y axis (alternates left / right)",
                   [this]{ addYAxis(); });
+    makeBtnLambda(QString::fromUtf8("Y−"),
+                  "Remove the last Y axis (it must have no channels "
+                  "assigned). Right-click an axis to remove a specific one.",
+                  [this]{
+                      const int last = yAxisCount() - 1;
+                      if (last <= 0) return;
+                      QString err;
+                      if (!removeYAxis(last, &err)) {
+                          QMessageBox::information(this, "Can't remove", err);
+                      }
+                  });
     tb->addSpacing(8);
-    makeBtn(QString::fromUtf8("PNG…"),
-            "Save the current view as a PNG image",
-            &ScopePlot::savePngDialog);
+    {
+        auto* b = new QToolButton(impl_->toolbar);
+        b->setIcon(cameraIcon());
+        b->setToolTip("Save the current view as a PNG image");
+        b->setAutoRaise(true);
+        connect(b, &QToolButton::clicked, this, &ScopePlot::savePngDialog);
+        tb->addWidget(b);
+    }
     tb->addSpacing(8);
     impl_->pauseBtn = makeBtn(QString::fromUtf8("⏸  Pause"),
                               "Freeze the plot while recording continues",

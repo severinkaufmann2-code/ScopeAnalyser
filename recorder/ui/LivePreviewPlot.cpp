@@ -51,30 +51,15 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
         "Channels appear here as soon as they land in the signal store "
         "(recorded, imported, or derived).");
 
-    auto smallBtn = [this](style::Glyph glyph, const QString& tip) {
-        auto* b = new QToolButton(this);
-        b->setIcon(style::icon(glyph));
-        b->setToolTip(tip);
-        return b;
-    };
-    auto* addAxisBtn = smallBtn(style::Glyph::Plus,
-        "Add a Y axis (alternates left / right).");
-    auto* delAxisBtn = smallBtn(style::Glyph::Minus,
-        "Remove the last Y axis (it must have no channels assigned).");
-    auto* saveBtn    = new QPushButton("Save layout…", this);
-    auto* loadBtn    = new QPushButton("Load layout…", this);
-
-    auto* axHeader = new QHBoxLayout();
-    axHeader->setSpacing(2);
-    axHeader->addWidget(scope::style::sectionLabel("Y axes", this));
-    axHeader->addStretch();
-    axHeader->addWidget(addAxisBtn);
-    axHeader->addWidget(delAxisBtn);
+    auto* saveBtn = new QPushButton("Save layout…", this);
+    auto* loadBtn = new QPushButton("Load layout…", this);
 
     auto* layoutBtnRow = new QHBoxLayout();
     layoutBtnRow->addWidget(saveBtn);
     layoutBtnRow->addWidget(loadBtn);
 
+    // Y axes are managed in the plot toolbar (Y+ / Y−) and per-axis via
+    // right-click on the axis itself.
     auto* sidePanel = new QWidget(this);
     sidePanel->setMinimumWidth(220);
     auto* sidebar = new QVBoxLayout(sidePanel);
@@ -82,7 +67,6 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
     sidebar->setSpacing(6);
     sidebar->addWidget(scope::style::sectionLabel("Live channels", this));
     sidebar->addWidget(table_, /*stretch=*/1);
-    sidebar->addLayout(axHeader);
     sidebar->addLayout(layoutBtnRow);
 
     auto* split = new QSplitter(Qt::Horizontal, this);
@@ -101,21 +85,13 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
     connect(&store_, &scope::core::SignalStore::channelRemoved,
             this, &LivePreviewPlot::onChannelRemoved);
     connect(scope_, &scope::plot::ScopePlot::yAxesChanged,
-            this, &LivePreviewPlot::rebuildAxisCombos);
+            this, [this]{
+        rebuildAxisCombos();
+        recolorChannels();
+    });
     connect(scope_, &scope::plot::ScopePlot::themePaletteChanged,
             this, [this]{ recolorChannels(); });
 
-    connect(addAxisBtn, &QToolButton::clicked, this, [this]{ scope_->addYAxis(); });
-    connect(delAxisBtn, &QToolButton::clicked, this, [this]{
-        const int last = scope_->yAxisCount() - 1;
-        if (last <= 0) return;
-        QString err;
-        if (!scope_->removeYAxis(last, &err)) {
-            QMessageBox::information(this, "Can't remove", err);
-            return;
-        }
-        recolorChannels();
-    });
     connect(saveBtn, &QPushButton::clicked, this, &LivePreviewPlot::saveLayoutDialog);
     connect(loadBtn, &QPushButton::clicked, this, &LivePreviewPlot::loadLayoutDialog);
 

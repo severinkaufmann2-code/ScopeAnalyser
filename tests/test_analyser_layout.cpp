@@ -399,3 +399,31 @@ TEST_F(AnalyserPlotLayoutTest, SlicedChannelKeepsTruePositionWhenShownAlone) {
     ASSERT_NE(gs, nullptr);
     EXPECT_DOUBLE_EQ(gs->data()->at(0)->key, 0.25);
 }
+
+// Toggling a channel's visibility must not re-colour the other traces —
+// colours are reserved per table row (per axis), not per visible subset.
+TEST_F(AnalyserPlotLayoutTest, ChannelColorsStableWhenTogglingVisibility) {
+    SignalStore store;
+    scope::analyser::FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    addChannelAt(store, "A", Signal::Domain::Time, 0, 1'000'000LL, {1, 2, 3});
+    addChannelAt(store, "B", Signal::Domain::Time, 0, 1'000'000LL, {4, 5, 6});
+    addChannelAt(store, "C", Signal::Domain::Time, 0, 1'000'000LL, {7, 8, 9});
+
+    auto colorOf = [&](const char* n) {
+        auto* g = qobject_cast<QCPGraph*>(plottableFor(plot, n));
+        return g ? g->pen().color() : QColor();
+    };
+    const QColor a0 = colorOf("A"), b0 = colorOf("B"), c0 = colorOf("C");
+    EXPECT_NE(b0, c0);                        // distinct to begin with
+
+    setRowVisible(plot, "A", false);          // hide the first channel
+    EXPECT_EQ(colorOf("B"), b0) << "B re-coloured by hiding A";
+    EXPECT_EQ(colorOf("C"), c0) << "C re-coloured by hiding A";
+
+    setRowVisible(plot, "A", true);           // and back
+    EXPECT_EQ(colorOf("A"), a0);
+    EXPECT_EQ(colorOf("B"), b0);
+    EXPECT_EQ(colorOf("C"), c0);
+}

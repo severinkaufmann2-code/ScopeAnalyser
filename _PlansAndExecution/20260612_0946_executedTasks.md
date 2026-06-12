@@ -73,3 +73,16 @@ windows, Gate origin, 0-based anchor, widget-level "slice stays at
 AnalyserPlotLayoutTest teardown reproduced once in a full ctest run —
 the known offscreen QCustomPlot teardown issue already excluded on CI,
 passes 5/5 isolated and on suite rerun.
+
+## Follow-up (user requests): colour stability + plot toolbar regroup
+
+- Channel colours are now reserved per table row (per axis), counted over
+  ALL rows — toggling visibility no longer re-colours the other traces;
+  hidden rows keep their reserved colour as a hollow swatch. Regression
+  test ChannelColorsStableWhenTogglingVisibility.
+- Plot toolbar: "⤢ Fit" and "↕→Y" (fit Y to current X window) now sit
+  together; "Y−" added next to "Y+" (removes the last axis, same in-use
+  guard); "PNG…" replaced by a painted camera icon (plot lib stays
+  style-lib-free). The "Y axes + −" rows were removed from the Analyser
+  panel and the Recorder live-preview sidebar.
+- 204/204 tests green; dark-theme screenshots re-checked.
