@@ -296,6 +296,15 @@ QWidget[scopeRole="toolbarStrip"] {
     background: %STRIP%;
     border-bottom: 1px solid %BORDER%;
 }
+QWidget[scopeRole="btnGroup"] {
+    border: 1px solid %BORDER%;
+    border-radius: 6px;
+    background: transparent;
+}
+QWidget[scopeRole="btnGroup"] QToolButton {
+    padding: 3px 7px;
+    border-radius: 4px;
+}
 QLabel[scopeRole="sectionLabel"] {
     color: %TEXT2%;
     font-size: 11px;

@@ -95,3 +95,9 @@ window), adjacent at the left of the plot toolbar.
 ## Refinement 2 (user): fit buttons are arrows-only + "Fit"
 Final final form: "⤢ Fit" (X + all Y axes) and "↕ Fit" (Y axes within the
 current X window) — the arrow alone distinguishes them; tooltips explain.
+
+## Refinement 3 (user, plan approved): boxed toolbar button groups
+Plot toolbar groups related buttons in thin rounded boxes with captions:
+[⤢ ↕] Fit   [↔+ ↔− ↕+ ↕−] Zoom   Δ Measure   Line ▾   [Y+ Y−]   📷.
+New QSS role "btnGroup" in Theme.cpp; ScopePlot builds groups via a local
+makeGroup/makeBtnInto helper (behaviour and tooltips unchanged).

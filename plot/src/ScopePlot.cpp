@@ -215,59 +215,69 @@ ScopePlot::ScopePlot(QWidget* parent)
     tb->setContentsMargins(8, 4, 8, 4);
     tb->setSpacing(2);
 
-    auto makeBtn = [this, tb](const QString& text, const QString& tooltip,
-                              void (ScopePlot::* slot)()) {
-        auto* b = new QToolButton(impl_->toolbar);
-        b->setText(text);
-        b->setToolTip(tooltip);
-        b->setAutoRaise(true);
-        connect(b, &QToolButton::clicked, this, slot);
-        tb->addWidget(b);
-        return b;
+    // Related actions live in thin-bordered boxes ("button groups"), some
+    // with a caption to their right:  [⤢ ↕] Fit   [↔+ ↔− ↕+ ↕−] Zoom
+    // …  [Y+ Y−]. The box styling comes from the app stylesheet via the
+    // "btnGroup" role.
+    auto makeGroup = [&]() -> QHBoxLayout* {
+        auto* box = new QWidget(impl_->toolbar);
+        box->setProperty("scopeRole", "btnGroup");
+        box->setAttribute(Qt::WA_StyledBackground, true);
+        auto* l = new QHBoxLayout(box);
+        l->setContentsMargins(3, 1, 3, 1);
+        l->setSpacing(1);
+        tb->addWidget(box);
+        return l;
     };
-    auto makeBtnLambda = [this, tb](const QString& text, const QString& tooltip,
-                                    std::function<void()> fn) {
+    auto makeBtnInto = [this](QHBoxLayout* into, const QString& text,
+                              const QString& tooltip, std::function<void()> fn) {
         auto* b = new QToolButton(impl_->toolbar);
         b->setText(text);
         b->setToolTip(tooltip);
         b->setAutoRaise(true);
         connect(b, &QToolButton::clicked, this, fn);
-        tb->addWidget(b);
+        into->addWidget(b);
         return b;
     };
+    auto addCaption = [&](const QString& text) {
+        auto* cap = new QLabel(text, impl_->toolbar);
+        cap->setProperty("scopeRole", "dim");
+        tb->addSpacing(3);
+        tb->addWidget(cap);
+    };
 
-    // The two fit actions are compact arrow buttons sharing one "Fit"
-    // caption: ⤢ fits X and all Y axes, ↕ fits only the Y axes within the
-    // current X window. Tooltips spell it out.
-    makeBtn(QString::fromUtf8("⤢"),
-            "Fit all data into view — X and all Y axes  (Home)",
-            &ScopePlot::fitAll);
-    makeBtnLambda(QString::fromUtf8("↕"),
-                  "Fit each Y axis to the data inside the current X "
-                  "window. X range stays the same.",
-                  [this]{
-                      const auto xr = impl_->plot->xAxis->range();
-                      rescaleYAxesToWindow(xr.lower, xr.upper);
-                  });
-    {
-        auto* fitLabel = new QLabel(QString::fromUtf8("Fit"), impl_->toolbar);
-        fitLabel->setProperty("scopeRole", "dim");
-        tb->addWidget(fitLabel);
+    {   // [⤢ ↕] Fit
+        auto* g = makeGroup();
+        makeBtnInto(g, QString::fromUtf8("⤢"),
+                    "Fit all data into view — X and all Y axes  (Home)",
+                    [this]{ fitAll(); });
+        makeBtnInto(g, QString::fromUtf8("↕"),
+                    "Fit each Y axis to the data inside the current X "
+                    "window. X range stays the same.",
+                    [this]{
+                        const auto xr = impl_->plot->xAxis->range();
+                        rescaleYAxesToWindow(xr.lower, xr.upper);
+                    });
+        addCaption(QString::fromUtf8("Fit"));
     }
-    tb->addSpacing(8);
-    makeBtnLambda(QString::fromUtf8("↔ +"),
-                  "Zoom X in  (Ctrl+Scroll up)",
-                  [this]{ zoomXBy(kZoomStep); });
-    makeBtnLambda(QString::fromUtf8("↔ −"),
-                  "Zoom X out  (Ctrl+Scroll down)",
-                  [this]{ zoomXBy(1.0 / kZoomStep); });
-    makeBtnLambda(QString::fromUtf8("↕ +"),
-                  "Zoom all Y in  (Shift+Scroll up)",
-                  [this]{ zoomYBy(kZoomStep); });
-    makeBtnLambda(QString::fromUtf8("↕ −"),
-                  "Zoom all Y out  (Shift+Scroll down)",
-                  [this]{ zoomYBy(1.0 / kZoomStep); });
-    tb->addSpacing(8);
+    tb->addSpacing(10);
+    {   // [↔+ ↔− ↕+ ↕−] Zoom
+        auto* g = makeGroup();
+        makeBtnInto(g, QString::fromUtf8("↔ +"),
+                    "Zoom X in  (Ctrl+Scroll up)",
+                    [this]{ zoomXBy(kZoomStep); });
+        makeBtnInto(g, QString::fromUtf8("↔ −"),
+                    "Zoom X out  (Ctrl+Scroll down)",
+                    [this]{ zoomXBy(1.0 / kZoomStep); });
+        makeBtnInto(g, QString::fromUtf8("↕ +"),
+                    "Zoom all Y in  (Shift+Scroll up)",
+                    [this]{ zoomYBy(kZoomStep); });
+        makeBtnInto(g, QString::fromUtf8("↕ −"),
+                    "Zoom all Y out  (Shift+Scroll down)",
+                    [this]{ zoomYBy(1.0 / kZoomStep); });
+        addCaption(QString::fromUtf8("Zoom"));
+    }
+    tb->addSpacing(10);
     {
         auto* mb = new QToolButton(impl_->toolbar);
         mb->setText(QString::fromUtf8("Δ Measure"));
@@ -307,22 +317,25 @@ ScopePlot::ScopePlot(QWidget* parent)
         });
         tb->addWidget(combo);
     }
-    tb->addSpacing(8);
-    makeBtnLambda(QString::fromUtf8("Y+"),
-                  "Add a new Y axis (alternates left / right)",
-                  [this]{ addYAxis(); });
-    makeBtnLambda(QString::fromUtf8("Y−"),
-                  "Remove the last Y axis (it must have no channels "
-                  "assigned). Right-click an axis to remove a specific one.",
-                  [this]{
-                      const int last = yAxisCount() - 1;
-                      if (last <= 0) return;
-                      QString err;
-                      if (!removeYAxis(last, &err)) {
-                          QMessageBox::information(this, "Can't remove", err);
-                      }
-                  });
-    tb->addSpacing(8);
+    tb->addSpacing(10);
+    {   // [Y+ Y−]
+        auto* g = makeGroup();
+        makeBtnInto(g, QString::fromUtf8("Y+"),
+                    "Add a new Y axis (alternates left / right)",
+                    [this]{ addYAxis(); });
+        makeBtnInto(g, QString::fromUtf8("Y−"),
+                    "Remove the last Y axis (it must have no channels "
+                    "assigned). Right-click an axis to remove a specific one.",
+                    [this]{
+                        const int last = yAxisCount() - 1;
+                        if (last <= 0) return;
+                        QString err;
+                        if (!removeYAxis(last, &err)) {
+                            QMessageBox::information(this, "Can't remove", err);
+                        }
+                    });
+    }
+    tb->addSpacing(10);
     {
         auto* b = new QToolButton(impl_->toolbar);
         b->setIcon(cameraIcon());
@@ -332,10 +345,16 @@ ScopePlot::ScopePlot(QWidget* parent)
         tb->addWidget(b);
     }
     tb->addSpacing(8);
-    impl_->pauseBtn = makeBtn(QString::fromUtf8("⏸  Pause"),
-                              "Freeze the plot while recording continues",
-                              &ScopePlot::togglePause);
-    impl_->pauseBtn->setVisible(false);
+    {
+        impl_->pauseBtn = new QToolButton(impl_->toolbar);
+        impl_->pauseBtn->setText(QString::fromUtf8("⏸  Pause"));
+        impl_->pauseBtn->setToolTip("Freeze the plot while recording continues");
+        impl_->pauseBtn->setAutoRaise(true);
+        connect(impl_->pauseBtn, &QToolButton::clicked,
+                this, &ScopePlot::togglePause);
+        tb->addWidget(impl_->pauseBtn);
+        impl_->pauseBtn->setVisible(false);
+    }
     tb->addStretch();
 
     // ---- Crosshair + region rect ---------------------------------------
