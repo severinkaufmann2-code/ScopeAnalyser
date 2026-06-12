@@ -22,6 +22,8 @@ public:
     // screenshot mode in main.cpp so layout reviews show real content.
     void seedDemoData();
 
+    scope::core::SignalStore& store() { return store_; }
+
 protected:
     void closeEvent(QCloseEvent* ev) override;
 

@@ -1,5 +1,6 @@
 #include "ShellWindow.h"
 
+#include "scope/converter/HtmlExport.h"
 #include "scope/style/Theme.h"
 
 #include <QApplication>
@@ -29,6 +30,11 @@ bool runScreenshotMode(scope::app::ShellWindow& window) {
                                    .arg(dir).arg(i)
                                    .arg(tabs->tabText(i).toLower()));
         }
+        // Also exercise the interactive-HTML exporter on the demo data so
+        // a reviewer can open the artifact in a browser.
+        QString err;
+        scope::converter::exportInteractiveHtml(
+            dir + "/demo_interactive.html", window.store(), &err);
         QCoreApplication::quit();
     });
     return true;

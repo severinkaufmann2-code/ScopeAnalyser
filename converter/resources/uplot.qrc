@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/uplot">
+        <file alias="uPlot.iife.min.js">uplot/uPlot.iife.min.js</file>
+        <file alias="uPlot.min.css">uplot/uPlot.min.css</file>
+    </qresource>
+</RCC>

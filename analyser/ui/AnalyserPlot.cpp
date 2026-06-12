@@ -7,6 +7,7 @@
 #include "scope/plot/ScopePlot.h"
 #include "scope/plot/PlotLayout.h"
 #include "scope/converter/SignalIO.h"
+#include "scope/converter/HtmlExport.h"
 #include "scope/converter/BusyRunner.h"
 #include "scope/style/StyleKit.h"
 
@@ -87,6 +88,11 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     auto* saveChartBtn = barBtn(style::Glyph::Save, "Save chart…",
         "Export channels to HDF5 / MDF4 / CSV with per-domain filters and "
         "time range; the current plot layout is embedded.");
+    auto* exportHtmlBtn = barBtn(style::Glyph::ConvertTab, "Export HTML…",
+        "Self-contained interactive chart: opens in any browser, offline "
+        "(the chart library is embedded). Scroll to zoom, drag to box-zoom, "
+        "double-click to reset, click legend entries to show/hide channels. "
+        "Exports every channel in the store (Time and Frequency charts).");
     ab->addSpacing(12);
     auto* saveLayoutBtn = barBtn(style::Glyph::Save, "Save layout…",
         "Save Y axes, channel→axis assignments, and view mode to a "
@@ -182,6 +188,37 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     connect(editChBtn,     &QToolButton::clicked, this, &AnalyserPlot::editChannelDialog);
     connect(saveChartBtn,  &QToolButton::clicked, this, &AnalyserPlot::saveChartDialog);
     connect(openChartBtn,  &QToolButton::clicked, this, &AnalyserPlot::openChartDialog);
+    connect(exportHtmlBtn, &QToolButton::clicked, this, [this]{
+        if (store_.size() == 0) {
+            QMessageBox::information(this, "Nothing to export",
+                "The store is empty — add channels first.");
+            return;
+        }
+        QFileDialog dlg(this, "Export interactive HTML chart");
+        dlg.setAcceptMode(QFileDialog::AcceptSave);
+        dlg.setNameFilters({"Interactive HTML chart (*.html)", "All files (*)"});
+        dlg.setDefaultSuffix("html");
+        if (dlg.exec() != QDialog::Accepted) return;
+        const auto sel = dlg.selectedFiles();
+        if (sel.isEmpty()) return;
+        QString path = sel.first();
+        if (!path.endsWith(".html", Qt::CaseInsensitive)) path += ".html";
+
+        struct Outcome { bool ok{false}; QString err; };
+        const auto outcome = converter::ui::runWithBusyDialog(
+            this, tr("Exporting HTML…"), [&]() -> Outcome {
+                Outcome o;
+                o.ok = converter::exportInteractiveHtml(path, store_, &o.err);
+                return o;
+            });
+        if (!outcome.ok) {
+            QMessageBox::critical(this, "Export failed", outcome.err);
+        } else {
+            QMessageBox::information(this, "Exported",
+                QString("Interactive chart written to\n%1\n\nOpen it in any "
+                        "browser — it works offline.").arg(path));
+        }
+    });
     connect(viewCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int idx){
         const auto oldDomain = activeDomain();

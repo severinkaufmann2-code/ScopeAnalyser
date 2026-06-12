@@ -5,6 +5,7 @@ set(CONVERTER_HEADERS
     include/scope/converter/CsvSource.h
     include/scope/converter/CsvWriter.h
     include/scope/converter/SignalIO.h
+    include/scope/converter/HtmlExport.h
     include/scope/converter/SaveChartDialog.h
     include/scope/converter/BusyRunner.h
     include/scope/converter/ConverterWidget.h
@@ -18,6 +19,8 @@ set(CONVERTER_SOURCES
     src/CsvSource.cpp
     src/CsvWriter.cpp
     src/SignalIO.cpp
+    src/HtmlExport.cpp
+    resources/uplot.qrc
     ui/ConverterWidget.cpp
     ui/MappingPanel.cpp
     ui/ChannelEditDialog.cpp
