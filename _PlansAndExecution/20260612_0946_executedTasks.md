@@ -101,3 +101,11 @@ Plot toolbar groups related buttons in thin rounded boxes with captions:
 [⤢ ↕] Fit   [↔+ ↔− ↕+ ↕−] Zoom   Δ Measure   Line ▾   [Y+ Y−]   📷.
 New QSS role "btnGroup" in Theme.cpp; ScopePlot builds groups via a local
 makeGroup/makeBtnInto helper (behaviour and tooltips unchanged).
+
+## Refinement 4 (user, option chosen via question): spin-box steppers
+All QSpinBox/QDoubleSpinBox are horizontal steppers now: [◀] value [▶] —
+full-height side buttons, hover/pressed washes, crisp chevron SVGs
+generated per theme into the app cache dir (QSS image: urls; the
+border-triangle trick and base-style arrow primitives don't work once
+the buttons are styled). Applies app-wide (Filter builder time constant,
+Recorder port, Converter offsets, …).

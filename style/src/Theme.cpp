@@ -2,8 +2,11 @@
 
 #include <QApplication>
 #include <QColor>
+#include <QDir>
+#include <QFile>
 #include <QPalette>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QString>
 #include <QStyleFactory>
 #include <QStyleHints>
@@ -121,6 +124,31 @@ QString rgba(const QColor& c) {
         .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha());
 }
 
+// The spin-box stepper arrows are QSS `image:` urls — once the buttons are
+// styled, QStyleSheetStyle no longer asks the base style to draw arrow
+// primitives — so render them as small theme-coloured SVGs in the app's
+// cache directory and reference them by absolute path.
+QString chevronSvgPath(const QString& key, bool pointRight, const QColor& c) {
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+        + "/scope-style";
+    QDir().mkpath(dir);
+    const QString path = dir + "/chevron_" + key + ".svg";
+    QFile f(path);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        const QString d = pointRight ? "M3.4,1.8 L8.0,5.5 L3.4,9.2"
+                                     : "M7.6,1.8 L3.0,5.5 L7.6,9.2";
+        f.write(QString("<svg xmlns=\"http://www.w3.org/2000/svg\" "
+                        "width=\"11\" height=\"11\" viewBox=\"0 0 11 11\">"
+                        "<path d=\"%1\" fill=\"none\" stroke=\"%2\" "
+                        "stroke-width=\"1.6\" stroke-linecap=\"round\" "
+                        "stroke-linejoin=\"round\"/></svg>")
+                    .arg(d, c.name(QColor::HexRgb))
+                    .toUtf8());
+    }
+    return path;
+}
+
 // The single stylesheet, written against tokens. Custom widget hooks:
 //   QLabel[scopeRole="sectionLabel"]  — small bold uppercase section heading
 //   QLabel[scopeRole="dim"]           — secondary-colour text
@@ -207,6 +235,52 @@ QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus,
 QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color: %ACCENT%; }
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
     color: %TEXT_DISABLED%; background: transparent;
+}
+/* Spin boxes as horizontal steppers:  [◀]  value  [▶]  — full-height side
+   buttons; the chevrons themselves are painted by ChevronSpinStyle. */
+QSpinBox, QDoubleSpinBox {
+    padding-left: 26px;
+    padding-right: 26px;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: center left;
+    width: 22px;
+    border: none;
+    border-right: 1px solid %BORDER%;
+    border-top-left-radius: 5px;
+    border-bottom-left-radius: 5px;
+    background: transparent;
+}
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: center right;
+    width: 22px;
+    border: none;
+    border-left: 1px solid %BORDER%;
+    border-top-right-radius: 5px;
+    border-bottom-right-radius: 5px;
+    background: transparent;
+}
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover,
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {
+    background: %HOVER%;
+}
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed,
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {
+    background: %BTN_DOWN%;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: url("%CHEVL%"); width: 11px; height: 11px;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: url("%CHEVR%"); width: 11px; height: 11px;
+}
+QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled {
+    image: url("%CHEVLD%");
+}
+QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled {
+    image: url("%CHEVRD%");
 }
 QComboBox::drop-down { border: none; width: 20px; }
 QComboBox QAbstractItemView {
@@ -370,6 +444,13 @@ QLabel[scopeRole="pill"][pillTone="rec"]  { background: %REC_SOFT%;  color: %REC
     s.replace("%REC_SOFT%",      rgba(withAlpha(t.record, 40)));
     s.replace("%REC_STRONG%",    rgba(t.recordStrong));
     s.replace("%REC_BORDER%",    rgba(withAlpha(t.record, 100)));
+    {
+        const QString suffix = isDarkTheme() ? "dark" : "light";
+        s.replace("%CHEVL%",  chevronSvgPath("l_" + suffix,  false, t.text2));
+        s.replace("%CHEVR%",  chevronSvgPath("r_" + suffix,  true,  t.text2));
+        s.replace("%CHEVLD%", chevronSvgPath("ld_" + suffix, false, t.textDisabled));
+        s.replace("%CHEVRD%", chevronSvgPath("rd_" + suffix, true,  t.textDisabled));
+    }
     s.replace("%TIP_BG%",        rgba(t.tipBg));
     s.replace("%TIP_TEXT%",      rgba(t.tipText));
     s.replace("%TIP_BORDER%",    rgba(t.tipBorder));
