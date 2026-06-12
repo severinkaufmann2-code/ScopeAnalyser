@@ -86,3 +86,8 @@ passes 5/5 isolated and on suite rerun.
   style-lib-free). The "Y axes + −" rows were removed from the Analyser
   panel and the Recorder live-preview sidebar.
 - 204/204 tests green; dark-theme screenshots re-checked.
+
+## Refinement (user): fit-button labels
+Final form per user: "⤢ XY Fit" (diagonal arrow — fits X and all Y axes,
+Home) and "↕ Y Fit" (vertical arrow — fits Y axes to the current X
+window), adjacent at the left of the plot toolbar.
