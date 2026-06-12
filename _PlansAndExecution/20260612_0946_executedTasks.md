@@ -178,3 +178,17 @@ node against hand-computed vectors (interp, identity, X-gap cases — all
 pass). Measure/zoom/fit/mode work in every view (1/|Δx| Hz line only in
 Time). Per-channel visibility persists across view switches. 218/218
 tests green.
+
+## XY rendering fix (user report: "XY chart does not work")
+
+Root cause: uPlot's built-in line renderer only handles aligned (mode 1)
+data — mode-2 (XY) series need explicit `facets` for scale binding and a
+CUSTOM paths builder (confirmed against uPlot 1.6.32's official scatter
+demo). The XY view therefore drew nothing. scope_page.js now gives XY
+series facets ({x, y<k>}) and an xyPaths builder (uPlot.orient): lines in
+time order with pen-up at null gaps, dots per display mode, clipped to
+the plot box; XY x-range exact like the app; XY live values blank (the
+app's XY crosshair shows none either). Verified by HEADLESS RENDERING the
+real exported file with jsdom + node-canvas + a Path2D polyfill (frames
+pumped): time view ✓, XY position-vs-velocity ellipse ✓, channel toggle ✓,
+frequency option disabled when empty ✓; pairXY re-verified exact in node.

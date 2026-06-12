@@ -193,11 +193,63 @@ function makeApp(app) {
     return [xs, ys];
   }
 
+  // ---------- XY drawing (uPlot mode 2 needs custom paths) ----------
+  // The built-in line renderer only handles aligned (mode 1) data, so XY
+  // series draw themselves: lines between consecutive points in time order
+  // (pen up at null gaps) and/or sample dots, per the display mode.
+  function xyPaths(u, seriesIdx) {
+    uPlot.orient(u, seriesIdx, (series, dataX, dataY, scaleX, scaleY,
+                                valToPosX, valToPosY, xOff, yOff, xDim, yDim,
+                                moveTo, lineTo, rect, arc) => {
+      const d = u.data[seriesIdx];          // [xs, ys]
+      const ctx = u.ctx;
+      const dpr = devicePixelRatio;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(u.bbox.left, u.bbox.top, u.bbox.width, u.bbox.height);
+      ctx.clip();
+      ctx.strokeStyle = series.stroke();
+      ctx.fillStyle = series.stroke();
+      ctx.lineWidth = 1.25 * dpr;
+      if (mode !== 1) {                     // lines
+        const p = new Path2D();
+        let pen = false;
+        for (let i = 0; i < d[0].length; i++) {
+          const xv = d[0][i], yv = d[1][i];
+          if (xv == null || yv == null) { pen = false; continue; }   // gap
+          const cx = valToPosX(xv, scaleX, xDim, xOff);
+          const cy = valToPosY(yv, scaleY, yDim, yOff);
+          if (pen) lineTo(p, cx, cy);
+          else { moveTo(p, cx, cy); pen = true; }
+        }
+        ctx.stroke(p);
+      }
+      if (mode >= 1) {                      // points
+        const r = 2.5 * dpr;
+        const p = new Path2D();
+        for (let i = 0; i < d[0].length; i++) {
+          const xv = d[0][i], yv = d[1][i];
+          if (xv == null || yv == null) continue;
+          const cx = valToPosX(xv, scaleX, xDim, xOff);
+          const cy = valToPosY(yv, scaleY, yDim, yOff);
+          p.moveTo(cx + r, cy);
+          arc(p, cx, cy, r, 0, 2 * Math.PI);
+        }
+        ctx.fill(p);
+      }
+      ctx.restore();
+    });
+    return null;                            // drawn above; nothing to cache
+  }
+
   // ---------- uPlot ----------
   function plotWidth() { return Math.max(plotwrap.clientWidth - 20, 480); }
 
   function scalesAxes(spec) {
     const scales = { x: { time: false } };
+    if (curView === "xy")
+      scales.x.range = (uu, dmin, dmax) =>
+          (dmin == null) ? [0, 1] : [dmin, dmax];
     spec.axes.forEach((ax, k) => {
       scales[sKey(k)] = {
         auto: true,
@@ -237,8 +289,18 @@ function makeApp(app) {
   function mkOpts(spec, xyMode) {
     const { scales, axes } = scalesAxes(spec);
     const sList = rows.map(r => {
+      if (xyMode) {
+        return {
+          label: r.series.label,
+          stroke: r.series.color,
+          facets: [{ scale: "x", auto: true },
+                   { scale: sKey(r.series.axis), auto: true }],
+          paths: xyPaths,
+          points: { show: false },
+        };
+      }
       const o = seriesOpts(r.series);
-      if (!xyMode) o.spanGaps = true;   // union-grid nulls are artifacts
+      o.spanGaps = true;                // union-grid nulls are artifacts
       return o;
     });
     return {
@@ -311,12 +373,8 @@ function makeApp(app) {
         r.valEl.textContent = (v == null) ? "" : fmt(v);
       });
     } else {
-      const idxs = uu.cursor.idxs || [];
-      rows.forEach(r => {
-        const idx = idxs[r.chartIdx];
-        const v = idx == null ? null : uu.data[r.chartIdx][1][idx];
-        r.valEl.textContent = (v == null) ? "" : fmt(v);
-      });
+      // The app's XY view has no per-channel cursor read-out either.
+      rows.forEach(r => { r.valEl.textContent = ""; });
     }
   }
 
