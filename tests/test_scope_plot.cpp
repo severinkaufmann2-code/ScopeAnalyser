@@ -767,9 +767,12 @@ TEST(ScopePlot, SaveImageWritesPngPdfSvg) {
     const bool svgOk = plot.saveImage(QString::fromStdString(svg.string()));
     EXPECT_EQ(svgOk, scope::plot::ScopePlot::svgExportSupported());
     if (svgOk) {
-        QFile f(QString::fromStdString(svg.string()));
-        ASSERT_TRUE(f.open(QIODevice::ReadOnly));
-        EXPECT_TRUE(QString::fromUtf8(f.readAll()).contains("<svg"));
+        {
+            // Closed before remove() — Windows can't delete open files.
+            QFile f(QString::fromStdString(svg.string()));
+            ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+            EXPECT_TRUE(QString::fromUtf8(f.readAll()).contains("<svg"));
+        }
         std::filesystem::remove(svg);
     }
 

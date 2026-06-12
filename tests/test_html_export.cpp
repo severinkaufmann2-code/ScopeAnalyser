@@ -48,9 +48,14 @@ QString exportToString(const SignalStore& store, bool* okOut = nullptr,
     if (okOut) *okOut = ok;
     if (errOut) *errOut = err;
     QString content;
-    QFile f(QString::fromStdString(path.string()));
-    if (f.open(QIODevice::ReadOnly)) content = QString::fromUtf8(f.readAll());
-    std::filesystem::remove(path);
+    {
+        // Scoped so the handle is closed before remove() — Windows refuses
+        // to delete a file that is still open.
+        QFile f(QString::fromStdString(path.string()));
+        if (f.open(QIODevice::ReadOnly)) content = QString::fromUtf8(f.readAll());
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
     return content;
 }
 

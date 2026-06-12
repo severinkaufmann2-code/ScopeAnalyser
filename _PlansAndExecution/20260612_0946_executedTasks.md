@@ -117,3 +117,32 @@ VERSION → 0.2.0). Both workflows green; artifacts downloaded, Windows zip
 repacked without .pdb/.ilk (39 MB vs 143 MB in v0.1.0, which had shipped
 the debug symbols). gh release create v0.2.0 + uploaded
 ScopeAnalyser-v0.2.0-{linux-x64.tar.gz, windows-x64.zip}.
+
+## SVG/PDF screenshots + interactive HTML export (user-approved plan)
+
+- Camera button → Save dialog with PNG / SVG / PDF (vector formats stay
+  sharp at any zoom). Qt6Svg found optionally at configure time (CI's aqt
+  Qt ships it; locally qt6-svg-dev). Testable core ScopePlot::saveImage().
+- "Export HTML…" (Analyser action bar): one self-contained offline file —
+  uPlot 1.6.32 vendored (MIT, converter/resources/uplot, embedded via
+  qrc + Q_INIT_RESOURCE at global scope). Time + Frequency charts,
+  wheel/box zoom, dbl-click reset, legend toggling. Union-grid merge with
+  nulls for mixed rates, NaN → gap, shortest-round-trip doubles
+  (std::to_chars). 5 unit tests; screenshot hook also writes
+  demo_interactive.html.
+- Answer to "interactive PDF": not feasible (layers/JS are Acrobat-only,
+  Qt can't emit them); vector PDF gives crisp zoom, HTML gives the real
+  interactivity.
+
+## Root cause of the "offscreen widget flake": use-after-free (ASan)
+
+The escalating intermittent SEGFAULTs in AnalyserPlotLayoutTest were NOT
+runner flakiness: ASan (build/asan) caught a heap-use-after-free —
+EmptyHintLabel's model-signal handler ran during view teardown after the
+viewport was already freed (a view deletes its viewport before its model;
+the model's destruction emits modelReset). Affected every app shutdown,
+intermittent natively, deterministic under ASan. Fixed with QPointer
+guards in StyleKit; 25/25 ASan iterations clean, 3× full native suite
+green (210 tests, zero crashes). windows.yml fixture exclusion reverted
+(it had masked this real bug); linux.yml exclusion kept (pre-existing,
+different SIGBUS documented before this session).
