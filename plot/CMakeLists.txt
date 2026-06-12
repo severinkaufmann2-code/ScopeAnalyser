@@ -23,3 +23,8 @@ scope_add_library(scope_plot
         spdlog::spdlog
     FOLDER scope/plot
 )
+
+if(Qt6Svg_FOUND)
+    target_link_libraries(scope_plot PRIVATE Qt6::Svg)
+    target_compile_definitions(scope_plot PRIVATE SCOPE_HAVE_QTSVG)
+endif()

@@ -35,6 +35,14 @@ option(SCOPE_BUILD_STANDALONE_EXES "Build standalone Recorder/Analyser/Converter
 
 # ---- System packages (from apt on Linux, from vcpkg or installers on Windows) -
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Gui PrintSupport Concurrent Test)
+# SVG chart export is optional at build time (CI's Qt always has it, so
+# releases do too). Locally: apt install qt6-svg-dev to enable.
+find_package(Qt6 COMPONENTS Svg QUIET)
+if(Qt6Svg_FOUND)
+    message(STATUS "Qt6Svg found — SVG chart export enabled")
+else()
+    message(STATUS "Qt6Svg not found — building without SVG chart export")
+endif()
 find_package(HDF5 REQUIRED COMPONENTS CXX)
 find_package(spdlog REQUIRED)
 find_package(nlohmann_json REQUIRED)

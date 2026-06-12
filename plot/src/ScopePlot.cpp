@@ -17,6 +17,9 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QShortcut>
+#ifdef SCOPE_HAVE_QTSVG
+#include <QSvgGenerator>
+#endif
 #include <QComboBox>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -339,9 +342,10 @@ ScopePlot::ScopePlot(QWidget* parent)
     {
         auto* b = new QToolButton(impl_->toolbar);
         b->setIcon(cameraIcon());
-        b->setToolTip("Save the current view as a PNG image");
+        b->setToolTip("Save the current view as an image — PNG (pixel), or\n"
+                      "SVG / PDF (vector: stays sharp at any zoom).");
         b->setAutoRaise(true);
-        connect(b, &QToolButton::clicked, this, &ScopePlot::savePngDialog);
+        connect(b, &QToolButton::clicked, this, &ScopePlot::saveImageDialog);
         tb->addWidget(b);
     }
     tb->addSpacing(8);
@@ -841,17 +845,78 @@ void ScopePlot::panBy(double fracX, double fracY) {
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
 }
 
-void ScopePlot::savePngDialog() {
-    QFileDialog dlg(this, "Save plot as PNG");
+void ScopePlot::saveImageDialog() {
+    const QString fPng = "PNG image (*.png)";
+    const QString fSvg = "SVG vector image (*.svg)";
+    const QString fPdf = "PDF document (*.pdf)";
+    QFileDialog dlg(this, "Save chart image");
     dlg.setAcceptMode(QFileDialog::AcceptSave);
-    dlg.setNameFilters({"PNG image (*.png)", "All files (*)"});
+#ifdef SCOPE_HAVE_QTSVG
+    dlg.setNameFilters({fPng, fSvg, fPdf});
+#else
+    dlg.setNameFilters({fPng, fPdf});
+#endif
     dlg.setDefaultSuffix("png");
+    connect(&dlg, &QFileDialog::filterSelected, &dlg, [&](const QString& f) {
+        dlg.setDefaultSuffix(f == fSvg ? "svg" : f == fPdf ? "pdf" : "png");
+    });
     if (dlg.exec() != QDialog::Accepted) return;
     const auto sel = dlg.selectedFiles();
     if (sel.isEmpty()) return;
     QString path = sel.first();
-    if (!path.endsWith(".png", Qt::CaseInsensitive)) path += ".png";
-    impl_->plot->savePng(path);
+
+    // The extension wins; a missing one falls back to the chosen filter.
+    QString fmt;
+    if      (path.endsWith(".svg", Qt::CaseInsensitive)) fmt = "svg";
+    else if (path.endsWith(".pdf", Qt::CaseInsensitive)) fmt = "pdf";
+    else if (path.endsWith(".png", Qt::CaseInsensitive)) fmt = "png";
+    else {
+        const QString f = dlg.selectedNameFilter();
+        fmt = (f == fSvg) ? "svg" : (f == fPdf) ? "pdf" : "png";
+        path += "." + fmt;
+    }
+
+    if (!saveImage(path)) {
+        QMessageBox::critical(this, "Save failed",
+                              QString("Couldn't write %1").arg(path));
+    }
+}
+
+bool ScopePlot::svgExportSupported() {
+#ifdef SCOPE_HAVE_QTSVG
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool ScopePlot::saveImage(const QString& path) {
+    if (path.endsWith(".png", Qt::CaseInsensitive)) {
+        return impl_->plot->savePng(path);
+    }
+    if (path.endsWith(".pdf", Qt::CaseInsensitive)) {
+        // Vector output — stays sharp at any zoom level in the viewer.
+        return impl_->plot->savePdf(path, 0, 0, QCP::epAllowCosmetic,
+                                    "ScopeAnalyser", QString());
+    }
+    if (path.endsWith(".svg", Qt::CaseInsensitive)) {
+#ifdef SCOPE_HAVE_QTSVG
+        QSvgGenerator gen;
+        gen.setFileName(path);
+        const QSize sz = impl_->plot->size();
+        gen.setSize(sz);
+        gen.setViewBox(QRect(QPoint(0, 0), sz));
+        gen.setTitle("ScopeAnalyser chart");
+        QCPPainter painter;
+        if (!painter.begin(&gen)) return false;
+        impl_->plot->toPainter(&painter, sz.width(), sz.height());
+        painter.end();
+        return true;
+#else
+        return false;
+#endif
+    }
+    return false;
 }
 
 void ScopePlot::beginRegionZoom(QPointF startPx) {

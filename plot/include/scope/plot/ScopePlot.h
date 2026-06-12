@@ -104,9 +104,15 @@ public:
     bool isMeasureMode() const;
     void clearMeasurement();
 
+    // Write the current view to `path`; the format follows the extension:
+    // .png (pixel), .pdf (vector), .svg (vector, when built with Qt Svg —
+    // see svgExportSupported()). False on unsupported format/write failure.
+    bool saveImage(const QString& path);
+    static bool svgExportSupported();
+
 public slots:
     void fitAll();
-    void savePngDialog();
+    void saveImageDialog();   // PNG (pixel) / SVG / PDF (vector)
     void togglePause();
 
 signals:

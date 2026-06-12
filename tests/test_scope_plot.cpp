@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QFile>
 #include <QSignalSpy>
 
 #include <filesystem>
@@ -734,4 +735,43 @@ TEST(ScopePlot, PauseToggleEmitsSignal) {
     sp.togglePause();
     EXPECT_FALSE(sp.isPaused());
     EXPECT_EQ(spy.count(), 2);
+}
+
+// saveImage writes the format the extension asks for: PNG magic bytes,
+// a %PDF header (vector), and — when built with Qt Svg — an <svg root.
+TEST(ScopePlot, SaveImageWritesPngPdfSvg) {
+    GuiAppFixture fixture;
+    scope::plot::ScopePlot plot;
+    plot.resize(400, 300);
+    auto* g = plot.plot()->addGraph();
+    g->setData(QVector<double>{0, 1, 2}, QVector<double>{0, 1, 0});
+    plot.plot()->replot(QCustomPlot::rpImmediateRefresh);
+
+    const auto dir = std::filesystem::temp_directory_path();
+    auto readHead = [](const std::filesystem::path& p) {
+        QFile f(QString::fromStdString(p.string()));
+        return f.open(QIODevice::ReadOnly) ? f.read(8) : QByteArray();
+    };
+
+    const auto png = dir / "scope_img.png";
+    ASSERT_TRUE(plot.saveImage(QString::fromStdString(png.string())));
+    EXPECT_TRUE(readHead(png).startsWith("\x89PNG"));
+    std::filesystem::remove(png);
+
+    const auto pdf = dir / "scope_img.pdf";
+    ASSERT_TRUE(plot.saveImage(QString::fromStdString(pdf.string())));
+    EXPECT_TRUE(readHead(pdf).startsWith("%PDF"));
+    std::filesystem::remove(pdf);
+
+    const auto svg = dir / "scope_img.svg";
+    const bool svgOk = plot.saveImage(QString::fromStdString(svg.string()));
+    EXPECT_EQ(svgOk, scope::plot::ScopePlot::svgExportSupported());
+    if (svgOk) {
+        QFile f(QString::fromStdString(svg.string()));
+        ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+        EXPECT_TRUE(QString::fromUtf8(f.readAll()).contains("<svg"));
+        std::filesystem::remove(svg);
+    }
+
+    EXPECT_FALSE(plot.saveImage(QString::fromStdString((dir / "x.bmp").string())));
 }
