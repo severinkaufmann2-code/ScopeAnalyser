@@ -668,15 +668,18 @@ void AnalyserPlot::redrawAll() {
 namespace {
 
 // Linear interpolation of Y at time t, given Y's monotonic timestamp
-// array. Returns NaN outside Y's range so the curve simply skips that
-// X sample rather than extrapolating.
+// array. Returns NaN outside Y's range so the curve leaves a gap at that
+// X sample — clamping would draw a flat line of fabricated points where
+// no Y data exists.
 double interpAt(const scope::core::TimestampNs* ts,
                 const std::vector<double>& vs,
                 std::size_t n,
                 scope::core::TimestampNs t) {
     if (n == 0) return std::numeric_limits<double>::quiet_NaN();
-    if (t <= ts[0])    return vs.front();
-    if (t >= ts[n-1])  return vs.back();
+    if (t < ts[0] || t > ts[n-1])
+        return std::numeric_limits<double>::quiet_NaN();
+    if (t == ts[0])    return vs.front();
+    if (t == ts[n-1])  return vs.back();
     auto* lo = std::lower_bound(ts, ts + n, t);
     const std::size_t hi = lo - ts;
     if (hi == 0) return vs[0];

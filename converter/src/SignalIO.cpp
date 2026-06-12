@@ -518,11 +518,32 @@ ChartSaveResult saveChartFromStore(
     QString* errorOut) {
 
     using TimestampNs = scope::core::TimestampNs;
+    // The custom range arrives in chart-relative seconds (the chart and the
+    // CSV writer both present time relative to the earliest first sample).
+    // Resolve it against that same origin: recordings carry absolute epoch
+    // timestamps, where treating the seconds as absolute would silently
+    // select nothing.
+    TimestampNs originNs = 0;
+    if (filters.useCustomRange && filters.includeTime) {
+        bool haveOrigin = false;
+        for (const auto& n : store.channelNames()) {
+            auto src = store.get(n);
+            if (!src) continue;
+            if (src->meta().domain == Signal::Domain::Frequency) continue;
+            if (!filters.includeDerived && isDerivedChannel(src)) continue;
+            auto view = src->snapshotForRead();
+            if (view.count == 0) continue;
+            if (!haveOrigin || view.timestamps[0] < originNs) {
+                originNs = view.timestamps[0];
+                haveOrigin = true;
+            }
+        }
+    }
     const TimestampNs fromNs = filters.useCustomRange
-        ? static_cast<TimestampNs>(filters.fromSec * 1e9)
+        ? originNs + static_cast<TimestampNs>(filters.fromSec * 1e9)
         : std::numeric_limits<TimestampNs>::min();
     const TimestampNs toNs = filters.useCustomRange
-        ? static_cast<TimestampNs>(filters.toSec   * 1e9)
+        ? originNs + static_cast<TimestampNs>(filters.toSec   * 1e9)
         : std::numeric_limits<TimestampNs>::max();
 
     std::vector<std::shared_ptr<Signal>> timeChans, freqChans;

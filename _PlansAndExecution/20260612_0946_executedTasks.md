@@ -24,4 +24,34 @@
   whose period isn't integer-ns-representable — rewritten on a 1 kHz grid
   and the nuance recorded as finding B8.
 - Findings B1–B9 + fix plan written into `20260612_0946_Plans.md`.
-  **No production code changed** — fixes await user approval.
+  **No production code changed** — fixes awaited user approval.
+
+## Fix execution (same session, after user approval "ok do it")
+
+- Committed + pushed the UI redesign and the test suite first
+  (a48169e..5c70129), as requested.
+- **B1** `SignalIO.cpp`: custom export range resolves against the earliest
+  first sample of the exported time channels.
+- **B2** `FunctionRegistry.cpp`: Slice + BandZero/BandKeep select with
+  seconds relative to the signal's first sample on time-domain signals
+  (Hz on spectra unchanged); help texts updated.
+- **B3** `Signal::Meta::sourceStartNs` (in-memory, not persisted): set by
+  RFFTmag/RFFTphase/FFT/FFTWelch, propagated through spectrum edits,
+  consumed by revertFFT → reconstruction starts on the original axis.
+- **B4** `AnalyserPlot.cpp` interpAt: NaN (gap) outside Y's range instead
+  of clamped fabricated points.
+- **B5** division and Mod by zero → NaN (decision: NaN over silent 0).
+- **B6** same-grid fast path now requires full timestamp memcmp (engine +
+  registry).
+- **B7** crosshair read-out picks the nearest sample, not the next-right.
+- **B8** spectrum bin timestamps via llround (FFT/FFTWelch/RFFT).
+- **B9** H5 selector shows "… Hz span" for frequency-domain channels.
+- **B10 (new, found during implementation)**: elementwise/shape-preserving
+  functions dropped Meta.domain (spectrum → Time silently). Domain +
+  sourceStartNs now propagate through elementwiseUnary, rolling stats,
+  Limit, Shift, Resample, Reverse, ForwardFill, and both elementwiseBinary
+  implementations.
+- Tests: all 5 DISABLED tests enabled (regression guards), division test
+  asserts NaN, +2 new tests (origin survives BandZero/arithmetic edits;
+  domain preservation across 5 function classes). **199/199 green**;
+  offscreen GUI smoke run OK.

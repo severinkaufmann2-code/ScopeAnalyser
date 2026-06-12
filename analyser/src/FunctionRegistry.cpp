@@ -20,18 +20,21 @@ using scope::core::TimestampNs;
 namespace {
 
 // All derived signals are produced as Float64 — keeps the math simple and
-// matches the typical scope/oscilloscope use case.
+// matches the typical scope/oscilloscope use case. sourceStartNs carries a
+// spectrum's time origin through shape-preserving edits (see Signal::Meta).
 std::shared_ptr<Signal> makeDoubleSignal(const QString& sourceFormula,
                                          const std::vector<TimestampNs>& ts,
                                          const std::vector<double>& vals,
                                          const QString& unit = "",
-                                         Signal::Domain domain = Signal::Domain::Time) {
+                                         Signal::Domain domain = Signal::Domain::Time,
+                                         TimestampNs sourceStartNs = 0) {
     Signal::Meta meta;
     meta.name = sourceFormula;          // overridden by caller before add()
     meta.unit = unit;
     meta.dataType = DataType::Float64;
     meta.sourceSymbol = sourceFormula;
     meta.domain = domain;
+    meta.sourceStartNs = sourceStartNs;
     if (ts.size() >= 2) {
         const double dtNs = static_cast<double>(ts.back() - ts.front());
         if (dtNs > 0) meta.sampleRateHz = (ts.size() - 1) * 1e9 / dtNs;
@@ -214,7 +217,8 @@ std::shared_ptr<Signal> impl_Reverse(const FunctionArgs& a, QString* err) {
         dst[i] = (n - 1 - i) < src.size() ? src[n - 1 - i] : 0.0;
     }
     return makeDoubleSignal("Reverse", ts, dst, signal->meta().unit,
-                            signal->meta().domain);
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 // ---- General IIR filter design (Butterworth / Chebyshev I / II) ----------
@@ -748,7 +752,9 @@ std::shared_ptr<Signal> rolling(const FunctionArgs& a, QString* err,
         while (ts[i] - ts[lo] > windowNs) ++lo;
         dst[i] = reduce(src, lo, i);
     }
-    return makeDoubleSignal(who, ts, dst, signal->meta().unit);
+    return makeDoubleSignal(who, ts, dst, signal->meta().unit,
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 std::shared_ptr<Signal> impl_Mean(const FunctionArgs& a, QString* err) {
@@ -796,10 +802,14 @@ std::shared_ptr<Signal> impl_Shift(const FunctionArgs& a, QString* err) {
     std::vector<TimestampNs> ts(view.count);
     const TimestampNs offset = static_cast<TimestampNs>(secs * 1e9);
     for (std::size_t i = 0; i < view.count; ++i) ts[i] = view.timestamps[i] + offset;
-    return makeDoubleSignal("Shift", ts, src, signal->meta().unit);
+    return makeDoubleSignal("Shift", ts, src, signal->meta().unit,
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 // ---- Elementwise unary functions ----
+// Shape-preserving, so the domain (and a spectrum's time origin) carries
+// through — Abs(RFFTmag(x)) must stay a Frequency-domain signal.
 template <typename Op>
 std::shared_ptr<Signal> elementwiseUnary(const FunctionArgs& a, QString* err,
                                          const char* who, Op op) {
@@ -810,7 +820,9 @@ std::shared_ptr<Signal> elementwiseUnary(const FunctionArgs& a, QString* err,
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(view.count);
     for (std::size_t i = 0; i < view.count; ++i) dst[i] = op(src[i]);
-    return makeDoubleSignal(who, ts, dst, signal->meta().unit);
+    return makeDoubleSignal(who, ts, dst, signal->meta().unit,
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 std::shared_ptr<Signal> impl_Abs(const FunctionArgs& a, QString* err)  {
@@ -894,11 +906,28 @@ std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
     const bool aConst = (avView.count == 1 && avView.timestamps[0] == 0);
     const bool bConst = (bvView.count == 1 && bvView.timestamps[0] == 0);
 
+    // Inherit domain (and a spectrum's time origin) from the non-constant
+    // operand(s) — Min(RFFTmag(x), 5) must stay a Frequency-domain signal.
+    using Domain = Signal::Domain;
+    const Domain outDomain =
+        aConst ? b->meta().domain
+      : bConst ? a->meta().domain
+      : (a->meta().domain == Domain::Frequency
+         || b->meta().domain == Domain::Frequency) ? Domain::Frequency
+                                                   : Domain::Time;
+    const TimestampNs outStartNs =
+        aConst ? b->meta().sourceStartNs
+      : bConst ? a->meta().sourceStartNs
+      : (a->meta().sourceStartNs != 0 ? a->meta().sourceStartNs
+                                      : b->meta().sourceStartNs);
+
     auto makeSig = [&](const std::vector<TimestampNs>& ts,
                        const std::vector<double>& vs) {
         Signal::Meta m;
         m.dataType = DataType::Float64;
         m.name = opName;
+        m.domain = outDomain;
+        m.sourceStartNs = outStartNs;
         auto s = std::make_shared<Signal>(m);
         s->append(ts.data(),
                   reinterpret_cast<const std::byte*>(vs.data()),
@@ -924,10 +953,11 @@ std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
         return nullptr;
     }
 
+    // Same grid only when EVERY timestamp matches — matching count and
+    // endpoints alone could silently mis-pair non-uniform grids by index.
     if (avView.count == bvView.count
-        && avView.timestamps[0] == bvView.timestamps[0]
-        && avView.timestamps[avView.count - 1]
-               == bvView.timestamps[bvView.count - 1]) {
+        && std::memcmp(avView.timestamps, bvView.timestamps,
+                       avView.count * sizeof(TimestampNs)) == 0) {
         const std::size_t n = avView.count;
         std::vector<double> out(n);
         for (std::size_t i = 0; i < n; ++i) out[i] = op(av[i], bv[i]);
@@ -997,8 +1027,12 @@ std::shared_ptr<Signal> impl_Power(const FunctionArgs& a, QString* err) {
 }
 std::shared_ptr<Signal> impl_Mod(const FunctionArgs& a, QString* err) {
     if (!ensureN(a, 2, err, "Mod")) return nullptr;
+    // Mod by 0 is undefined → NaN (a gap in the chart), never a fabricated 0.
     return elementwiseBinary(a[0], a[1],
-        [](double x, double d){ return d != 0 ? std::fmod(x, d) : 0.0; },
+        [](double x, double d){
+            return d != 0 ? std::fmod(x, d)
+                          : std::numeric_limits<double>::quiet_NaN();
+        },
         err, "Mod");
 }
 std::shared_ptr<Signal> impl_Atan2(const FunctionArgs& a, QString* err) {
@@ -1023,7 +1057,9 @@ std::shared_ptr<Signal> impl_Limit(const FunctionArgs& a, QString* err) {
     std::vector<double> dst(view.count);
     for (std::size_t i = 0; i < view.count; ++i)
         dst[i] = std::clamp(src[i], lo, hi);
-    return makeDoubleSignal("Limit", ts, dst, signal->meta().unit);
+    return makeDoubleSignal("Limit", ts, dst, signal->meta().unit,
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 // Min(a, b) / Max(a, b) — element-wise pair (Python's min(a, b), or
@@ -1119,11 +1155,16 @@ std::shared_ptr<Signal> impl_ForwardFill(const FunctionArgs& a, QString* err) {
     }
     auto out = makeDoubleSignal("ForwardFill", ts, dst,
                                 signal->meta().unit,
-                                signal->meta().domain);
+                                signal->meta().domain,
+                                signal->meta().sourceStartNs);
     return out;
 }
 
 // ---- Slice(signal, t_start, t_end) — keep samples with t in [start, end] ----
+// On a time-domain signal t_start/t_end are seconds SINCE THE SIGNAL'S FIRST
+// SAMPLE — the values the user reads off the chart, which displays relative
+// seconds (recordings carry absolute epoch timestamps). On a spectrum they
+// are absolute Hz. The kept samples retain their original timestamps.
 std::shared_ptr<Signal> impl_Slice(const FunctionArgs& a, QString* err) {
     if (!ensureN(a, 3, err, "Slice")) return nullptr;
     double tStartSec = 0, tEndSec = 0;
@@ -1137,17 +1178,22 @@ std::shared_ptr<Signal> impl_Slice(const FunctionArgs& a, QString* err) {
     auto signal = a[0];
     auto view = signal->snapshotForRead();
     auto src  = signal->readAsDouble();
+    const bool timeDomain = signal->meta().domain == Signal::Domain::Time;
+    const TimestampNs base =
+        (timeDomain && view.count > 0) ? view.timestamps[0] : 0;
     std::vector<TimestampNs> ts;
     std::vector<double> dst;
     ts.reserve(view.count);
     dst.reserve(view.count);
     for (std::size_t i = 0; i < view.count; ++i) {
-        if (view.timestamps[i] < tLo || view.timestamps[i] > tHi) continue;
+        const TimestampNs rel = view.timestamps[i] - base;
+        if (rel < tLo || rel > tHi) continue;
         ts.push_back(view.timestamps[i]);
         dst.push_back(i < src.size() ? src[i] : 0.0);
     }
     return makeDoubleSignal("Slice", ts, dst, signal->meta().unit,
-                            signal->meta().domain);
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 
 // ---- FFT(signal [, window]) — single-sided amplitude spectrum ----
@@ -1292,12 +1338,14 @@ std::shared_ptr<Signal> impl_FFT(const FunctionArgs& a, QString* err) {
     std::vector<TimestampNs> outTs(outN);
     std::vector<double> outVs(outN);
     for (std::size_t k = 0; k < outN; ++k) {
-        outTs[k] = static_cast<TimestampNs>(k * df * 1e9);
+        outTs[k] = static_cast<TimestampNs>(std::llround(k * df * 1e9));
         const double s = (k == 0 || k == N / 2) ? scaleEnd : scaleMid;
         outVs[k] = mag[k] * s;
     }
+    auto srcView = a[0]->snapshotForRead();
     return makeDoubleSignal("FFT", outTs, outVs, "magnitude",
-                            Signal::Domain::Frequency);
+                            Signal::Domain::Frequency,
+                            srcView.count ? srcView.timestamps[0] : 0);
 }
 
 // ---- FFTCut / FFTKeep(signal, f_lo_hz, f_hi_hz) — frequency band edit ----
@@ -1408,12 +1456,15 @@ std::shared_ptr<Signal> rfftSpectrum(const FunctionArgs& a, bool wantPhase,
     std::vector<TimestampNs> outTs(bins);
     std::vector<double> outV(bins);
     for (std::size_t k = 0; k < bins; ++k) {
-        outTs[k] = static_cast<TimestampNs>(k * df * 1e9);          // Hz × 1e9
+        outTs[k] = static_cast<TimestampNs>(std::llround(k * df * 1e9));  // Hz × 1e9
         outV[k]  = wantPhase ? std::arg(buf[k]) : std::abs(buf[k]);
     }
+    // Carry the source's time origin so revertFFT can reconstruct on the
+    // original axis instead of t = 0.
     return makeDoubleSignal(who, outTs, outV,
                             wantPhase ? "rad" : signal->meta().unit,
-                            Signal::Domain::Frequency);
+                            Signal::Domain::Frequency,
+                            ts.front());
 }
 std::shared_ptr<Signal> impl_RFFTmag(const FunctionArgs& a, QString* err) {
     return rfftSpectrum(a, /*wantPhase=*/false, "RFFTmag", err);
@@ -1450,14 +1501,19 @@ std::shared_ptr<Signal> impl_revertFFT(const FunctionArgs& a, QString* err) {
     const double invN = 1.0 / static_cast<double>(N);
 
     // Recover the time step from the spectrum's Hz spacing: df = bin spacing,
-    // dt = 1 / (N · df).
+    // dt = 1 / (N · df). The reconstruction starts at the source signal's
+    // first timestamp if the spectrum carries it (RFFTmag/RFFTphase set
+    // sourceStartNs; spectrum edits propagate it), so the result overlays
+    // the original on the shared time axis. Spectra without an origin
+    // (e.g. reloaded from a file) start at t = 0.
     double df = (mv.timestamps[1] - mv.timestamps[0]) / 1e9;
     if (df <= 0) df = 1.0;
     const double dt = 1.0 / (static_cast<double>(N) * df);
+    const TimestampNs t0 = mag->meta().sourceStartNs;
     std::vector<TimestampNs> outTs(N);
     std::vector<double> outV(N);
     for (std::size_t i = 0; i < N; ++i) {
-        outTs[i] = static_cast<TimestampNs>(std::llround(i * dt * 1e9));
+        outTs[i] = t0 + static_cast<TimestampNs>(std::llround(i * dt * 1e9));
         outV[i]  = std::conj(X[i]).real() * invN;
     }
     return makeDoubleSignal("revertFFT", outTs, outV, mag->meta().unit,
@@ -1468,9 +1524,10 @@ std::shared_ptr<Signal> impl_revertFFT(const FunctionArgs& a, QString* err) {
 // Zero a signal's samples whose x-axis value is inside [lo, hi] (BandZero) or
 // outside it (BandKeep). Works in BOTH domains: on a frequency-domain signal
 // (e.g. from RFFTmag) lo/hi are in Hz → edits a frequency band; on a
-// time-domain signal they are in seconds → blanks / keeps a time window.
-// Length is preserved. (Editing primitives for the RFFTmag → revertFFT
-// round-trip.)
+// time-domain signal they are seconds SINCE THE SIGNAL'S FIRST SAMPLE — the
+// values the user reads off the chart (recordings carry absolute epoch
+// timestamps). Length is preserved. (Editing primitives for the RFFTmag →
+// revertFFT round-trip.)
 std::shared_ptr<Signal> bandMask(const FunctionArgs& a, bool keep,
                                  const char* who, QString* err) {
     if (a.size() != 3) {
@@ -1487,14 +1544,19 @@ std::shared_ptr<Signal> bandMask(const FunctionArgs& a, bool keep,
     if (hi < lo) { if (err) *err = QString("%1: need lo <= hi").arg(who); return nullptr; }
     auto view = signal->snapshotForRead();
     auto src = signal->readAsDouble();
+    const bool timeDomain = signal->meta().domain == Signal::Domain::Time;
+    const TimestampNs base =
+        (timeDomain && view.count > 0) ? view.timestamps[0] : 0;
     std::vector<TimestampNs> ts(view.timestamps, view.timestamps + view.count);
     std::vector<double> dst(src.begin(), src.end());
     for (std::size_t k = 0; k < view.count; ++k) {
-        const double x = ts[k] / 1e9;   // Hz (frequency domain) or seconds (time)
+        const double x = (ts[k] - base) / 1e9;  // Hz (spectrum) or rel. seconds
         const bool inBand = (x >= lo && x <= hi);
         if (keep ? !inBand : inBand) dst[k] = 0.0;
     }
-    return makeDoubleSignal(who, ts, dst, signal->meta().unit, signal->meta().domain);
+    return makeDoubleSignal(who, ts, dst, signal->meta().unit,
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
 }
 std::shared_ptr<Signal> impl_BandZero(const FunctionArgs& a, QString* err) {
     return bandMask(a, /*keep=*/false, "BandZero", err);
@@ -1617,7 +1679,9 @@ std::shared_ptr<Signal> impl_Resample(const FunctionArgs& a, QString* err) {
         outVals.push_back(
             interpAtHere(srcView.timestamps, srcVals, srcView.count, t, cursor));
     }
-    return makeDoubleSignal("Resample", outTs, outVals, src->meta().unit);
+    return makeDoubleSignal("Resample", outTs, outVals, src->meta().unit,
+                            src->meta().domain,
+                            src->meta().sourceStartNs);
 }
 
 // Shared by Gate / FFTWelch: find the event windows. Walk `signal`, mark where
@@ -1851,11 +1915,12 @@ std::shared_ptr<Signal> impl_FFTWelch(const FunctionArgs& a, QString* err) {
     std::vector<TimestampNs> outTs(outN);
     std::vector<double>      outVs(outN);
     for (std::size_t k = 0; k < outN; ++k) {
-        outTs[k] = static_cast<TimestampNs>(k * df * 1e9);
+        outTs[k] = static_cast<TimestampNs>(std::llround(k * df * 1e9));
         outVs[k] = avg[k] / static_cast<double>(used);
     }
     return makeDoubleSignal("FFTWelch", outTs, outVs, "magnitude",
-                            Signal::Domain::Frequency);
+                            Signal::Domain::Frequency,
+                            sView.count ? sView.timestamps[0] : 0);
 }
 
 }  // namespace
@@ -2009,8 +2074,9 @@ void FunctionRegistry::registerBuiltins() {
         "kept. Useful for sensor dropouts that report a sentinel value.",
         1, 3, &impl_ForwardFill);
     add("Slice",      "Slice(signal, t_start, t_end)",
-        "Keep only samples whose timestamp falls in [t_start, t_end] seconds. "
-        "Inclusive bounds.",
+        "Keep only samples in [t_start, t_end] — seconds since the signal's "
+        "first sample (what the chart shows) for time signals, Hz for "
+        "spectra. Inclusive bounds.",
         3, 3, &impl_Slice);
     add("Gate",       "Gate(signal, gate, low, high [, min_length [, mode]])",
         "Keep `signal` only where `gate` is in [low, high]; cut the rest. "
@@ -2058,13 +2124,15 @@ void FunctionRegistry::registerBuiltins() {
     add("BandZero",   "BandZero(signal, lo, hi)",
         "Zero the samples whose x-axis value is in [lo, hi]. Works in both "
         "domains: on a spectrum (e.g. RFFTmag) lo/hi are Hz → removes a "
-        "frequency band; on a time-domain signal they are seconds → blanks a "
-        "time window. Editing primitive for the RFFTmag → revertFFT round-trip.",
+        "frequency band; on a time-domain signal they are seconds since the "
+        "signal's first sample (what the chart shows) → blanks a time window. "
+        "Editing primitive for the RFFTmag → revertFFT round-trip.",
         3, 3, &impl_BandZero);
     add("BandKeep",   "BandKeep(signal, lo, hi)",
         "Keep only the samples whose x-axis value is in [lo, hi] (zero the rest) "
         "— the complement of BandZero. Works in both domains: a frequency band "
-        "(Hz) on a spectrum, or a time window (seconds) on a time-domain signal.",
+        "(Hz) on a spectrum, or a time window (seconds since the signal's first "
+        "sample) on a time-domain signal.",
         3, 3, &impl_BandKeep);
     add("PeakHz",     "PeakHz(signal [, window])",
         "Dominant peak frequency in Hz, refined by parabolic interpolation "

@@ -181,9 +181,13 @@ struct H5SelectorPanel : public QWidget {
             table->setItem(r, kColSamples, new QTableWidgetItem(QString::number(view.count)));
             QString dur = "—";
             if (view.count >= 2) {
-                const double secs =
+                const double span =
                     (view.timestamps[view.count - 1] - view.timestamps[0]) / 1e9;
-                dur = QString("%1 s").arg(secs, 0, 'g', 4);
+                // A spectrum's "timestamps" encode Hz — don't label its
+                // span as seconds.
+                dur = (meta.domain == core::Signal::Domain::Frequency)
+                          ? QString("%1 Hz span").arg(span, 0, 'g', 4)
+                          : QString("%1 s").arg(span, 0, 'g', 4);
             }
             table->setItem(r, kColDuration, new QTableWidgetItem(dur));
 

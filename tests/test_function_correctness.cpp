@@ -4,11 +4,8 @@
 // complement test_formula_engine.cpp, which focuses on plumbing and filter
 // shapes; here the point is "the numbers the user reads are right".
 //
-// Tests with the DISABLED_ prefix pin DESIRED behaviour for known issues
-// (documented in _PlansAndExecution/20260612_1005_Plans.md). They are kept
-// out of the green suite until a fix is approved; run them with
-//   scope_tests --gtest_also_run_disabled_tests --gtest_filter='*KnownIssue*'
-// to reproduce the findings.
+// The "relative time" / domain-propagation tests guard the fixes for the
+// findings in _PlansAndExecution/20260612_0946_Plans.md (B1–B10).
 
 #include "scope/analyser/FormulaEngine.h"
 #include "scope/core/Signal.h"
@@ -246,11 +243,10 @@ TEST(FunctionCorrectness, ModSignFollowsDividend) {
     EXPECT_DOUBLE_EQ(out[3], 1.5);
 }
 
-// CHARACTERIZATION of current behaviour, not an endorsement: x/0 currently
-// yields 0 (silently), which can fabricate a plausible-looking value. See
-// finding B5 in _PlansAndExecution/20260612_1005_Plans.md — pending a
-// decision, this test pins the status quo so any change is deliberate.
-TEST(FunctionCorrectness, DivisionByZeroCurrentlyYieldsZero_Characterization) {
+// Division (and Mod) by zero yield NaN — a visible gap in the chart — never
+// a fabricated 0. (Finding B5: an efficiency formula P_out/P_in must not
+// read "0" exactly where the input dropped out.)
+TEST(FunctionCorrectness, DivisionAndModByZeroYieldNaN) {
     SignalStore store;
     store.add(seriesAt("A", {6.0, 6.0}, 10.0));
     store.add(seriesAt("B", {2.0, 0.0}, 10.0));
@@ -258,7 +254,11 @@ TEST(FunctionCorrectness, DivisionByZeroCurrentlyYieldsZero_Characterization) {
     const auto out = eval(store, engine, "Q = A / B", "Q");
     ASSERT_EQ(out.size(), 2u);
     EXPECT_DOUBLE_EQ(out[0], 3.0);
-    EXPECT_DOUBLE_EQ(out[1], 0.0);   // ← fabricated 0, not NaN/inf
+    EXPECT_TRUE(std::isnan(out[1]));
+    const auto m = eval(store, engine, "M = Mod(A, B)", "M");
+    ASSERT_EQ(m.size(), 2u);
+    EXPECT_DOUBLE_EQ(m[0], 0.0);     // fmod(6, 2)
+    EXPECT_TRUE(std::isnan(m[1]));
 }
 
 TEST(FunctionCorrectness, OperatorPrecedenceAndUnaryMinus) {
@@ -377,16 +377,13 @@ TEST(FunctionCorrectness, FftKeepIsolatesToneWithCorrectAmplitude) {
 }
 
 // ===========================================================================
-// Known issues (DISABLED) — desired behaviour, awaiting an approved fix.
-// Reproduce with: --gtest_also_run_disabled_tests
-// See _PlansAndExecution/20260612_1005_Plans.md for the findings + fix plan.
+// Relative-time semantics + spectrum origin (regression guards for findings
+// B2/B3 in _PlansAndExecution/20260612_0946_Plans.md).
 // ===========================================================================
 
-// Finding B2: Slice compares the user's seconds against ABSOLUTE timestamps.
-// The chart shows seconds relative to the signal's start, so for recorder
-// data (epoch-based nanoseconds) Slice(A, 0.2, 0.5) silently keeps nothing.
-// Desired: t_start/t_end are relative to the signal's first sample.
-TEST(FunctionCorrectnessKnownIssue, DISABLED_SliceSecondsAreRelativeToSignalStart) {
+// Recorder data carries absolute epoch timestamps but the chart shows
+// seconds since the signal's start — Slice must select with those.
+TEST(FunctionCorrectness, SliceSecondsAreRelativeToSignalStart) {
     SignalStore store;
     const TimestampNs t0 = 1'750'000'000'000'000'000LL;   // epoch-style start
     store.add(seriesAt("A", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10.0, t0));
@@ -395,11 +392,14 @@ TEST(FunctionCorrectnessKnownIssue, DISABLED_SliceSecondsAreRelativeToSignalStar
     ASSERT_EQ(out.size(), 4u) << "expected samples at +0.2/0.3/0.4/0.5 s";
     EXPECT_DOUBLE_EQ(out.front(), 2.0);
     EXPECT_DOUBLE_EQ(out.back(), 5.0);
+    // The kept samples retain their original (absolute) timestamps.
+    auto view = store.get("S")->snapshotForRead();
+    EXPECT_EQ(view.timestamps[0], t0 + 200'000'000LL);
 }
 
-// Finding B2 (same class): BandZero/BandKeep interpret lo/hi as absolute
-// seconds on time-domain signals. Desired: relative to the signal's start.
-TEST(FunctionCorrectnessKnownIssue, DISABLED_BandKeepTimeWindowRelativeToSignalStart) {
+// Same for BandZero/BandKeep on time-domain signals (Hz semantics on
+// spectra are covered by the RevertFft* tests in test_formula_engine.cpp).
+TEST(FunctionCorrectness, BandKeepTimeWindowRelativeToSignalStart) {
     SignalStore store;
     const TimestampNs t0 = 1'750'000'000'000'000'000LL;
     store.add(seriesAt("A", {1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 10.0, t0));
@@ -411,11 +411,9 @@ TEST(FunctionCorrectnessKnownIssue, DISABLED_BandKeepTimeWindowRelativeToSignalS
     EXPECT_DOUBLE_EQ(out[9], 0.0);
 }
 
-// Finding B3: revertFFT rebuilds the waveform starting at t = 0 instead of
-// the source signal's first timestamp, so the reconstruction lands ~55 years
-// away from a recorded original on the shared time axis. Desired: the
-// RFFTmag/RFFTphase → revertFFT round trip preserves the start time.
-TEST(FunctionCorrectnessKnownIssue, DISABLED_RevertFftPreservesStartTime) {
+// The RFFTmag/RFFTphase → revertFFT round trip reconstructs on the source's
+// original time origin so it overlays the original on the shared axis.
+TEST(FunctionCorrectness, RevertFftPreservesStartTime) {
     SignalStore store;
     const TimestampNs t0 = 5'000'000'000LL;               // starts at 5 s
     store.add(sineAt("A", 1024, 1024.0, 32.0, 1.0, t0));
@@ -429,4 +427,46 @@ TEST(FunctionCorrectnessKnownIssue, DISABLED_RevertFftPreservesStartTime) {
     ASSERT_GE(view.count, 2u);
     EXPECT_EQ(view.timestamps[0], t0)
         << "reconstruction must start where the original started";
+}
+
+// …and the origin survives spectrum edits (BandZero) and arithmetic, the
+// documented editing workflow between RFFTmag and revertFFT.
+TEST(FunctionCorrectness, RevertFftKeepsStartTimeThroughSpectrumEdits) {
+    SignalStore store;
+    const TimestampNs t0 = 5'000'000'000LL;
+    store.add(sineAt("A", 1024, 1024.0, 32.0, 1.0, t0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate(
+        "R = revertFFT(BandZero(RFFTmag(A), 100, 200) * 1, RFFTphase(A))", &err))
+        << err.toStdString();
+    auto view = store.get("R")->snapshotForRead();
+    ASSERT_GE(view.count, 2u);
+    EXPECT_EQ(view.timestamps[0], t0);
+}
+
+// ===========================================================================
+// Domain propagation (finding B10): shape-preserving functions must not
+// silently turn a spectrum back into a time-domain signal (which would make
+// it vanish from the Frequency view and pollute the Time view).
+// ===========================================================================
+TEST(FunctionCorrectness, ShapePreservingFunctionsKeepFrequencyDomain) {
+    SignalStore store;
+    store.add(sineAt("A", 1024, 1024.0, 32.0, 1.0));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("M = RFFTmag(A)", &err)) << err.toStdString();
+    for (const char* line : {"D1 = Abs(M)",
+                             "D2 = Mean(M, 5)",
+                             "D3 = Min(M, 100)",
+                             "D4 = Limit(M, 0, 100)",
+                             "D5 = M * 2"}) {
+        ASSERT_TRUE(engine.evaluate(line, &err)) << line << ": " << err.toStdString();
+    }
+    for (const char* name : {"D1", "D2", "D3", "D4", "D5"}) {
+        auto s = store.get(name);
+        ASSERT_TRUE(s) << name;
+        EXPECT_EQ(s->meta().domain, Signal::Domain::Frequency)
+            << name << " lost the Frequency domain";
+    }
 }

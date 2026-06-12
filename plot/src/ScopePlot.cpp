@@ -833,7 +833,17 @@ void ScopePlot::updateCrosshair(QPointF mousePx) {
     for (int i = 0; i < impl_->plot->graphCount(); ++i) {
         auto* g = impl_->plot->graph(i);
         if (!g->visible() || g->data()->isEmpty()) continue;
+        // findBegin gives the first sample at/right of the cursor; take the
+        // nearer of it and its left neighbour so the read-out shows the
+        // closest sample, not the next one along.
         auto it = g->data()->findBegin(xCoord, /*expandedRange=*/false);
+        if (it != g->data()->constBegin()) {
+            auto prev = it - 1;
+            if (it == g->data()->constEnd()
+                || std::abs(prev->key - xCoord) <= std::abs(it->key - xCoord)) {
+                it = prev;
+            }
+        }
         if (it == g->data()->constEnd()) continue;
         text += QString("%1 = %2\n").arg(g->name()).arg(it->value, 0, 'g', 6);
     }

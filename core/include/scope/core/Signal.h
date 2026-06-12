@@ -37,6 +37,12 @@ public:
         std::uint32_t parentTaskCycleUs{0};
         QString sourceSymbol;          // PLC symbol, file column, or formula
         Domain  domain{Domain::Time};
+        // For a Frequency-domain signal derived from a time signal: the
+        // source's first timestamp (ns), so revertFFT can reconstruct on
+        // the original time origin. In-memory only — not persisted to
+        // files (a reloaded spectrum reverts to 0 = unknown). Elementwise
+        // spectrum edits (BandZero, arithmetic, …) carry it through.
+        TimestampNs sourceStartNs{0};
     };
 
     explicit Signal(Meta meta);

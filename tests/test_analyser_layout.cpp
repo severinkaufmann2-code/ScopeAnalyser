@@ -330,13 +330,10 @@ TEST_F(AnalyserPlotLayoutTest, UncheckedChannelLeavesThePlot) {
     EXPECT_NE(plottableFor(plot, "A"), nullptr);
 }
 
-// Finding B4 (KNOWN ISSUE, see _PlansAndExecution/20260612_1005_Plans.md):
-// the XY interpolator's contract (its own comment) is to return NaN outside
-// Y's recorded range so the curve skips those X samples — but it actually
-// clamps to Y's first/last value, drawing a flat line of fabricated points
-// where no Y data exists. Desired behaviour pinned here.
-// Reproduce with --gtest_also_run_disabled_tests.
-TEST_F(AnalyserPlotLayoutTest, DISABLED_XyOutsideYRangeLeavesGapNotFabricatedPoints) {
+// Finding B4 regression guard: outside Y's recorded range the XY curve gets
+// NaN (a gap), never clamped first/last values — an engineer must be able
+// to trust that every drawn XY point is real data.
+TEST_F(AnalyserPlotLayoutTest, XyOutsideYRangeLeavesGapNotFabricatedPoints) {
     SignalStore store;
     scope::analyser::FormulaEngine engine(store);
     AnalyserPlot plot(store, engine);

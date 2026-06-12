@@ -453,15 +453,13 @@ TEST(CsvWriter, SaveChartCustomRangeOnZeroBasedSignals) {
     std::filesystem::remove(base);
 }
 
-// Finding B1 (KNOWN ISSUE, see _PlansAndExecution/20260612_1005_Plans.md):
-// the Save-chart dialog is pre-filled with the chart's X range, which is in
-// seconds RELATIVE to the recording start — but saveChartFromStore compares
-// those seconds against ABSOLUTE timestamps. For recorder data (epoch-based
-// nanoseconds) every custom range the user can see therefore matches
-// nothing. Desired: the range applies relative to the earliest first sample
+// Finding B1 regression guard: the Save-chart dialog is pre-filled with the
+// chart's X range, which is in seconds RELATIVE to the recording start.
+// saveChartFromStore resolves the range against the earliest first sample
 // of the exported time channels (the same origin the CSV writer and the
-// chart use). Reproduce with --gtest_also_run_disabled_tests.
-TEST(CsvWriter, DISABLED_SaveChartCustomRangeMatchesChartRelativeSeconds) {
+// chart use), so recorder data with absolute epoch timestamps exports the
+// samples the user actually selected.
+TEST(CsvWriter, SaveChartCustomRangeMatchesChartRelativeSeconds) {
     scope::core::SignalStore store;
     {
         Signal::Meta m; m.name = "speed"; m.unit = "rpm";

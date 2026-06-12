@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <variant>
 #include <vector>
@@ -153,6 +154,13 @@ std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
       : bConst ? domA
       : (domA == Domain::Frequency || domB == Domain::Frequency)
             ? Domain::Frequency : Domain::Time;
+    // A spectrum's time origin survives arithmetic (mag × 2, mag − floor, …)
+    // so revertFFT can still place the reconstruction on the original axis.
+    const TimestampNs outStartNs =
+        aConst ? b->meta().sourceStartNs
+      : bConst ? a->meta().sourceStartNs
+      : (a->meta().sourceStartNs != 0 ? a->meta().sourceStartNs
+                                      : b->meta().sourceStartNs);
 
     auto makeSig = [&](const std::vector<TimestampNs>& ts,
                        const std::vector<double>& vs) {
@@ -160,6 +168,7 @@ std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
         m.dataType = DataType::Float64;
         m.name = opName;
         m.domain = outDomain;
+        m.sourceStartNs = outStartNs;
         auto s = std::make_shared<Signal>(m);
         s->append(ts.data(),
                   reinterpret_cast<const std::byte*>(vs.data()),
@@ -187,9 +196,11 @@ std::shared_ptr<Signal> elementwiseBinary(const std::shared_ptr<Signal>& a,
     }
 
     // ---- Path 2: same grid (fast path) ----
+    // Same grid only when EVERY timestamp matches — matching count and
+    // endpoints alone could silently mis-pair non-uniform grids by index.
     if (avView.count == bvView.count &&
-        avView.timestamps[0] == bvView.timestamps[0] &&
-        avView.timestamps[avView.count - 1] == bvView.timestamps[bvView.count - 1]) {
+        std::memcmp(avView.timestamps, bvView.timestamps,
+                    avView.count * sizeof(TimestampNs)) == 0) {
         const std::size_t n = avView.count;
         std::vector<double> out(n);
         for (std::size_t i = 0; i < n; ++i) out[i] = op(av[i], bv[i]);
@@ -287,9 +298,15 @@ struct Parser {
             cur = lex.next();
             auto right = parseUnary();
             if (!right) return nullptr;
+            // Division by zero yields NaN (a gap in the chart), never a
+            // fabricated 0 — this is an engineering tool; a formula like
+            // P_out/P_in must not read "0" where the input dropped out.
             left = (op == Tok::Star)
                 ? elementwiseBinary(left, right, [](double a, double b){ return a * b; }, ctx, "*")
-                : elementwiseBinary(left, right, [](double a, double b){ return b != 0 ? a / b : 0; }, ctx, "/");
+                : elementwiseBinary(left, right, [](double a, double b){
+                      return b != 0 ? a / b
+                                    : std::numeric_limits<double>::quiet_NaN();
+                  }, ctx, "/");
             if (!left) return nullptr;
         }
         return left;
