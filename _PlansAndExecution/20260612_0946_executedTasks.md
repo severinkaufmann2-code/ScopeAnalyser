@@ -109,3 +109,11 @@ generated per theme into the app cache dir (QSS image: urls; the
 border-triangle trick and base-style arrow primitives don't work once
 the buttons are styled). Applies app-wide (Filter builder time constant,
 Recorder port, Converter offsets, …).
+
+## Release v0.2.0 (2026-06-12)
+Pushed main (a836852: windows.yml gets the same flaky-offscreen-fixture
+exclusion as linux.yml after intermittent 0xc0000005 crashes; project
+VERSION → 0.2.0). Both workflows green; artifacts downloaded, Windows zip
+repacked without .pdb/.ilk (39 MB vs 143 MB in v0.1.0, which had shipped
+the debug symbols). gh release create v0.2.0 + uploaded
+ScopeAnalyser-v0.2.0-{linux-x64.tar.gz, windows-x64.zip}.
