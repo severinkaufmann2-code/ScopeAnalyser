@@ -1229,6 +1229,65 @@ std::shared_ptr<Signal> impl_Slice(const FunctionArgs& a, QString* err) {
                                        : signal->meta().sourceStartNs);
 }
 
+// ---- Repeat(signal, n) — tile the signal n times back-to-back ------------
+// Copies continue the signal's own sample grid: with span = last − first and
+// dt = span / (count − 1), copy m starts at first + m·(span + dt), so the
+// spacing across each seam equals the internal spacing. For periodic data,
+// FFT(Repeat(Slice(x, t0, t1), n)) lands the spectrum on an n× finer
+// frequency grid — sharper peaks, same harmonics (repetition adds no new
+// information, and a slice that isn't a whole number of periods adds seam
+// artefacts).
+std::shared_ptr<Signal> impl_Repeat(const FunctionArgs& a, QString* err) {
+    if (!ensureN(a, 2, err, "Repeat")) return nullptr;
+    double nd = 0;
+    if (!asScalar(a[1], nd) || nd < 1 || nd != std::floor(nd)) {
+        if (err) *err = "Repeat: n must be a positive integer";
+        return nullptr;
+    }
+    const std::size_t n = static_cast<std::size_t>(nd);
+    auto signal = a[0];
+    if (signal->meta().domain == Signal::Domain::Frequency) {
+        if (err) *err = "Repeat: input must be a time-domain signal "
+                        "(repeat before the FFT, not after)";
+        return nullptr;
+    }
+    auto view = signal->snapshotForRead();
+    auto src  = signal->readAsDouble();
+    if (n > 1 && view.count < 2) {
+        if (err) *err = "Repeat: need at least 2 samples to define the "
+                        "repeat spacing";
+        return nullptr;
+    }
+    constexpr std::size_t kMaxOut = 50'000'000;
+    if (view.count > 0 && n > kMaxOut / view.count) {
+        if (err) *err = QString("Repeat: result would exceed %L1 samples")
+                            .arg(kMaxOut);
+        return nullptr;
+    }
+    TimestampNs stride = 0;
+    if (view.count >= 2) {
+        const TimestampNs span = view.timestamps[view.count - 1]
+                               - view.timestamps[0];
+        stride = span + static_cast<TimestampNs>(std::llround(
+                     static_cast<double>(span)
+                     / static_cast<double>(view.count - 1)));
+    }
+    std::vector<TimestampNs> ts;
+    std::vector<double> dst;
+    ts.reserve(view.count * n);
+    dst.reserve(view.count * n);
+    for (std::size_t m = 0; m < n; ++m) {
+        const TimestampNs off = static_cast<TimestampNs>(m) * stride;
+        for (std::size_t i = 0; i < view.count; ++i) {
+            ts.push_back(view.timestamps[i] + off);
+            dst.push_back(i < src.size() ? src[i] : 0.0);
+        }
+    }
+    return makeDoubleSignal("Repeat", ts, dst, signal->meta().unit,
+                            signal->meta().domain,
+                            signal->meta().sourceStartNs);
+}
+
 // ---- FFT(signal [, window]) — single-sided amplitude spectrum ----
 //
 // Windows the samples (Hann by default; flat-top for accurate peak
@@ -2121,6 +2180,14 @@ void FunctionRegistry::registerBuiltins() {
         "first sample (what the chart shows) for time signals, Hz for "
         "spectra. Inclusive bounds.",
         3, 3, &impl_Slice);
+    add("Repeat",     "Repeat(signal, n)",
+        "Tile the signal n times back-to-back, continuing its own sample "
+        "grid. For a periodic signal, FFT(Repeat(Slice(x, t0, t1), n)) puts "
+        "the spectrum on an n-times finer frequency grid and sharpens the "
+        "harmonic peaks. The slice must cover a WHOLE number of periods or "
+        "the seams add false harmonics. Repetition adds no new information — "
+        "for a precise single peak frequency, PeakHz is the direct tool.",
+        2, 2, &impl_Repeat);
     add("Gate",       "Gate(signal, gate, low, high [, min_length [, mode]])",
         "Keep `signal` only where `gate` is in [low, high]; cut the rest. "
         "min_length = drop in-range stretches shorter than this many SECONDS "

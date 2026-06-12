@@ -200,6 +200,7 @@ ExampleSpec exampleFor(const QString& fn) {
     if (fn == "Replace")    return mk("step",     "",     {0.0, -1.0});  // 0 → -1
     if (fn == "ForwardFill")return mk("gappy",    "",     {0.0});
     if (fn == "Slice")      return mk("sine",     "",     {0.5, 2.0});
+    if (fn == "Repeat")     return mk("pulse",    "",     {3});         // tiled copies visible
     if (fn == "Gate")       return mk("sine",     "ramp", {0.3, 0.7});
     if (fn == "Resample")   return mk("sine",     "",     {12});         // coarse → visible grid
     if (fn == "FFT")        return mk("multi",    "",     {});

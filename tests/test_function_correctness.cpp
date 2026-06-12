@@ -377,6 +377,92 @@ TEST(FunctionCorrectness, FftKeepIsolatesToneWithCorrectAmplitude) {
 }
 
 // ===========================================================================
+// Repeat(signal, n) — tiling a periodic slice before the FFT
+// ===========================================================================
+
+// Tiling must continue the sample grid seamlessly: 3 copies of 4 samples
+// give 12 samples, the values repeat, and the spacing across each seam
+// equals the internal dt — otherwise the tiled signal isn't periodic and
+// the whole point (clean harmonics) is lost.
+TEST(FunctionCorrectness, RepeatTilesSignalPeriodically) {
+    SignalStore store;
+    store.add(seriesAt("A", {1, 2, 3, 4}, 10.0));
+    FormulaEngine engine(store);
+    const auto out = eval(store, engine, "R = Repeat(A, 3)", "R");
+    ASSERT_EQ(out.size(), 12u);
+    for (std::size_t i = 0; i < out.size(); ++i)
+        EXPECT_DOUBLE_EQ(out[i], static_cast<double>(i % 4 + 1))
+            << "sample " << i;
+    auto view = store.get("R")->snapshotForRead();
+    const TimestampNs dt = 100'000'000LL;            // 1/fs = 0.1 s
+    for (std::size_t i = 1; i < view.count; ++i)
+        EXPECT_EQ(view.timestamps[i] - view.timestamps[i - 1], dt)
+            << "spacing at sample " << i << " (seams at multiples of 4)";
+    EXPECT_EQ(store.get("R")->meta().domain, Signal::Domain::Time);
+}
+
+// One exact period of an on-bin tone, tiled to a power-of-two length, is the
+// seam-free best case: the energy stays in the tone's bin (now on an 8×
+// finer frequency grid) and the neighbouring bins read ~0. Raw RFFTmag at
+// the tone bin is N/2 × amplitude.
+TEST(FunctionCorrectness, RepeatSharpensPeriodicSpectrum) {
+    SignalStore store;
+    const double fs = 1024.0;
+    const std::size_t L = 128;       // exactly one period of 8 Hz at 1024 Hz
+    store.add(sineAt("A", L, fs, 8.0, 2.0));
+    FormulaEngine engine(store);
+    const auto mag = eval(store, engine, "M = RFFTmag(Repeat(A, 8))", "M");
+    ASSERT_GT(mag.size(), 9u);       // 1024 samples → df = 1 Hz, bin 8 = 8 Hz
+    EXPECT_NEAR(mag[8], 1024.0 / 2.0 * 2.0, 1e-6) << "tone bin at 8 Hz";
+    EXPECT_NEAR(mag[7], 0.0, 1e-6) << "no leakage below the tone";
+    EXPECT_NEAR(mag[9], 0.0, 1e-6) << "no leakage above the tone";
+}
+
+// The documented recipe end-to-end: Slice a whole number of periods, tile,
+// read the peak. Inclusive Slice bounds mean [0.1, 0.199] keeps exactly
+// samples 100..199 — one full 10 Hz period at 1000 Hz.
+TEST(FunctionCorrectness, RepeatEndToEndWithSliceAndPeakHz) {
+    SignalStore store;
+    const double fs = 1000.0, f = 10.0;
+    store.add(sineAt("A", 1000, fs, f, 1.0));
+    FormulaEngine engine(store);
+    const auto pk = eval(store, engine,
+                         "P = PeakHz(Repeat(Slice(A, 0.1, 0.199), 10))", "P");
+    ASSERT_EQ(pk.size(), 1u);
+    EXPECT_NEAR(pk[0], f, 0.1);
+}
+
+// The first copy keeps its original timestamps, the second starts exactly
+// one dt after the first ends, and the display origin survives the
+// Slice → Repeat chain (chart alignment, revertFFT round trip).
+TEST(FunctionCorrectness, RepeatPreservesStartTimeAndOrigin) {
+    SignalStore store;
+    const TimestampNs t0 = 5'000'000'000LL;
+    store.add(seriesAt("A", {1, 2, 3}, 10.0, t0));
+    FormulaEngine engine(store);
+    const auto out = eval(store, engine, "R = Repeat(A, 2)", "R");
+    ASSERT_EQ(out.size(), 6u);
+    auto view = store.get("R")->snapshotForRead();
+    EXPECT_EQ(view.timestamps[0], t0);
+    EXPECT_EQ(view.timestamps[3], t0 + 300'000'000LL)
+        << "second copy must start one dt after the first ends";
+    eval(store, engine, "R2 = Repeat(Slice(A, 0, 0.1), 2)", "R2");
+    EXPECT_EQ(store.get("R2")->meta().sourceStartNs, t0)
+        << "origin must pass through Slice → Repeat";
+}
+
+TEST(FunctionCorrectness, RepeatRejectsBadArgs) {
+    SignalStore store;
+    store.add(sineAt("A", 64, 64.0, 4.0, 1.0));
+    FormulaEngine engine(store);
+    QString err;
+    EXPECT_FALSE(engine.evaluate("R1 = Repeat(A, 0)", &err));
+    EXPECT_FALSE(engine.evaluate("R2 = Repeat(A, 2.5)", &err));
+    EXPECT_FALSE(engine.evaluate("R3 = Repeat(RFFTmag(A), 2)", &err));
+    EXPECT_TRUE(err.contains("time-domain")) << err.toStdString();
+}
+
+// ===========================================================================
 // Relative-time semantics + spectrum origin (regression guards for findings
 // B2/B3 in _PlansAndExecution/20260612_0946_Plans.md).
 // ===========================================================================
