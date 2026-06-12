@@ -56,7 +56,9 @@ private:
     QPushButton*     disconnectBtn_;
     QPushButton*     startBtn_;
     QPushButton*     stopBtn_;
-    QLabel*          statusLabel_;
+    QLabel*          statusLabel_;   // live recording stats / warnings
+    QLabel*          connPill_;      // connection state chip
+    QString          connectedLabel_;  // pill text while connected
 
     ui::SymbolBrowserWidget* symbols_;
     ui::ChannelTableWidget*  channels_;

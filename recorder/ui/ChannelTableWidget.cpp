@@ -1,7 +1,10 @@
 #include "ChannelTableWidget.h"
 
+#include "scope/style/StyleKit.h"
+
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QLabel>
 #include <QVBoxLayout>
 
 namespace scope::recorder::ui {
@@ -27,8 +30,15 @@ ChannelTableWidget::ChannelTableWidget(QWidget* parent) : QWidget(parent) {
     table_->setColumnHidden(ColIndexOffset, true);
     table_->horizontalHeader()->setSectionResizeMode(ColName, QHeaderView::Stretch);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table_->setAlternatingRowColors(true);
+    scope::style::installEmptyHint(table_,
+        "Symbols you add land here.\n\n"
+        "Cycle time and unit are editable per channel before recording.");
 
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(4, 6, 8, 4);
+    layout->setSpacing(6);
+    layout->addWidget(scope::style::sectionLabel("Recording channels", this));
     layout->addWidget(table_);
 }
 

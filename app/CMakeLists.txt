@@ -6,6 +6,7 @@ add_executable(ScopeAnalyser
 
 target_link_libraries(ScopeAnalyser PRIVATE
     scope::scope_core
+    scope::scope_style
     scope::scope_recorder
     scope::scope_analyser
     scope::scope_converter

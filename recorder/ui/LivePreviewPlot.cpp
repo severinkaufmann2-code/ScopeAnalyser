@@ -2,6 +2,7 @@
 
 #include "scope/plot/ScopePlot.h"
 #include "scope/plot/PlotLayout.h"
+#include "scope/style/StyleKit.h"
 
 #include <qcustomplot.h>
 
@@ -14,9 +15,11 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSplitter>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <filesystem>
@@ -42,30 +45,56 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
     table_->horizontalHeader()->setSectionResizeMode(ColAxis, QHeaderView::ResizeToContents);
     table_->verticalHeader()->setVisible(false);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    table_->setMaximumWidth(280);
+    table_->setAlternatingRowColors(true);
+    table_->setShowGrid(false);
+    style::installEmptyHint(table_,
+        "Channels appear here as soon as they land in the signal store "
+        "(recorded, imported, or derived).");
 
-    auto* addAxisBtn = new QPushButton("+ Y axis", this);
-    auto* delAxisBtn = new QPushButton("− Y axis", this);
+    auto smallBtn = [this](style::Glyph glyph, const QString& tip) {
+        auto* b = new QToolButton(this);
+        b->setIcon(style::icon(glyph));
+        b->setToolTip(tip);
+        return b;
+    };
+    auto* addAxisBtn = smallBtn(style::Glyph::Plus,
+        "Add a Y axis (alternates left / right).");
+    auto* delAxisBtn = smallBtn(style::Glyph::Minus,
+        "Remove the last Y axis (it must have no channels assigned).");
     auto* saveBtn    = new QPushButton("Save layout…", this);
     auto* loadBtn    = new QPushButton("Load layout…", this);
 
-    auto* axisBtnRow = new QHBoxLayout();
-    axisBtnRow->addWidget(addAxisBtn);
-    axisBtnRow->addWidget(delAxisBtn);
+    auto* axHeader = new QHBoxLayout();
+    axHeader->setSpacing(2);
+    axHeader->addWidget(scope::style::sectionLabel("Y axes", this));
+    axHeader->addStretch();
+    axHeader->addWidget(addAxisBtn);
+    axHeader->addWidget(delAxisBtn);
+
     auto* layoutBtnRow = new QHBoxLayout();
     layoutBtnRow->addWidget(saveBtn);
     layoutBtnRow->addWidget(loadBtn);
 
-    auto* sidebar = new QVBoxLayout();
-    sidebar->addWidget(new QLabel("Channels", this));
+    auto* sidePanel = new QWidget(this);
+    sidePanel->setMinimumWidth(220);
+    auto* sidebar = new QVBoxLayout(sidePanel);
+    sidebar->setContentsMargins(8, 6, 4, 8);
+    sidebar->setSpacing(6);
+    sidebar->addWidget(scope::style::sectionLabel("Live channels", this));
     sidebar->addWidget(table_, /*stretch=*/1);
-    sidebar->addLayout(axisBtnRow);
+    sidebar->addLayout(axHeader);
     sidebar->addLayout(layoutBtnRow);
+
+    auto* split = new QSplitter(Qt::Horizontal, this);
+    split->addWidget(sidePanel);
+    split->addWidget(scope_);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+    split->setSizes({280, 1100});
 
     auto* root = new QHBoxLayout(this);
     root->setContentsMargins(0,0,0,0);
-    root->addLayout(sidebar);
-    root->addWidget(scope_, /*stretch=*/1);
+    root->addWidget(split);
 
     connect(&store_, &scope::core::SignalStore::channelAdded,
             this, &LivePreviewPlot::onChannelAdded);
@@ -73,9 +102,11 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
             this, &LivePreviewPlot::onChannelRemoved);
     connect(scope_, &scope::plot::ScopePlot::yAxesChanged,
             this, &LivePreviewPlot::rebuildAxisCombos);
+    connect(scope_, &scope::plot::ScopePlot::themePaletteChanged,
+            this, [this]{ recolorChannels(); });
 
-    connect(addAxisBtn, &QPushButton::clicked, this, [this]{ scope_->addYAxis(); });
-    connect(delAxisBtn, &QPushButton::clicked, this, [this]{
+    connect(addAxisBtn, &QToolButton::clicked, this, [this]{ scope_->addYAxis(); });
+    connect(delAxisBtn, &QToolButton::clicked, this, [this]{
         const int last = scope_->yAxisCount() - 1;
         if (last <= 0) return;
         QString err;
@@ -131,11 +162,14 @@ QSet<QString> LivePreviewPlot::activeChannels() const {
 void LivePreviewPlot::recolorChannels() {
     QHash<int, int> perAxis;
     for (int r = 0; r < table_->rowCount(); ++r) {
-        const QString name = table_->item(r, ColName)->text();
+        auto* nameItem = table_->item(r, ColName);
+        const QString name = nameItem->text();
         if (!graphs_.contains(name)) continue;
         const int axisIdx = axisIndexForRow(r);
         const int onAxis  = perAxis[axisIdx]++;
-        graphs_[name]->setPen(QPen(scope_->deriveChannelColor(axisIdx, onAxis)));
+        const QColor c = scope_->deriveChannelColor(axisIdx, onAxis);
+        graphs_[name]->setPen(QPen(c));
+        nameItem->setIcon(scope::style::colorSwatch(c));
     }
 }
 

@@ -114,13 +114,22 @@ signals:
     void yAxesChanged();     // emitted when axes are added/removed/renamed
     void measureModeChanged(bool enabled);
     void lineDisplayModeChanged(DisplayMode m);
+    // The app theme flipped (light/dark): axis base colours changed, so
+    // hosts should re-derive their channel pens (deriveChannelColor).
+    void themePaletteChanged();
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
+    void changeEvent(QEvent* ev) override;
 
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+
+    // Re-derive every plot colour (background, axes, grid, legend,
+    // crosshair, …) from the current QPalette. Called once in the ctor
+    // and again on QEvent::PaletteChange.
+    void applyThemeColors();
 
     void zoomAt(QPointF mousePx, double factorX, double factorY, int yAxisIndex);
     void panBy(double fracX, double fracY);

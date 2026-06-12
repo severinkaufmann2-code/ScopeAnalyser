@@ -1,6 +1,9 @@
 #include "SymbolBrowserWidget.h"
 
+#include "scope/style/StyleKit.h"
+
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QVBoxLayout>
 #include <QStandardItem>
 #include <QHeaderView>
@@ -9,10 +12,15 @@ namespace scope::recorder::ui {
 
 SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
     filter_     = new QLineEdit(this);
-    filter_->setPlaceholderText("Filter symbols...");
+    filter_->setPlaceholderText("Filter symbols…");
+    filter_->setClearButtonEnabled(true);
     tree_       = new QTreeView(this);
-    refreshBtn_ = new QPushButton("Refresh", this);
-    addBtn_     = new QPushButton("Add selected", this);
+    refreshBtn_ = new QPushButton(
+        scope::style::icon(scope::style::Glyph::Refresh), "Refresh", this);
+    refreshBtn_->setToolTip("Re-read the symbol list from the connected source.");
+    addBtn_     = new QPushButton(
+        scope::style::icon(scope::style::Glyph::Plus), "Add selected", this);
+    addBtn_->setToolTip("Add the selected symbols to the recording channels.");
 
     model_ = new QStandardItemModel(0, 4, this);
     model_->setHorizontalHeaderLabels({"Name", "Type", "Group:Offset", "Bytes"});
@@ -24,7 +32,12 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
     tree_->setModel(proxy_);
     tree_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     tree_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    tree_->setAlternatingRowColors(true);
+    tree_->setRootIsDecorated(false);
     tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    scope::style::installEmptyHint(tree_,
+        "Connect to a source to browse its symbols.\n\n"
+        "Filter, select, then “Add selected”.");
 
     connect(filter_, &QLineEdit::textChanged, proxy_,
             [this](const QString& s){ proxy_->setFilterFixedString(s); });
@@ -32,11 +45,15 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
     connect(addBtn_,     &QPushButton::clicked, this, &SymbolBrowserWidget::addSelectedRequested);
 
     auto* top = new QHBoxLayout();
+    top->setSpacing(6);
     top->addWidget(filter_, /*stretch=*/1);
     top->addWidget(refreshBtn_);
     top->addWidget(addBtn_);
 
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(8, 6, 4, 4);
+    layout->setSpacing(6);
+    layout->addWidget(scope::style::sectionLabel("PLC symbols", this));
     layout->addLayout(top);
     layout->addWidget(tree_);
 }

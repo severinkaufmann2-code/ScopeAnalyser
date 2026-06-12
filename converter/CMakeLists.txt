@@ -37,6 +37,7 @@ scope_add_library(scope_converter
         Qt6::Gui
         Qt6::Concurrent
     PRIVATE_LIBS
+        scope::scope_style
         spdlog::spdlog
         nlohmann_json::nlohmann_json
     FOLDER scope/converter
@@ -44,7 +45,7 @@ scope_add_library(scope_converter
 
 if(SCOPE_BUILD_STANDALONE_EXES)
     add_executable(scope_converter_app ui/standalone_main.cpp)
-    target_link_libraries(scope_converter_app PRIVATE scope::scope_converter Qt6::Widgets)
+    target_link_libraries(scope_converter_app PRIVATE scope::scope_converter scope::scope_style Qt6::Widgets)
     set_target_properties(scope_converter_app PROPERTIES
         OUTPUT_NAME ScopeConverter
         WIN32_EXECUTABLE TRUE)

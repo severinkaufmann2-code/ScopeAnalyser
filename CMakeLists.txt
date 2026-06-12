@@ -138,6 +138,7 @@ FetchContent_MakeAvailable(mdflib)
 include(cmake/scope_helpers.cmake)
 
 add_subdirectory(core)
+add_subdirectory(style)
 add_subdirectory(plot)
 add_subdirectory(ads)
 add_subdirectory(recorder)

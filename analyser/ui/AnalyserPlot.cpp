@@ -8,6 +8,7 @@
 #include "scope/plot/PlotLayout.h"
 #include "scope/converter/SignalIO.h"
 #include "scope/converter/BusyRunner.h"
+#include "scope/style/StyleKit.h"
 
 #include <qcustomplot.h>
 
@@ -22,10 +23,12 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSplitter>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextStream>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -56,35 +59,52 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     table_->verticalHeader()->setVisible(false);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    table_->setMaximumWidth(320);
+    table_->setAlternatingRowColors(true);
+    table_->setShowGrid(false);
+    style::installEmptyHint(table_,
+        "No channels in this view.\n\nRecord a signal, open a chart, or "
+        "add a formula channel with “＋”.");
 
-    auto* addChBtn    = new QPushButton("+ Add channel…", this);
-    auto* editChBtn   = new QPushButton("Edit channel…", this);
-    auto* removeChBtn = new QPushButton("− Remove channel", this);
-    auto* addAxisBtn  = new QPushButton("+ Y axis", this);
-    auto* delAxisBtn  = new QPushButton("− Y axis", this);
-    auto* saveBtn     = new QPushButton("Save layout…", this);
-    auto* loadBtn     = new QPushButton("Load layout…", this);
-    auto* openChartBtn= new QPushButton("Open chart…", this);
-    auto* saveChartBtn= new QPushButton("Save chart…", this);
-    auto* redrawBtn   = new QPushButton("Redraw",   this);
+    // ---- Top action bar: file / layout / redraw ----------------------
+    auto* actionBar = new QWidget(this);
+    style::applyToolbarStrip(actionBar);
+    auto* ab = new QHBoxLayout(actionBar);
+    ab->setContentsMargins(8, 4, 8, 4);
+    ab->setSpacing(4);
+    auto barBtn = [&](style::Glyph glyph, const QString& text,
+                      const QString& tip) {
+        auto* b = new QToolButton(actionBar);
+        b->setIcon(style::icon(glyph));
+        b->setText(text);
+        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        b->setToolTip(tip);
+        ab->addWidget(b);
+        return b;
+    };
+    auto* openChartBtn = barBtn(style::Glyph::FolderOpen, "Open chart…",
+        "Open .h5 / .mf4 / .csv / .txt — the channels land in the shared "
+        "signal store. An embedded plot layout is restored automatically.");
+    auto* saveChartBtn = barBtn(style::Glyph::Save, "Save chart…",
+        "Export channels to HDF5 / MDF4 / CSV with per-domain filters and "
+        "time range; the current plot layout is embedded.");
+    ab->addSpacing(12);
+    auto* saveLayoutBtn = barBtn(style::Glyph::Save, "Save layout…",
+        "Save Y axes, channel→axis assignments, and view mode to a "
+        ".scolayout file (no signal data).");
+    auto* loadLayoutBtn = barBtn(style::Glyph::FolderOpen, "Load layout…",
+        "Restore Y axes, channel→axis assignments, and view mode from a "
+        ".scolayout file.");
+    ab->addStretch();
+    auto* redrawBtn = new QPushButton(
+        style::icon(style::Glyph::Refresh, Qt::white), "Redraw", actionBar);
+    redrawBtn->setProperty("accent", true);
+    redrawBtn->setToolTip(
+        "Re-evaluate every formula channel against the current source data, "
+        "then refresh the chart. The chart deliberately stays frozen while "
+        "recording until you redraw.");
+    ab->addWidget(redrawBtn);
 
-    auto* chBtnRow = new QHBoxLayout();
-    chBtnRow->addWidget(addChBtn);
-    chBtnRow->addWidget(editChBtn);
-    chBtnRow->addWidget(removeChBtn);
-    auto* axisBtnRow = new QHBoxLayout();
-    axisBtnRow->addWidget(addAxisBtn);
-    axisBtnRow->addWidget(delAxisBtn);
-    auto* layoutBtnRow = new QHBoxLayout();
-    layoutBtnRow->addWidget(saveBtn);
-    layoutBtnRow->addWidget(loadBtn);
-    auto* chartBtnRow = new QHBoxLayout();
-    chartBtnRow->addWidget(openChartBtn);
-    chartBtnRow->addWidget(saveChartBtn);
-
-    auto* viewRow = new QHBoxLayout();
-    viewRow->addWidget(new QLabel("View:", this));
+    // ---- Left panel: view / channels / axes ---------------------------
     viewCombo_ = new QComboBox(this);
     viewCombo_->addItem("Time  (t [s])");
     viewCombo_->addItem("Frequency  (f [Hz])");
@@ -95,7 +115,6 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         "Frequency: show only frequency-domain channels (FFT).\n"
         "XY: pick one channel as the X axis; Y candidates are filtered "
         "to channels with the same domain as X.");
-    viewRow->addWidget(viewCombo_, /*stretch=*/1);
 
     // X-channel selector for XY view. Sits directly under the View combo
     // and is hidden in Time / Frequency mode.
@@ -107,28 +126,73 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     xyXLayout->addWidget(xyXCombo_, /*stretch=*/1);
     xyXRow_->setVisible(false);
 
-    auto* leftLayout = new QVBoxLayout();
-    leftLayout->addLayout(viewRow);
+    auto smallBtn = [this](style::Glyph glyph, const QString& tip) {
+        auto* b = new QToolButton(this);
+        b->setIcon(style::icon(glyph));
+        b->setToolTip(tip);
+        return b;
+    };
+    auto* addChBtn    = smallBtn(style::Glyph::Plus,
+        "Add a channel — a formula over existing channels, or a copy "
+        "(autocomplete with Tab).");
+    auto* editChBtn   = smallBtn(style::Glyph::Pencil,
+        "Edit the selected formula channel (double-click also works).");
+    auto* removeChBtn = smallBtn(style::Glyph::Minus,
+        "Remove the selected channel from the store.");
+    auto* addAxisBtn  = smallBtn(style::Glyph::Plus,
+        "Add a Y axis (alternates left / right). Assign channels to it in "
+        "the Axis column.");
+    auto* delAxisBtn  = smallBtn(style::Glyph::Minus,
+        "Remove the last Y axis (it must have no channels assigned).");
+
+    auto* chHeader = new QHBoxLayout();
+    chHeader->setSpacing(2);
+    chHeader->addWidget(style::sectionLabel("Channels", this));
+    chHeader->addStretch();
+    chHeader->addWidget(addChBtn);
+    chHeader->addWidget(editChBtn);
+    chHeader->addWidget(removeChBtn);
+
+    auto* axHeader = new QHBoxLayout();
+    axHeader->setSpacing(2);
+    axHeader->addWidget(style::sectionLabel("Y axes", this));
+    axHeader->addStretch();
+    axHeader->addWidget(addAxisBtn);
+    axHeader->addWidget(delAxisBtn);
+
+    auto* leftPanel = new QWidget(this);
+    leftPanel->setMinimumWidth(250);
+    auto* leftLayout = new QVBoxLayout(leftPanel);
+    leftLayout->setContentsMargins(8, 6, 4, 8);
+    leftLayout->setSpacing(6);
+    leftLayout->addWidget(style::sectionLabel("View", leftPanel));
+    leftLayout->addWidget(viewCombo_);
     leftLayout->addWidget(xyXRow_);
-    leftLayout->addWidget(new QLabel("Channels", this));
+    leftLayout->addSpacing(4);
+    leftLayout->addLayout(chHeader);
     leftLayout->addWidget(table_, /*stretch=*/1);
-    leftLayout->addLayout(chBtnRow);
-    leftLayout->addLayout(axisBtnRow);
-    leftLayout->addLayout(layoutBtnRow);
-    leftLayout->addLayout(chartBtnRow);
-    leftLayout->addWidget(redrawBtn);
+    leftLayout->addLayout(axHeader);
 
-    auto* root = new QHBoxLayout(this);
-    root->addLayout(leftLayout);
-    root->addWidget(scope_, /*stretch=*/1);
+    auto* split = new QSplitter(Qt::Horizontal, this);
+    split->addWidget(leftPanel);
+    split->addWidget(scope_);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+    split->setSizes({320, 1100});
 
-    connect(redrawBtn,    &QPushButton::clicked, this, &AnalyserPlot::redrawAll);
-    connect(saveBtn,      &QPushButton::clicked, this, &AnalyserPlot::saveLayoutDialog);
-    connect(loadBtn,      &QPushButton::clicked, this, &AnalyserPlot::loadLayoutDialog);
-    connect(addChBtn,     &QPushButton::clicked, this, &AnalyserPlot::addChannelDialog);
-    connect(editChBtn,    &QPushButton::clicked, this, &AnalyserPlot::editChannelDialog);
-    connect(saveChartBtn, &QPushButton::clicked, this, &AnalyserPlot::saveChartDialog);
-    connect(openChartBtn, &QPushButton::clicked, this, &AnalyserPlot::openChartDialog);
+    auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+    root->addWidget(actionBar);
+    root->addWidget(split, /*stretch=*/1);
+
+    connect(redrawBtn,     &QPushButton::clicked, this, &AnalyserPlot::redrawAll);
+    connect(saveLayoutBtn, &QToolButton::clicked, this, &AnalyserPlot::saveLayoutDialog);
+    connect(loadLayoutBtn, &QToolButton::clicked, this, &AnalyserPlot::loadLayoutDialog);
+    connect(addChBtn,      &QToolButton::clicked, this, &AnalyserPlot::addChannelDialog);
+    connect(editChBtn,     &QToolButton::clicked, this, &AnalyserPlot::editChannelDialog);
+    connect(saveChartBtn,  &QToolButton::clicked, this, &AnalyserPlot::saveChartDialog);
+    connect(openChartBtn,  &QToolButton::clicked, this, &AnalyserPlot::openChartDialog);
     connect(viewCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int idx){
         const auto oldDomain = activeDomain();
@@ -201,7 +265,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
             }
         }
     });
-    connect(removeChBtn,  &QPushButton::clicked, this, [this]{
+    connect(removeChBtn,  &QToolButton::clicked, this, [this]{
         const int r = table_->currentRow();
         if (r < 0) return;
         const QString name = table_->item(r, /*ColName=*/1)->text();
@@ -211,11 +275,11 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
             QMessageBox::Yes | QMessageBox::Cancel);
         if (resp == QMessageBox::Yes) store_.remove(name);
     });
-    connect(addAxisBtn, &QPushButton::clicked, this, [this]{
+    connect(addAxisBtn, &QToolButton::clicked, this, [this]{
         scope_->addYAxis();
         rebuildAxisCombos();
     });
-    connect(delAxisBtn, &QPushButton::clicked, this, [this]{
+    connect(delAxisBtn, &QToolButton::clicked, this, [this]{
         const int last = scope_->yAxisCount() - 1;
         if (last <= 0) return;
         QString err;
@@ -247,6 +311,10 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     // refreshes on an explicit Redraw. See redrawAll().
     connect(scope_, &scope::plot::ScopePlot::yAxesChanged,
             this, [this]{ rebuildAxisCombos(); });
+    // Light/dark flips change the axis base palette → re-derive trace pens
+    // and table swatches.
+    connect(scope_, &scope::plot::ScopePlot::themePaletteChanged,
+            this, [this]{ recolorChannels(); });
 
     rebuildXyXCombo();
     rebuildTable();
@@ -420,15 +488,22 @@ void AnalyserPlot::onVisibilityChanged(int row) {
 
 void AnalyserPlot::recolorChannels() {
     // For each axis, give the Nth channel on it the Nth shade derived from
-    // that axis's base colour.
+    // that axis's base colour. The table row mirrors the trace colour as a
+    // swatch; hidden channels get a hollow placeholder instead.
     QHash<int, int> perAxisCounter;
     for (int r = 0; r < table_->rowCount(); ++r) {
-        const QString name = table_->item(r, ColName)->text();
-        if (!plotted_.contains(name)) continue;
+        auto* nameItem = table_->item(r, ColName);
+        const QString name = nameItem->text();
+        if (!plotted_.contains(name)) {
+            nameItem->setIcon(style::hollowSwatch(
+                palette().color(QPalette::PlaceholderText)));
+            continue;
+        }
         const int axisIdx = axisIndexForRow(r);
         const int onAxis  = perAxisCounter[axisIdx]++;
         const QColor c = scope_->deriveChannelColor(axisIdx, onAxis);
         plotted_[name]->setPen(QPen(c));
+        nameItem->setIcon(style::colorSwatch(c));
     }
 }
 

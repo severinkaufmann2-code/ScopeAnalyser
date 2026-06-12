@@ -33,7 +33,10 @@ namespace {
 constexpr double kZoomStep = 0.85;
 constexpr double kPanFraction = 0.10;
 
-const std::array<QColor, 8> kAxisPalette = {
+// Axis (and therefore channel) base colours per theme. Y1 is the neutral
+// "ink" colour; the rest are picked for contrast against the respective
+// plot background.
+const std::array<QColor, 8> kAxisPaletteLight = {
     QColor( 30, 30, 30),    // Y1 - neutral dark
     QColor(217, 83, 25),    // Y2 - orange
     QColor( 60,120, 30),    // Y3 - green
@@ -43,6 +46,33 @@ const std::array<QColor, 8> kAxisPalette = {
     QColor(162, 20, 47),    // Y7 - red
     QColor( 77,190,238),    // Y8 - light blue
 };
+
+const std::array<QColor, 8> kAxisPaletteDark = {
+    QColor(231,234,238),    // Y1 - neutral light
+    QColor(255,159, 90),    // Y2 - orange
+    QColor(126,206, 88),    // Y3 - green
+    QColor(199,146,234),    // Y4 - purple
+    QColor( 77,171,247),    // Y5 - blue
+    QColor(255,212, 59),    // Y6 - yellow
+    QColor(255,107,107),    // Y7 - red
+    QColor(102,217,239),    // Y8 - cyan
+};
+
+// 0..1 mix of a towards b.
+QColor mixColor(const QColor& a, const QColor& b, double t) {
+    return QColor(static_cast<int>(a.red()   + (b.red()   - a.red())   * t),
+                  static_cast<int>(a.green() + (b.green() - a.green()) * t),
+                  static_cast<int>(a.blue()  + (b.blue()  - a.blue())  * t));
+}
+
+QColor withAlphaCh(QColor c, int a) { c.setAlpha(a); return c; }
+
+// Theme detection by background lightness — works for any palette the app
+// (or a standalone host) installs, with no dependency on the style lib.
+const std::array<QColor, 8>& axisPaletteFor(const QWidget* w) {
+    const bool dark = w->palette().color(QPalette::Base).lightness() < 128;
+    return dark ? kAxisPaletteDark : kAxisPaletteLight;
+}
 
 QPointF toPlotCoords(QCustomPlot* plot, QPointF pixel) {
     return {plot->xAxis->pixelToCoord(pixel.x()),
@@ -114,10 +144,10 @@ ScopePlot::ScopePlot(QWidget* parent)
     impl_->plot->setContextMenuPolicy(Qt::DefaultContextMenu);
     impl_->plot->installEventFilter(this);
 
-    // Track the default Y axis as index 0 and give it the first palette entry.
+    // Track the default Y axis as index 0; applyThemeColors() at the end of
+    // the ctor gives it the first palette entry.
     impl_->yAxes.append(impl_->plot->yAxis);
     impl_->plot->yAxis->setLabel("Y1");
-    styleAxis(impl_->plot->yAxis, kAxisPalette[0]);
     impl_->autoFit[impl_->plot->yAxis] = true;
 
     // Hook range-changed on the primary Y axis so QCustomPlot's iRangeDrag
@@ -138,9 +168,14 @@ ScopePlot::ScopePlot(QWidget* parent)
             });
 
     // ---- Toolbar -------------------------------------------------------
+    // "toolbarStrip" + WA_StyledBackground hooks the app stylesheet's
+    // toolbar-zone styling (strip background + bottom hairline) when the
+    // shell theme is active; without a stylesheet it stays a plain row.
     impl_->toolbar = new QWidget(this);
+    impl_->toolbar->setProperty("scopeRole", "toolbarStrip");
+    impl_->toolbar->setAttribute(Qt::WA_StyledBackground, true);
     auto* tb = new QHBoxLayout(impl_->toolbar);
-    tb->setContentsMargins(2, 2, 2, 2);
+    tb->setContentsMargins(8, 4, 8, 4);
     tb->setSpacing(2);
 
     auto makeBtn = [this, tb](const QString& text, const QString& tooltip,
@@ -148,7 +183,7 @@ ScopePlot::ScopePlot(QWidget* parent)
         auto* b = new QToolButton(impl_->toolbar);
         b->setText(text);
         b->setToolTip(tooltip);
-        b->setAutoRaise(false);
+        b->setAutoRaise(true);
         connect(b, &QToolButton::clicked, this, slot);
         tb->addWidget(b);
         return b;
@@ -158,7 +193,7 @@ ScopePlot::ScopePlot(QWidget* parent)
         auto* b = new QToolButton(impl_->toolbar);
         b->setText(text);
         b->setToolTip(tooltip);
-        b->setAutoRaise(false);
+        b->setAutoRaise(true);
         connect(b, &QToolButton::clicked, this, fn);
         tb->addWidget(b);
         return b;
@@ -195,7 +230,7 @@ ScopePlot::ScopePlot(QWidget* parent)
             "Click two points to mark Δx / Δy / 1/|Δx|.  Right-click "
             "clears.  Click again to leave measurement mode.");
         mb->setCheckable(true);
-        mb->setAutoRaise(false);
+        mb->setAutoRaise(true);
         connect(mb, &QToolButton::toggled, this,
                 [this](bool on){ setMeasureMode(on); });
         connect(this, &ScopePlot::measureModeChanged, mb,
@@ -308,9 +343,65 @@ ScopePlot::ScopePlot(QWidget* parent)
     sc(QKeySequence(Qt::Key_Right), [this]{ panBy( kPanFraction, 0); });
     sc(QKeySequence(Qt::Key_Up),    [this]{ panBy(0, -kPanFraction); });
     sc(QKeySequence(Qt::Key_Down),  [this]{ panBy(0,  kPanFraction); });
+
+    applyThemeColors();
 }
 
 ScopePlot::~ScopePlot() = default;
+
+void ScopePlot::applyThemeColors() {
+    auto* plot = impl_->plot;
+    const QPalette pal = palette();
+    const bool   dark   = pal.color(QPalette::Base).lightness() < 128;
+    const QColor canvas = pal.color(QPalette::Base);    // plot area
+    const QColor frame  = pal.color(QPalette::Window);  // outside the axes
+    const QColor text   = pal.color(QPalette::Text);
+    const QColor sub    = mixColor(text, frame, 0.35);  // ticks, secondary ink
+    const QColor gridC  = mixColor(text, canvas, dark ? 0.84 : 0.88);
+
+    plot->setBackground(QBrush(frame));
+    plot->axisRect()->setBackground(QBrush(canvas));
+
+    styleAxis(plot->xAxis, sub);
+    const auto& axisColors = axisPaletteFor(this);
+    for (int i = 0; i < impl_->yAxes.size(); ++i) {
+        styleAxis(impl_->yAxes[i], axisColors[i % axisColors.size()]);
+    }
+    auto styleGrid = [&](QCPAxis* ax) {
+        ax->grid()->setPen(QPen(gridC, 1));
+        ax->grid()->setZeroLinePen(QPen(mixColor(text, canvas, dark ? 0.6 : 0.66), 1));
+    };
+    styleGrid(plot->xAxis);
+    for (auto* ax : impl_->yAxes) styleGrid(ax);
+
+    plot->legend->setBrush(QBrush(withAlphaCh(canvas, 235)));
+    plot->legend->setBorderPen(QPen(mixColor(text, frame, 0.75)));
+    plot->legend->setTextColor(text);
+
+    const QColor crossC = withAlphaCh(sub, 170);
+    impl_->crossV->setPen(QPen(crossC, 1, Qt::DashLine));
+    impl_->crossH->setPen(QPen(crossC, 1, Qt::DashLine));
+    impl_->crossText->setColor(text);
+    impl_->crossText->setBrush(QBrush(withAlphaCh(canvas, 210)));
+    impl_->crossText->setPadding(QMargins(4, 2, 4, 2));
+
+    const QColor accent = pal.color(QPalette::Highlight);
+    impl_->regionRect->setPen(QPen(accent, 1, Qt::DashLine));
+    impl_->regionRect->setBrush(QBrush(withAlphaCh(accent, 40)));
+
+    // Measurement overlay keeps its orange identity; only the label's
+    // backdrop follows the canvas.
+    impl_->measureText->setBrush(QBrush(withAlphaCh(canvas, 215)));
+}
+
+void ScopePlot::changeEvent(QEvent* ev) {
+    QWidget::changeEvent(ev);
+    if (ev->type() == QEvent::PaletteChange) {
+        applyThemeColors();
+        emit themePaletteChanged();
+        impl_->plot->replot(QCustomPlot::rpQueuedReplot);
+    }
+}
 
 QCustomPlot* ScopePlot::plot() const { return impl_->plot; }
 
@@ -413,7 +504,8 @@ int ScopePlot::addYAxis(const QString& label, Qt::Alignment side) {
                                   : label;
     ax->setLabel(actualLabel);
     ax->setVisible(true);
-    styleAxis(ax, kAxisPalette[idx % kAxisPalette.size()]);
+    const auto& axisColors = axisPaletteFor(this);
+    styleAxis(ax, axisColors[idx % axisColors.size()]);
     impl_->yAxes.append(ax);
     impl_->autoFit[ax] = true;
     connect(ax, QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged), this,
@@ -494,22 +586,35 @@ int ScopePlot::closestYAxisToPos(QPointF pixelPos) const {
 
 QColor ScopePlot::axisBaseColor(int axisIndex) const {
     if (axisIndex < 0) axisIndex = 0;
-    return kAxisPalette[axisIndex % kAxisPalette.size()];
+    const auto& axisColors = axisPaletteFor(this);
+    return axisColors[axisIndex % axisColors.size()];
 }
 
 QColor ScopePlot::deriveChannelColor(int axisIndex, int channelIndexOnAxis) const {
     // The first channel on each axis renders in the axis's exact base colour
-    // (so the trace and the axis label match perfectly). Subsequent channels
-    // share the hue but get distinct shades by adjusting saturation + value.
+    // (so the trace and the axis label match perfectly).
     const QColor base = axisBaseColor(axisIndex);
-    const int idx = ((channelIndexOnAxis % 6) + 6) % 6;
-    if (idx == 0) return base;
+    if (channelIndexOnAxis == 0) return base;
 
-    static const int kDeltaSat[6] = {  0,  +20,  -30,  +40,  -50,  +60};
-    static const int kDeltaVal[6] = {  0,  -40,  +40,  -70,  +70,  -90};
     int h, s, v, a;
     base.getHsv(&h, &s, &v, &a);
-    if (h < 0) h = 0;   // grayscale → fall back to deterministic hue
+
+    // Neutral base (the default Y1): shades of gray are indistinguishable,
+    // so further channels take distinct hues from the axis palette instead
+    // (skipping its neutral first entry). This is the common single-axis,
+    // many-channels case.
+    if (s < 40) {
+        const auto& pal = axisPaletteFor(this);
+        const int n = static_cast<int>(pal.size()) - 1;
+        return pal[1 + ((channelIndexOnAxis - 1) % n)];
+    }
+
+    // Coloured axis: subsequent channels share the hue but get distinct
+    // shades by adjusting saturation + value.
+    const int idx = ((channelIndexOnAxis % 6) + 6) % 6;
+    if (idx == 0) return base;
+    static const int kDeltaSat[6] = {  0,  +20,  -30,  +40,  -50,  +60};
+    static const int kDeltaVal[6] = {  0,  -40,  +40,  -70,  +70,  -90};
     s = std::clamp(s + kDeltaSat[idx], 60, 255);
     v = std::clamp(v + kDeltaVal[idx], 30, 255);
     return QColor::fromHsv(h, s, v, a);

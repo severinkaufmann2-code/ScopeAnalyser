@@ -14,3 +14,4 @@
 - [stack.md](stack.md) — language, framework, library, build-system decisions
 - [sampling_model.md](sampling_model.md) — the two acquisition modes and the 10 µs caveat
 - [windows_vm.md](windows_vm.md) — how to reach the Windows/TwinCAT VM for test deployments
+- [ui_style.md](ui_style.md) — theme/style system (scope_style lib), QSS property contract, offscreen screenshot verification

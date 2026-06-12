@@ -8,6 +8,8 @@
 
 #include "MappingPanel.h"
 
+#include "scope/style/StyleKit.h"
+
 #include <nlohmann/json.hpp>
 
 #include <QAbstractItemModel>
@@ -26,6 +28,7 @@
 #include <QStackedWidget>
 #include <QTableView>
 #include <QTableWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -93,10 +96,12 @@ struct H5SelectorPanel : public QWidget {
         table->verticalHeader()->setVisible(false);
         table->setSelectionMode(QAbstractItemView::NoSelection);
         table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        table->setAlternatingRowColors(true);
 
         auto* allBtn   = new QPushButton("Select all", this);
         auto* noneBtn  = new QPushButton("Select none", this);
         auto* applyBtn = new QPushButton("Apply (import selected)", this);
+        applyBtn->setProperty("accent", true);
 
         connect(allBtn,  &QPushButton::clicked, this, [this]{ setAllChecked(true); });
         connect(noneBtn, &QPushButton::clicked, this, [this]{ setAllChecked(false); });
@@ -140,7 +145,9 @@ struct H5SelectorPanel : public QWidget {
         bulkRow->addStretch();
 
         auto* root = new QVBoxLayout(this);
-        root->addWidget(new QLabel("HDF5 channels (tick to import):", this));
+        root->setContentsMargins(4, 6, 8, 8);
+        root->setSpacing(6);
+        root->addWidget(scope::style::sectionLabel("HDF5 channels — tick to import", this));
         root->addWidget(table, /*stretch=*/1);
         root->addLayout(btnRow);
         root->addLayout(bulkRow);
@@ -337,45 +344,69 @@ QString uniqueStoreName(const core::SignalStore& store, const QString& base) {
 ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* parent)
     : QWidget(parent), store_(store), impl_(std::make_unique<Impl>()) {
 
-    auto* openChartBtn = new QPushButton("Open chart…", this);
-    openChartBtn->setToolTip(
+    // ---- Top action bar ----------------------------------------------
+    auto* toolbar = new QWidget(this);
+    scope::style::applyToolbarStrip(toolbar);
+    auto* topBar = new QHBoxLayout(toolbar);
+    topBar->setContentsMargins(8, 4, 8, 4);
+    topBar->setSpacing(4);
+    auto barBtn = [&](scope::style::Glyph glyph, const QString& text,
+                      const QString& tip) {
+        auto* b = new QToolButton(toolbar);
+        b->setIcon(scope::style::icon(glyph));
+        b->setText(text);
+        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        if (!tip.isEmpty()) b->setToolTip(tip);
+        topBar->addWidget(b);
+        return b;
+    };
+    auto* openChartBtn = barBtn(scope::style::Glyph::FolderOpen, "Open chart…",
         "Open .h5 / .mf4 / .csv / .txt. Recordings (.h5 / .mf4) go "
         "straight to the signal store; CSV files land in the mapping "
         "panel so you can review the column assignments before Apply. "
         "If the CSV carries a scope metadata header the mapping panel "
         "is pre-filled.");
-    auto* saveWsBtn    = new QPushButton("Save workspace…", this);
-    auto* loadWsBtn    = new QPushButton("Load workspace…", this);
-    auto* applyAllBtn  = new QPushButton("Apply all (import signals)", this);
-    auto* saveChartBtn = new QPushButton("Save chart…", this);
-    saveChartBtn->setToolTip(
+    topBar->addSpacing(12);
+    auto* saveWsBtn = barBtn(scope::style::Glyph::Save, "Save workspace…",
+        "Save the list of opened files with their mapping profiles and "
+        "channel selections to a .scaws file.");
+    auto* loadWsBtn = barBtn(scope::style::Glyph::FolderOpen, "Load workspace…",
+        "Reopen a saved set of files with their mapping profiles and "
+        "channel selections.");
+    topBar->addSpacing(12);
+    auto* saveChartBtn = barBtn(scope::style::Glyph::Save, "Save chart…",
         "Unified save dialog: pick HDF5 / MDF4 / CSV, per-domain filters, "
         "time range, split-files toggle, CSV options.");
-
-    impl_->statusLabel = new QLabel("No file open", this);
-
-    auto* topBar = new QHBoxLayout();
-    topBar->addWidget(openChartBtn);
-    topBar->addSpacing(20);
-    topBar->addWidget(saveWsBtn);
-    topBar->addWidget(loadWsBtn);
-    topBar->addWidget(applyAllBtn);
-    topBar->addSpacing(20);
-    topBar->addWidget(saveChartBtn);
     topBar->addStretch();
+    impl_->statusLabel = new QLabel("No file open", this);
+    impl_->statusLabel->setProperty("scopeRole", "dim");
     topBar->addWidget(impl_->statusLabel);
+    topBar->addSpacing(10);
+    auto* applyAllBtn = new QPushButton("Apply all (import signals)", toolbar);
+    applyAllBtn->setProperty("accent", true);
+    applyAllBtn->setToolTip(
+        "Import every opened file into the signal store using its current "
+        "mapping / channel selection.");
+    topBar->addWidget(applyAllBtn);
 
     // ---- Left: file list + remove button -----------------------------
     impl_->fileList = new QListWidget(this);
     impl_->fileList->setMinimumWidth(180);
-    impl_->fileList->setMaximumWidth(260);
-    impl_->removeFileBtn = new QPushButton("Remove file", this);
+    impl_->fileList->setMaximumWidth(280);
+    scope::style::installEmptyHint(impl_->fileList,
+        "No files open.\n\nUse “Open chart…” to load a recording or a "
+        "CSV for mapping.");
+    impl_->removeFileBtn = new QPushButton(
+        scope::style::icon(scope::style::Glyph::Minus), "Remove file", this);
+    impl_->removeFileBtn->setToolTip(
+        "Close this file and remove the signals it imported from the store.");
     impl_->removeFileBtn->setEnabled(false);
 
     auto* leftPanel = new QWidget(this);
     auto* leftLayout = new QVBoxLayout(leftPanel);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->addWidget(new QLabel("Opened files:", this));
+    leftLayout->setContentsMargins(8, 6, 4, 8);
+    leftLayout->setSpacing(6);
+    leftLayout->addWidget(scope::style::sectionLabel("Opened files", this));
     leftLayout->addWidget(impl_->fileList, /*stretch=*/1);
     leftLayout->addWidget(impl_->removeFileBtn);
 
@@ -384,6 +415,13 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     impl_->preview->setEditTriggers(QAbstractItemView::NoEditTriggers);
     impl_->preview->setSelectionMode(QAbstractItemView::NoSelection);
     impl_->preview->horizontalHeader()->setDefaultSectionSize(100);
+
+    auto* previewPanel = new QWidget(this);
+    auto* previewLayout = new QVBoxLayout(previewPanel);
+    previewLayout->setContentsMargins(4, 6, 4, 8);
+    previewLayout->setSpacing(6);
+    previewLayout->addWidget(scope::style::sectionLabel("File preview", this));
+    previewLayout->addWidget(impl_->preview, /*stretch=*/1);
 
     // ---- Right: mapping panel (CSV) or H5 channel selector ----------
     impl_->mapping    = new ui::MappingPanel(this);
@@ -394,14 +432,16 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
 
     auto* split = new QSplitter(Qt::Horizontal, this);
     split->addWidget(leftPanel);
-    split->addWidget(impl_->preview);
+    split->addWidget(previewPanel);
     split->addWidget(impl_->rightStack);
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 2);
     split->setStretchFactor(2, 1);
 
     auto* root = new QVBoxLayout(this);
-    root->addLayout(topBar);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+    root->addWidget(toolbar);
     root->addWidget(split, /*stretch=*/1);
 
     // ---- File-switching: save current → load clicked ----------------

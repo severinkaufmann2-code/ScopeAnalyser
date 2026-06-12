@@ -5,6 +5,7 @@
 #include "LivePreviewPlot.h"
 
 #include "scope/ads/MockAdsClient.h"
+#include "scope/style/StyleKit.h"
 
 #include <QComboBox>
 #include <QFileDialog>
@@ -41,29 +42,61 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     portSpin_   = new QSpinBox(this);
     portSpin_->setRange(1, 65535);
     portSpin_->setValue(851);
-    connectBtn_    = new QPushButton("Connect", this);
-    disconnectBtn_ = new QPushButton("Disconnect", this);
+    connectBtn_ = new QPushButton(
+        scope::style::icon(scope::style::Glyph::Plug, Qt::white), "Connect", this);
+    connectBtn_->setProperty("accent", true);
+    disconnectBtn_ = new QPushButton(
+        scope::style::icon(scope::style::Glyph::Unplug), "Disconnect", this);
     disconnectBtn_->setEnabled(false);
-    startBtn_   = new QPushButton("Record", this);
-    stopBtn_    = new QPushButton("Stop", this);
+    startBtn_ = new QPushButton(
+        scope::style::icon(scope::style::Glyph::RecordDot, Qt::white), "Record", this);
+    startBtn_->setProperty("danger", true);
+    startBtn_->setEnabled(false);
+    startBtn_->setToolTip(
+        "Record the channels in the table into an .h5 session file.\n"
+        "Enabled once a source is connected.");
+    stopBtn_ = new QPushButton(
+        scope::style::icon(scope::style::Glyph::Stop), "Stop", this);
     stopBtn_->setEnabled(false);
-    statusLabel_ = new QLabel("Disconnected", this);
+    statusLabel_ = new QLabel(this);
+    statusLabel_->setProperty("scopeRole", "dim");
+    connPill_ = scope::style::makePill(this);
+    scope::style::setPill(connPill_, scope::style::PillTone::Neutral, "Disconnected");
 
-    auto* topBar = new QHBoxLayout();
-    topBar->addWidget(new QLabel("Source:", this));
-    topBar->addWidget(sourceCombo_);
-    topBar->addWidget(hostLabel_);
-    topBar->addWidget(hostEdit_);
-    topBar->addWidget(netIdLabel_);
-    topBar->addWidget(netIdEdit_);
-    topBar->addWidget(portLabel_);
-    topBar->addWidget(portSpin_);
-    topBar->addWidget(connectBtn_);
-    topBar->addWidget(disconnectBtn_);
-    topBar->addStretch();
-    topBar->addWidget(startBtn_);
-    topBar->addWidget(stopBtn_);
-    topBar->addWidget(statusLabel_);
+    auto* srcLabel = new QLabel("Source:", this);
+    srcLabel->setProperty("scopeRole", "dim");
+    auto* connRow = new QHBoxLayout();
+    connRow->setSpacing(6);
+    connRow->addWidget(srcLabel);
+    connRow->addWidget(sourceCombo_);
+    connRow->addSpacing(8);
+    connRow->addWidget(hostLabel_);
+    connRow->addWidget(hostEdit_);
+    connRow->addWidget(netIdLabel_);
+    connRow->addWidget(netIdEdit_);
+    connRow->addWidget(portLabel_);
+    connRow->addWidget(portSpin_);
+    connRow->addSpacing(8);
+    connRow->addWidget(connectBtn_);
+    connRow->addWidget(disconnectBtn_);
+    connRow->addStretch();
+    connRow->addWidget(connPill_);
+
+    auto* captureRow = new QHBoxLayout();
+    captureRow->setSpacing(6);
+    captureRow->addWidget(startBtn_);
+    captureRow->addWidget(stopBtn_);
+    captureRow->addSpacing(10);
+    captureRow->addWidget(statusLabel_);
+    captureRow->addStretch();
+
+    auto* header = new QWidget(this);
+    scope::style::applyToolbarStrip(header);
+    auto* headerLayout = new QVBoxLayout(header);
+    headerLayout->setContentsMargins(8, 6, 8, 6);
+    headerLayout->setSpacing(4);
+    headerLayout->addLayout(connRow);
+    headerLayout->addLayout(captureRow);
 
     auto applySourceVisibility = [this]{
         const bool isAds = sourceCombo_->currentText() == "ADS over TCP";
@@ -95,7 +128,9 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     topBottom->setStretchFactor(1, 2);
 
     auto* layout = new QVBoxLayout(this);
-    layout->addLayout(topBar);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    layout->addWidget(header);
     layout->addWidget(topBottom);
 
     connect(connectBtn_,    &QPushButton::clicked, this, &RecorderWidget::onConnectClicked);
@@ -126,11 +161,17 @@ void RecorderWidget::onConnectClicked() {
         client_.reset();
         return;
     }
-    statusLabel_->setText(sourceCombo_->currentText() == "Demo (Mock)"
-                              ? QString("Connected to Demo source")
-                              : QString("Connected to ") + route.netId);
+    if (sourceCombo_->currentText() == "Demo (Mock)") {
+        connectedLabel_ = "Connected — Demo";
+    } else {
+        connectedLabel_ = QString("Connected — %1")
+            .arg(route.netId.isEmpty() ? route.host : route.netId);
+    }
+    scope::style::setPill(connPill_, scope::style::PillTone::Ok, connectedLabel_);
+    statusLabel_->clear();
     connectBtn_->setEnabled(false);
     disconnectBtn_->setEnabled(true);
+    startBtn_->setEnabled(true);
     onRefreshSymbols();
 }
 
@@ -138,9 +179,11 @@ void RecorderWidget::onDisconnectClicked() {
     onStopClicked();
     if (client_) client_->disconnect();
     client_.reset();
-    statusLabel_->setText("Disconnected");
+    scope::style::setPill(connPill_, scope::style::PillTone::Neutral, "Disconnected");
+    statusLabel_->clear();
     connectBtn_->setEnabled(true);
     disconnectBtn_->setEnabled(false);
+    startBtn_->setEnabled(false);
     symbols_->setSymbols({});
 }
 
@@ -203,14 +246,21 @@ void RecorderWidget::onStartClicked() {
     }
     startBtn_->setEnabled(false);
     stopBtn_->setEnabled(true);
+    scope::style::setPill(connPill_, scope::style::PillTone::Rec, "● Recording");
 }
 
 void RecorderWidget::onStopClicked() {
     if (!session_) return;
     session_->stop();
     session_.reset();
-    startBtn_->setEnabled(true);
+    const bool connected = client_ && client_->isConnected();
+    startBtn_->setEnabled(connected);
     stopBtn_->setEnabled(false);
+    if (connected) {
+        scope::style::setPill(connPill_, scope::style::PillTone::Ok, connectedLabel_);
+    } else {
+        scope::style::setPill(connPill_, scope::style::PillTone::Neutral, "Disconnected");
+    }
 }
 
 void RecorderWidget::onChannelOverrun(QString name, std::uint64_t total) {

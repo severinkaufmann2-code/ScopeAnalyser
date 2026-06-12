@@ -1,5 +1,6 @@
 #include "scope/converter/ConverterWidget.h"
 #include "scope/core/SignalStore.h"
+#include "scope/style/Theme.h"
 
 #include <QApplication>
 #include <QMainWindow>
@@ -7,6 +8,9 @@
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("ScopeConverter");
+    QApplication::setOrganizationName("ScopeAnalyser");
+
+    scope::style::applySavedTheme();
 
     scope::core::SignalStore store;
     auto* widget = new scope::converter::ConverterWidget(store);
