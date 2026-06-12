@@ -7,6 +7,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QPointer>
 #include <QStyle>
 #include <QVariant>
 
@@ -255,10 +256,17 @@ namespace {
 
 // Self-managing overlay label: tracks the view's model row count and the
 // view's size; no external bookkeeping needed after install.
+//
+// Teardown safety: while the view is being destroyed it deletes its
+// viewport BEFORE its internal model, and the model's destruction emits
+// modelReset — which would land here with the viewport already freed
+// (use-after-free, found by ASan as an intermittent crash at shutdown).
+// Both pointers are therefore QPointers, checked before every use; a null
+// viewport means "the view is going away — do nothing".
 class EmptyHintLabel : public QLabel {
 public:
     EmptyHintLabel(QAbstractItemView* view, const QString& text)
-        : QLabel(text, view), view_(view) {
+        : QLabel(text, view), view_(view), viewport_(view->viewport()) {
         setProperty("scopeRole", "emptyHint");
         setAlignment(Qt::AlignCenter);
         setWordWrap(true);
@@ -267,7 +275,7 @@ public:
         // viewport (and deferred while the page is hidden), so watch both
         // plus Show.
         view_->installEventFilter(this);
-        view_->viewport()->installEventFilter(this);
+        viewport_->installEventFilter(this);
         if (auto* m = view_->model()) {
             auto refresh = [this] { updateVisibility(); };
             connect(m, &QAbstractItemModel::rowsInserted,  this, refresh);
@@ -280,7 +288,7 @@ public:
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override {
-        if ((obj == view_ || obj == view_->viewport())
+        if ((obj == view_ || obj == viewport_)
             && (ev->type() == QEvent::Resize || ev->type() == QEvent::Show)) {
             reposition();
         }
@@ -289,18 +297,21 @@ protected:
 
 private:
     void updateVisibility() {
+        if (!view_ || !viewport_) return;
         const auto* m = view_->model();
         setVisible(!m || m->rowCount() == 0);
         reposition();
     }
     void reposition() {
-        const QRect r = view_->viewport()->geometry();
+        if (!viewport_) return;
+        const QRect r = viewport_->geometry();
         const int margin = 18;
         setGeometry(r.adjusted(margin, margin, -margin, -margin));
         raise();
     }
 
-    QAbstractItemView* view_;
+    QPointer<QAbstractItemView> view_;
+    QPointer<QWidget>           viewport_;
 };
 
 }  // namespace

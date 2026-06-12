@@ -134,12 +134,10 @@ jobs:
         env:
           # No display on the runner; render Qt widgets off-screen.
           QT_QPA_PLATFORM: offscreen
-        # Same exclusion as linux.yml: the QCustomPlot widget fixtures pass
-        # their assertions but intermittently crash the offscreen process
-        # (access violation here, SIGBUS on Linux) — became flaky on this
-        # runner too once the fixture grew. They run with a real display
-        # locally; exclude them here rather than mask failures suite-wide.
-        run: ctest --test-dir build -C $env:BUILD_TYPE --output-on-failure -E 'AnalyserPlotLayoutTest|AddChannelDialogTest'
+        # (An earlier exclusion of the widget fixtures here masked what
+        # turned out to be a real use-after-free in the empty-hint overlay
+        # during view teardown — fixed in StyleKit; full coverage restored.)
+        run: ctest --test-dir build -C $env:BUILD_TYPE --output-on-failure
 
       # --- Package ------------------------------------------------------------
       # windeployqt copies the Qt runtime DLLs/plugins next to each executable;
