@@ -13,6 +13,7 @@ add_executable(scope_tests
     test_mock_pipeline.cpp
     test_scope_plot.cpp
     test_analyser_layout.cpp
+    test_undo_stack.cpp
 )
 
 # test_analyser_layout.cpp drives AnalyserPlot directly; its header lives in

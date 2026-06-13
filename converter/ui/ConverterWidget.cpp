@@ -10,6 +10,7 @@
 #include "MappingPanel.h"
 
 #include "scope/style/StyleKit.h"
+#include "scope/core/UndoStack.h"
 
 #include <nlohmann/json.hpp>
 
@@ -21,15 +22,18 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QHeaderView>
+#include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSet>
 #include <QSize>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QTableView>
 #include <QTableWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -58,10 +62,12 @@ struct OpenedFile {
     QString displayName;
 
     // CSV / JSON: a grid-backed source (CsvSource / JsonSource) mapped via the
-    // MappingPanel.
-    std::unique_ptr<TabularSource> grid;
+    // MappingPanel. shared_ptr (not unique_ptr) so OpenedFile is copyable: an
+    // undo snapshot copies the value but shares the heavy, immutable grid /
+    // preview model rather than re-reading the file from disk.
+    std::shared_ptr<TabularSource> grid;
     ConverterProfile profile;
-    std::unique_ptr<QAbstractItemModel> previewModel;
+    std::shared_ptr<QAbstractItemModel> previewModel;
 
     // H5-specific. Signals are loaded once on Open and kept in memory; the
     // user picks which subset to push to the store via the channel-selector
@@ -76,6 +82,19 @@ struct OpenedFile {
     // from this file. Used by Remove to clean up the store and by workspace
     // save to record what's in flight.
     QStringList importedNames;
+};
+
+// One undo/redo snapshot of the Converter document: the open files (value
+// copies — the heavy grid / preview model is shared, only the light profile /
+// selections are deep-copied), the active file, and the channels this tool has
+// imported into the shared store (held by shared_ptr so an undone Remove can
+// re-add them without re-reading the file). The store is shared across tools,
+// so restore only touches the Converter's own imported channels — never ones
+// another tool added.
+struct ConverterSnap {
+    std::vector<OpenedFile>                         files;
+    int                                             activeIndex{-1};
+    QHash<QString, std::shared_ptr<core::Signal>>   imported;
 };
 
 // HDF5 channel-selector widget. Plain QWidget (no Q_OBJECT) — the Apply
@@ -289,10 +308,23 @@ struct ConverterWidget::Impl {
     // currently in the panel. When switching back to the same file
     // (e.g. A→B→A) we can skip the whole table rebuild.
     const OpenedFile* lastH5Source{nullptr};
+
+    // Undo / redo over the file list + per-file mapping/selection + imported
+    // store channels. Snapshot-based; see ConverterSnap.
+    QPushButton* undoBtn{nullptr};
+    QPushButton* redoBtn{nullptr};
+    QTimer*      commitTimer{nullptr};
+    std::unique_ptr<core::UndoStack<ConverterSnap>> undo;
 };
 
 // Forward decls of helper methods on ConverterWidget
 ConverterWidget::~ConverterWidget() = default;
+
+void ConverterWidget::scheduleCommit() {
+    // Gate out commits made while restoring a snapshot (those aren't edits).
+    if (!impl_->undo || impl_->undo->applying()) return;
+    impl_->commitTimer->start();
+}
 
 // ----------------------------- Helpers --------------------------------
 
@@ -389,6 +421,19 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     auto* loadWsBtn = barBtn(scope::style::Glyph::FolderOpen, "Load workspace…",
         "Reopen a saved set of files with their mapping profiles and "
         "channel selections.");
+    topBar->addSpacing(12);
+    // Undo / redo over the file list, mappings, and imported channels.
+    impl_->undoBtn = new QPushButton(scope::style::icon(scope::style::Glyph::Undo), "", toolbar);
+    impl_->undoBtn->setToolTip("Undo the last change to the file list, mapping, "
+                               "or imported channels (Ctrl+Z).");
+    impl_->undoBtn->setShortcut(QKeySequence::Undo);
+    impl_->undoBtn->setEnabled(false);
+    impl_->redoBtn = new QPushButton(scope::style::icon(scope::style::Glyph::Redo), "", toolbar);
+    impl_->redoBtn->setToolTip("Redo the change undone last (Ctrl+Y / Ctrl+Shift+Z).");
+    impl_->redoBtn->setShortcut(QKeySequence::Redo);
+    impl_->redoBtn->setEnabled(false);
+    topBar->addWidget(impl_->undoBtn);
+    topBar->addWidget(impl_->redoBtn);
     topBar->addSpacing(12);
     auto* saveChartBtn = barBtn(scope::style::Glyph::Save, "Save chart…",
         "Unified save dialog: pick HDF5 / MDF4 / CSV / JSON / HTML, per-domain "
@@ -549,6 +594,72 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         impl_->fileList->addItem(QString("%1 %2").arg(tag, f.displayName));
     };
 
+    // ---- Undo / redo --------------------------------------------------
+    // A snapshot copies the OpenedFile list by value (heavy grid / preview /
+    // h5Signals are shared; only the light profile / selections are copied) and
+    // holds the shared_ptr of every channel this tool imported, so an undone
+    // Remove can re-add them without re-reading the file. Restore reconciles
+    // only the Converter's own imported channels in the shared store.
+    auto captureState = [this]() -> ConverterSnap {
+        ConverterSnap snap;
+        snap.activeIndex = impl_->activeIndex;
+        snap.files.reserve(impl_->files.size());
+        for (auto& fp : impl_->files) {
+            snap.files.push_back(*fp);   // OpenedFile copy
+            for (const auto& n : fp->importedNames)
+                if (auto s = store_.get(n)) snap.imported.insert(n, std::move(s));
+        }
+        return snap;
+    };
+    auto restoreState = [this, loadActiveState, addFileToList](const ConverterSnap& snap) {
+        // 1. Remove only this tool's imported channels that the target snapshot
+        //    no longer has — never touch channels another tool owns.
+        QSet<QString> want;
+        for (auto it = snap.imported.constBegin(); it != snap.imported.constEnd(); ++it)
+            want.insert(it.key());
+        for (auto& fp : impl_->files)
+            for (const auto& n : fp->importedNames)
+                if (!want.contains(n)) store_.remove(n);
+
+        // 2. Rebuild the file list from the snapshot copies.
+        impl_->files.clear();
+        impl_->lastH5Source = nullptr;
+        impl_->files.reserve(snap.files.size());
+        for (const auto& f : snap.files)
+            impl_->files.push_back(std::make_unique<OpenedFile>(f));
+        impl_->activeIndex = snap.activeIndex;
+
+        // 3. Re-add the snapshot's imported signals (add replaces any existing).
+        for (auto it = snap.imported.constBegin(); it != snap.imported.constEnd(); ++it)
+            if (it.value()) store_.add(it.value());
+
+        // 4. Refresh the list widget + the active panel.
+        {
+            QSignalBlocker b(impl_->fileList);
+            impl_->fileList->clear();
+            for (auto& fp : impl_->files) addFileToList(*fp);
+            if (impl_->activeIndex >= 0
+                && impl_->activeIndex < (int)impl_->files.size())
+                impl_->fileList->setCurrentRow(impl_->activeIndex);
+        }
+        loadActiveState();
+    };
+    impl_->commitTimer = new QTimer(this);
+    impl_->commitTimer->setSingleShot(true);
+    impl_->commitTimer->setInterval(0);
+    impl_->undo = std::make_unique<core::UndoStack<ConverterSnap>>(
+        captureState, restoreState,
+        [this]{
+            impl_->undoBtn->setEnabled(impl_->undo->canUndo());
+            impl_->redoBtn->setEnabled(impl_->undo->canRedo());
+        });
+    connect(impl_->commitTimer, &QTimer::timeout, this, [this, saveActiveState]{
+        saveActiveState();          // flush live panel edits into the active file
+        impl_->undo->commit();
+    });
+    connect(impl_->undoBtn, &QPushButton::clicked, this, [this]{ impl_->undo->undo(); });
+    connect(impl_->redoBtn, &QPushButton::clicked, this, [this]{ impl_->undo->redo(); });
+
     // ---- Open CSV ----------------------------------------------------
     // ---- Open recording (.h5 / .mf4): loads all signals into memory,
     //      doesn't push to store until the user picks + Applies. ----
@@ -590,6 +701,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             impl_->fileList->setCurrentRow(impl_->activeIndex);
         }
         loadActiveState();
+        scheduleCommit();
     };
 
     // ---- Open CSV: lands in the mapping panel. If the file carries a
@@ -636,6 +748,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             impl_->fileList->setCurrentRow(impl_->activeIndex);
         }
         loadActiveState();
+        scheduleCommit();
     };
 
     // ---- Open JSON: lands in the mapping panel, exactly like CSV. Native
@@ -676,6 +789,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             impl_->fileList->setCurrentRow(impl_->activeIndex);
         }
         loadActiveState();
+        scheduleCommit();
     };
 
     // ---- One Open chart button — extension dispatch. ----
@@ -745,6 +859,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             f.importedNames << unique;
             store_.add(s);
         }
+        scheduleCommit();   // imported channels changed
         return static_cast<int>(sigs.size());
     };
 
@@ -791,6 +906,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             store_.add(toAdd);
             ++n;
         }
+        if (n > 0) scheduleCommit();   // imported channels changed
         return n;
     };
 
@@ -897,6 +1013,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                     .arg(f.displayName)
                     .arg(f.grid->rowCount())
                     .arg(f.grid->columnCount()));
+            scheduleCommit();   // changed CSV parse options
         } catch (const std::exception& e) {
             QMessageBox::warning(this, "Reparse failed",
                 QString::fromUtf8(e.what()));
@@ -1062,6 +1179,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             impl_->statusLabel->setText("No file open");
             impl_->removeFileBtn->setEnabled(false);
         }
+        scheduleCommit();   // removed a file (and its imported channels)
     });
 
     // ---- Apply all: apply every file in the workspace to the store --
@@ -1310,6 +1428,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             msg += QString(" (missing: %1)").arg(notFound.size());
         }
         impl_->statusLabel->setText(msg);
+        scheduleCommit();   // loading a workspace replaces the file list
     });
 
     // ---- Save chart: same dialog the Analyser uses ----
@@ -1388,6 +1507,16 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                 return;
         }
     });
+
+    // A channel-mapping edit (add / edit / remove a column mapping) is a
+    // document change. parseOptionsChanged + the structural ops above cover
+    // the rest. Gated inside scheduleCommit while restoring.
+    connect(impl_->mapping, &ui::MappingPanel::mappingChanged, this,
+            [this]{ scheduleCommit(); });
+
+    // Seed the baseline (an empty workspace) so the first edit has somewhere
+    // to undo back to.
+    impl_->undo->reset();
 }
 
 }  // namespace scope::converter

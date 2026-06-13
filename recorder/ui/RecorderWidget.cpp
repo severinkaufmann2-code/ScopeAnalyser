@@ -22,6 +22,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -29,6 +30,7 @@
 #include <QSize>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <cstdint>
@@ -149,12 +151,27 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     connect(saveLayoutBtn, &QPushButton::clicked, this, &RecorderWidget::onSaveLayout);
     connect(loadLayoutBtn, &QPushButton::clicked, this, &RecorderWidget::onLoadLayout);
 
+    // Undo / redo over the recorder document (connection + channel table +
+    // preview axes). Icon-only to keep the toolbar compact.
+    undoBtn_ = new QPushButton(scope::style::icon(scope::style::Glyph::Undo), "", this);
+    undoBtn_->setToolTip("Undo the last change to the connection, channel table, "
+                         "or preview (Ctrl+Z).");
+    undoBtn_->setShortcut(QKeySequence::Undo);
+    undoBtn_->setEnabled(false);
+    redoBtn_ = new QPushButton(scope::style::icon(scope::style::Glyph::Redo), "", this);
+    redoBtn_->setToolTip("Redo the change undone last (Ctrl+Y / Ctrl+Shift+Z).");
+    redoBtn_->setShortcut(QKeySequence::Redo);
+    redoBtn_->setEnabled(false);
+
     auto* captureRow = new QHBoxLayout();
     captureRow->setSpacing(6);
     captureRow->addWidget(startBtn_);
     captureRow->addWidget(stopBtn_);
     captureRow->addSpacing(8);
     captureRow->addWidget(saveChartBtn_);
+    captureRow->addSpacing(12);
+    captureRow->addWidget(undoBtn_);
+    captureRow->addWidget(redoBtn_);
     captureRow->addSpacing(12);
     captureRow->addWidget(saveLayoutBtn);
     captureRow->addWidget(loadLayoutBtn);
@@ -227,6 +244,33 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     connect(&recordStore_, &scope::core::SignalStore::channelRemoved,
             this, [this](const QString&){ updateActionButtons(); });
     updateActionButtons();
+
+    // ---- Undo / redo wiring ------------------------------------------
+    commitTimer_ = new QTimer(this);
+    commitTimer_->setSingleShot(true);
+    commitTimer_->setInterval(0);
+    undo_ = std::make_unique<scope::core::UndoStack<QJsonObject>>(
+        [this]{ return captureConfig(); },
+        [this](const QJsonObject& s){ applyConfig(s); },
+        [this]{ refreshUndoButtons(); });
+    connect(commitTimer_, &QTimer::timeout, this, [this]{ undo_->commit(); });
+    connect(undoBtn_, &QPushButton::clicked, this, [this]{ undo_->undo(); });
+    connect(redoBtn_, &QPushButton::clicked, this, [this]{ undo_->redo(); });
+
+    // Commit points: a channel-table edit, or a settled connection-field edit.
+    // (Restores set these programmatically; scheduleCommit() no-ops while the
+    // undo stack is applying, and the line edits only fire on user edits.)
+    connect(channels_, &ui::ChannelTableWidget::changed, this,
+            [this]{ scheduleCommit(); });
+    connect(hostEdit_,  &QLineEdit::editingFinished, this, [this]{ scheduleCommit(); });
+    connect(netIdEdit_, &QLineEdit::editingFinished, this, [this]{ scheduleCommit(); });
+    connect(portSpin_,  &QSpinBox::editingFinished,  this, [this]{ scheduleCommit(); });
+    connect(sourceCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            [this](int){ scheduleCommit(); });
+
+    // Seed the baseline now that every widget exists.
+    undo_->reset();
+    refreshUndoButtons();
 }
 
 RecorderWidget::~RecorderWidget() = default;
@@ -503,32 +547,7 @@ void RecorderWidget::onSaveLayout() {
     QString path = sel.first();
     if (!path.endsWith(".scorec", Qt::CaseInsensitive)) path += ".scorec";
 
-    QJsonObject conn;
-    conn["source"] = sourceCombo_->currentText();
-    conn["host"]   = hostEdit_->text();
-    conn["netId"]  = netIdEdit_->text();
-    conn["port"]   = portSpin_->value();
-
-    QJsonArray chans;
-    for (const auto& r : channels_->rows()) {
-        QJsonObject jc;
-        jc["name"]        = r.name;
-        jc["type"]        = r.type;
-        jc["mode"]        = r.mode;
-        jc["unit"]        = r.unit;
-        jc["cycleUs"]     = static_cast<double>(r.cycleUs);
-        jc["indexGroup"]  = static_cast<double>(r.indexGroup);
-        jc["indexOffset"] = static_cast<double>(r.indexOffset);
-        chans.append(jc);
-    }
-
-    QJsonObject root;
-    root["version"]    = 1;
-    root["connection"] = conn;
-    root["channels"]   = chans;
-    // Reuse the PlotLayout serialiser, embedded as a string — the recorder
-    // layout is its own file; it never reads/writes the Analyser's .scoana.
-    root["plotLayout"] = preview_->currentPlotLayout().toJsonString();
+    const QJsonObject root = captureConfig();
 
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -571,6 +590,45 @@ void RecorderWidget::onLoadLayout() {
         return;
     }
 
+    applyConfig(root);
+    // Loading a layout is one undo step.
+    scheduleCommit();
+
+    statusLabel_->setText(
+        QString("Recorder layout loaded: %1").arg(QFileInfo(path).fileName()));
+}
+
+QJsonObject RecorderWidget::captureConfig() {
+    QJsonObject conn;
+    conn["source"] = sourceCombo_->currentText();
+    conn["host"]   = hostEdit_->text();
+    conn["netId"]  = netIdEdit_->text();
+    conn["port"]   = portSpin_->value();
+
+    QJsonArray chans;
+    for (const auto& r : channels_->rows()) {
+        QJsonObject jc;
+        jc["name"]        = r.name;
+        jc["type"]        = r.type;
+        jc["mode"]        = r.mode;
+        jc["unit"]        = r.unit;
+        jc["cycleUs"]     = static_cast<double>(r.cycleUs);
+        jc["indexGroup"]  = static_cast<double>(r.indexGroup);
+        jc["indexOffset"] = static_cast<double>(r.indexOffset);
+        chans.append(jc);
+    }
+
+    QJsonObject root;
+    root["version"]    = 1;
+    root["connection"] = conn;
+    root["channels"]   = chans;
+    // Reuse the PlotLayout serialiser, embedded as a string — the recorder
+    // layout is its own file; it never reads/writes the Analyser's .scoana.
+    root["plotLayout"] = preview_->currentPlotLayout().toJsonString();
+    return root;
+}
+
+void RecorderWidget::applyConfig(const QJsonObject& root) {
     const auto conn = root.value("connection").toObject();
     sourceCombo_->setCurrentText(conn.value("source").toString());
     hostEdit_->setText(conn.value("host").toString());
@@ -594,9 +652,17 @@ void RecorderWidget::onLoadLayout() {
 
     preview_->applyPlotLayout(scope::plot::PlotLayout::fromJsonString(
         root.value("plotLayout").toString()));
+}
 
-    statusLabel_->setText(
-        QString("Recorder layout loaded: %1").arg(QFileInfo(path).fileName()));
+void RecorderWidget::scheduleCommit() {
+    if (!undo_ || undo_->applying()) return;
+    commitTimer_->start();
+}
+
+void RecorderWidget::refreshUndoButtons() {
+    if (!undo_) return;
+    undoBtn_->setEnabled(undo_->canUndo());
+    redoBtn_->setEnabled(undo_->canRedo());
 }
 
 }  // namespace scope::recorder

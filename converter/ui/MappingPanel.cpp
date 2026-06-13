@@ -383,6 +383,7 @@ void MappingPanel::onAddChannel() {
             continue;
         }
         appendChannelRow(m);
+        emit mappingChanged();
         return;
     }
 }
@@ -426,6 +427,7 @@ void MappingPanel::onEditChannel() {
         xs->setData(kRoleTimeOffsetSec,   m.timeOffsetSec);
         xs->setData(kRoleCollapseMode,    static_cast<int>(m.collapseDuplicates));
         xs->setData(kRolePlateauMode,     static_cast<int>(m.collapseValuePlateaus));
+        emit mappingChanged();
         return;
     }
 }
@@ -434,6 +436,7 @@ void MappingPanel::onRemoveChannel() {
     const int row = channelTable_->currentRow();
     if (row < 0) return;
     channelTable_->removeRow(row);
+    emit mappingChanged();
 }
 
 void MappingPanel::setProfile(const ConverterProfile& p) {

@@ -39,6 +39,12 @@ public:
     std::vector<Row> rows() const;
     void setRows(const std::vector<Row>& rows);
 
+signals:
+    // Emitted on a user edit (a symbol added, or a cell edited). NOT emitted
+    // for programmatic fills (setRows / clear) so an undo-restore or layout
+    // load doesn't record a fresh history entry.
+    void changed();
+
 private:
     QTableWidget* table_;
 };

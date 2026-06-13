@@ -43,6 +43,8 @@ signals:
     void saveProfileRequested();
     void loadProfileRequested();
     void parseOptionsChanged();
+    // A column mapping was added, edited, or removed (for undo/redo).
+    void mappingChanged();
     // The user picked an auto-detector in the dropdown and clicked Apply.
     // The host runs the matching detector on the active file and fills the
     // mapping (delimiter, decimal, header row, channel columns).

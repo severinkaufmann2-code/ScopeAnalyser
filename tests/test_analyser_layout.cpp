@@ -84,6 +84,12 @@ protected:
         emit p.scope_->yAxesChanged();
     }
 
+    // ---- undo/redo snapshot round-trip (via friendship) ----
+    AnalyserPlot::UndoSnap captureUndo(AnalyserPlot& p) { return p.captureState(); }
+    void restoreUndo(AnalyserPlot& p, const AnalyserPlot::UndoSnap& s) {
+        p.restoreState(s);
+    }
+
     // ---- display-correctness helpers (also via friendship) ----
     QCPAbstractPlottable* plottableFor(AnalyserPlot& p, const QString& name) {
         return p.plotted_.value(name, nullptr);
@@ -754,4 +760,43 @@ TEST_F(AnalyserPlotLayoutTest, HtmlExportViewMirrorsTheScreen) {
     const auto v2 = htmlView(plot);
     EXPECT_EQ(v2.initialView, "xy");
     EXPECT_EQ(v2.xyChannel, "speed");
+}
+
+// An undo snapshot taken before a delete restores the channel (and its data)
+// when re-applied — the core of the Analyser's undo.
+TEST_F(AnalyserPlotLayoutTest, UndoSnapshotRestoresDeletedChannels) {
+    SignalStore store;
+    scope::analyser::FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    addTimeChannel(store, "A", "V");
+    addTimeChannel(store, "B", "A");
+    const auto snap = captureUndo(plot);
+
+    store.remove("B");
+    ASSERT_FALSE(store.contains("B"));
+
+    restoreUndo(plot, snap);
+    EXPECT_TRUE(store.contains("A"));
+    ASSERT_TRUE(store.contains("B"));
+    // Data came back intact (the snapshot held the shared_ptr, no re-read).
+    EXPECT_EQ(store.get("B")->snapshotForRead().count, 3u);
+}
+
+// Redo direction: a snapshot taken after an add re-creates a channel that was
+// removed since.
+TEST_F(AnalyserPlotLayoutTest, UndoSnapshotReappliesAddedChannel) {
+    SignalStore store;
+    scope::analyser::FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    addTimeChannel(store, "A", "V");
+    addTimeChannel(store, "B", "A");
+    const auto withBoth = captureUndo(plot);   // the "redo" target
+
+    // Step back to a single-channel world, then re-apply the two-channel snap.
+    store.remove("B");
+    restoreUndo(plot, withBoth);
+    EXPECT_TRUE(store.contains("A"));
+    EXPECT_TRUE(store.contains("B"));
 }

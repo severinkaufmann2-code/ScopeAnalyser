@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 namespace scope::recorder::ui {
@@ -40,10 +41,18 @@ ChannelTableWidget::ChannelTableWidget(QWidget* parent) : QWidget(parent) {
     layout->setSpacing(6);
     layout->addWidget(scope::style::sectionLabel("Recording channels", this));
     layout->addWidget(table_);
+
+    // A user edit to any cell is a document change. Programmatic fills below
+    // block the table's signals, so this only fires for real edits.
+    connect(table_, &QTableWidget::cellChanged, this,
+            [this](int, int){ emit changed(); });
 }
 
 void ChannelTableWidget::addChannelFromSymbol(const scope::core::AdsSymbol& sym,
                                               std::uint32_t taskCycleUs) {
+    // Fill the cells with signals blocked, then emit one changed() for the
+    // whole row rather than one per cell.
+    const QSignalBlocker block(table_);
     const int row = table_->rowCount();
     table_->insertRow(row);
 
@@ -61,9 +70,13 @@ void ChannelTableWidget::addChannelFromSymbol(const scope::core::AdsSymbol& sym,
     setCell(ColUnit,        "");
     setCell(ColIndexGroup,  QString::number(sym.indexGroup));
     setCell(ColIndexOffset, QString::number(sym.indexOffset));
+    emit changed();
 }
 
-void ChannelTableWidget::clear() { table_->setRowCount(0); }
+void ChannelTableWidget::clear() {
+    const QSignalBlocker block(table_);
+    table_->setRowCount(0);
+}
 
 std::vector<ChannelTableWidget::Row> ChannelTableWidget::rows() const {
     std::vector<Row> out;
@@ -87,6 +100,9 @@ std::vector<ChannelTableWidget::Row> ChannelTableWidget::rows() const {
 }
 
 void ChannelTableWidget::setRows(const std::vector<Row>& rows) {
+    // Programmatic restore (undo / layout load) — keep signals blocked so it
+    // doesn't register as a fresh edit.
+    const QSignalBlocker block(table_);
     table_->setRowCount(0);
     for (const auto& row : rows) {
         const int r = table_->rowCount();

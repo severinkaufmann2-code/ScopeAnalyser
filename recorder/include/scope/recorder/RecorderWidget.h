@@ -2,9 +2,11 @@
 
 #include "scope/core/SignalStore.h"
 #include "scope/core/IAdsClient.h"
+#include "scope/core/UndoStack.h"
 #include "scope/recorder/RecordingSession.h"
 
 #include <QHash>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
@@ -17,6 +19,7 @@ class QPushButton;
 class QLabel;
 class QComboBox;
 class QCheckBox;
+class QTimer;
 
 namespace scope::recorder::ui {
 class SymbolBrowserWidget;
@@ -57,6 +60,22 @@ private:
     // Enable/disable the Send + Save-chart buttons based on whether the
     // private capture store has anything in it.
     void updateActionButtons();
+
+    // ---- Undo / redo --------------------------------------------------
+    // The editable recorder "document" is the connection params + channel
+    // table + preview axes. captureConfig() serialises that to JSON (the same
+    // payload onSaveLayout writes); applyConfig() restores it. The undo stack
+    // snapshots after each settled edit. Live actions (connect, record,
+    // Send-to-Analyser) are NOT part of the document and never snapshot.
+    QJsonObject captureConfig();
+    void        applyConfig(const QJsonObject& root);
+    void        scheduleCommit();      // coalesce a burst of edits into one snapshot
+    void        refreshUndoButtons();  // enable/disable per stack state
+
+    QPushButton* undoBtn_{nullptr};
+    QPushButton* redoBtn_{nullptr};
+    QTimer*      commitTimer_{nullptr};
+    std::unique_ptr<scope::core::UndoStack<QJsonObject>> undo_;
 
     // The shared store is the Analyser / Converter bus. The Recorder keeps
     // its captures in a PRIVATE store so nothing reaches the Analyser until

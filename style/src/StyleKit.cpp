@@ -148,6 +148,28 @@ void drawGlyph(QPainter& p, Glyph g, const QColor& c) {
             p.drawPolygon(head);
             break;
         }
+        case Glyph::Undo:
+        case Glyph::Redo: {
+            // A curved "rainbow" arc with an arrowhead on the left end (Undo);
+            // Redo is the horizontal mirror so the pair reads as back/forward.
+            p.save();
+            if (g == Glyph::Redo) { p.translate(24, 0); p.scale(-1, 1); }
+            const QRectF r(5, 7, 14, 12);
+            QPainterPath arc;
+            arc.arcMoveTo(r, 5);      // right end, just inside the bottom
+            arc.arcTo(r, 5, 170);     // sweep over the top to the left end
+            p.drawPath(arc);
+            // Arrowhead at the left end (180°), pointing left.
+            const QPointF tip(r.left(), r.center().y());
+            p.setPen(Qt::NoPen);
+            p.setBrush(c);
+            QPolygonF head;
+            head << tip + QPointF(0.8, -4.2) << tip + QPointF(-3.8, 0.2)
+                 << tip + QPointF(0.8, 4.2);
+            p.drawPolygon(head);
+            p.restore();
+            break;
+        }
         case Glyph::Plug: {
             p.drawLine(QPointF(9.3, 3.5), QPointF(9.3, 8));
             p.drawLine(QPointF(14.7, 3.5), QPointF(14.7, 8));

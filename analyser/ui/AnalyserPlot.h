@@ -2,6 +2,7 @@
 
 #include "scope/converter/HtmlExport.h"
 #include "scope/core/SignalStore.h"
+#include "scope/core/UndoStack.h"
 #include "scope/plot/PlotLayout.h"
 
 #include <QHash>
@@ -9,10 +10,14 @@
 #include <QString>
 #include <QWidget>
 
+#include <memory>
+#include <utility>
+
 class QCPAbstractPlottable;
 class QComboBox;
 class QTableWidget;
 class QTimer;
+class QToolButton;
 
 namespace scope::plot { class ScopePlot; }
 
@@ -187,6 +192,30 @@ private:
         QHash<QString, std::pair<bool, int>> rowState;
     };
     QHash<int /* Signal::Domain */, PerDomainState> stateByDomain_;
+
+    // ---- Undo / redo --------------------------------------------------
+    // A snapshot is the full plot layout (axes, channel→axis assignments,
+    // view mode, XY channel — via currentLayout/applyLayout) plus the store's
+    // channels held by shared_ptr, so restoring a deleted channel is cheap and
+    // never re-reads a file. restoreState reconciles the store to the snapshot
+    // then re-applies the layout (Recalculate, so formula channels stay
+    // editable and are recomputed deterministically from the restored sources).
+    struct UndoSnap {
+        scope::plot::PlotLayout layout;
+        QList<std::pair<QString, std::shared_ptr<scope::core::Signal>>> channels;
+    };
+    UndoSnap captureState();
+    void     restoreState(const UndoSnap& snap);
+    // Coalesce a burst of edits (e.g. opening a multi-channel file) into a
+    // single history entry. No-op while restoring or while the formula engine
+    // is recomputing (those channelAdded bursts aren't user edits).
+    void     scheduleCommit();
+    void     refreshUndoButtons();
+
+    QToolButton* undoBtn_{nullptr};
+    QToolButton* redoBtn_{nullptr};
+    QTimer*      commitTimer_{nullptr};
+    std::unique_ptr<scope::core::UndoStack<UndoSnap>> undo_;
 
     // Test access: the widget-level layout round-trip (currentLayout /
     // applyLayout) can't be driven through the modal Save/Open dialogs, so a

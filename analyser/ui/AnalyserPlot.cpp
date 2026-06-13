@@ -20,6 +20,7 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QKeySequence>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
@@ -101,6 +102,21 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     auto* loadLayoutBtn = barBtn(style::Glyph::FolderOpen, "Load layout…",
         "Restore Y axes, channel→axis assignments, and view mode from a "
         ".scoana file.");
+    ab->addSpacing(12);
+    // Undo / redo over the plot document (channels, axes, assignments, view).
+    undoBtn_ = new QToolButton(actionBar);
+    undoBtn_->setIcon(style::icon(style::Glyph::Undo));
+    undoBtn_->setToolTip("Undo the last change to channels, axes, assignments, "
+                         "or view mode (Ctrl+Z).");
+    undoBtn_->setShortcut(QKeySequence::Undo);
+    undoBtn_->setEnabled(false);
+    redoBtn_ = new QToolButton(actionBar);
+    redoBtn_->setIcon(style::icon(style::Glyph::Redo));
+    redoBtn_->setToolTip("Redo the change undone last (Ctrl+Y / Ctrl+Shift+Z).");
+    redoBtn_->setShortcut(QKeySequence::Redo);
+    redoBtn_->setEnabled(false);
+    ab->addWidget(undoBtn_);
+    ab->addWidget(redoBtn_);
     ab->addStretch();
     auto* redrawBtn = new QPushButton(
         style::icon(style::Glyph::Refresh, Qt::white), "Redraw", actionBar);
@@ -259,6 +275,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         rebuildTable();
         hasDrawnYet_ = false;
         redrawForActiveChannels();
+        scheduleCommit();   // view-mode change is a document edit
     });
     connect(xyXCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int){
@@ -274,6 +291,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         rebuildTable();
         hasDrawnYet_ = false;
         redrawForActiveChannels();
+        scheduleCommit();   // XY X-channel change is a document edit
     });
     connect(table_, &QTableWidget::cellDoubleClicked, this,
             [this](int, int){ editChannelDialog(); });
@@ -339,6 +357,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
             this, [this]{
         rebuildAxisCombos();
         recolorChannels();
+        scheduleCommit();   // axes added / removed / renamed is a document edit
     });
     // Light/dark flips change the axis base palette → re-derive trace pens
     // and table swatches.
@@ -347,6 +366,24 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
 
     rebuildXyXCombo();
     rebuildTable();
+
+    // ---- Undo / redo wiring ------------------------------------------
+    commitTimer_ = new QTimer(this);
+    commitTimer_->setSingleShot(true);
+    commitTimer_->setInterval(0);
+    undo_ = std::make_unique<scope::core::UndoStack<UndoSnap>>(
+        [this]{ return captureState(); },
+        [this](const UndoSnap& s){ restoreState(s); },
+        [this]{ refreshUndoButtons(); });
+    connect(commitTimer_, &QTimer::timeout, this, [this]{ undo_->commit(); });
+    connect(undoBtn_, &QToolButton::clicked, this, [this]{ undo_->undo(); });
+    connect(redoBtn_, &QToolButton::clicked, this, [this]{ undo_->redo(); });
+
+    // Seed the baseline. Most commit points are reached through scheduleCommit
+    // calls added to the store/axis/view handlers below; this captures the
+    // starting (usually empty) state so the first edit has something to undo to.
+    undo_->reset();
+    refreshUndoButtons();
 }
 
 void AnalyserPlot::scheduleRecompute() {
@@ -355,6 +392,46 @@ void AnalyserPlot::scheduleRecompute() {
     // already-pending timer.
     if (recomputeTimer_ && !engine_.isRecomputing())
         recomputeTimer_->start();
+}
+
+AnalyserPlot::UndoSnap AnalyserPlot::captureState() {
+    UndoSnap snap;
+    snap.layout = currentLayout();
+    for (const auto& name : store_.channelNames())
+        if (auto s = store_.get(name))
+            snap.channels.append({name, std::move(s)});
+    return snap;
+}
+
+void AnalyserPlot::restoreState(const UndoSnap& snap) {
+    // 1. Reconcile the store to exactly the snapshot's channel set. Removing
+    //    extras and re-adding the held shared_ptrs is cheap (no data copy) and
+    //    never re-reads a file. store_.add replaces an existing channel.
+    QSet<QString> want;
+    want.reserve(snap.channels.size());
+    for (const auto& [name, sig] : snap.channels) want.insert(name);
+    for (const auto& n : store_.channelNames())
+        if (!want.contains(n)) store_.remove(n);
+    for (const auto& [name, sig] : snap.channels) store_.add(sig);
+
+    // 2. Re-apply the layout. Recalculate keeps formula channels editable and
+    //    recomputes them from the (now-restored) sources — deterministic, so
+    //    the values match the snapshot. Replace drops any axes added since.
+    applyLayout(snap.layout, FormulaImport::Recalculate, LayoutApply::Replace);
+}
+
+void AnalyserPlot::scheduleCommit() {
+    // Gate out non-edits: a restore in progress, or a formula-recompute pass
+    // (its channelAdded burst isn't a user edit). The coalescing timer folds a
+    // burst of real edits into a single history entry.
+    if (!undo_ || undo_->applying() || engine_.isRecomputing()) return;
+    commitTimer_->start();
+}
+
+void AnalyserPlot::refreshUndoButtons() {
+    if (!undo_) return;
+    undoBtn_->setEnabled(undo_->canUndo());
+    redoBtn_->setEnabled(undo_->canRedo());
 }
 
 int AnalyserPlot::pickAxisForUnit(const QString& unit) const {
@@ -501,6 +578,7 @@ void AnalyserPlot::onAxisComboChanged(int row, int axisIndex) {
     if (p) p->setValueAxis(scope_->yAxis(axisIndex));
     recolorChannels();
     scope_->plot()->replot(QCustomPlot::rpQueuedReplot);
+    scheduleCommit();   // channel→axis reassignment is a document edit
 }
 
 void AnalyserPlot::onVisibilityChanged(int row) {
@@ -543,6 +621,10 @@ void AnalyserPlot::onChannelAdded(QString /*name*/) {
     // A new / replaced source may feed derived channels — recompute them
     // (coalesced; a no-op while recomputeAll is the one doing the adding).
     scheduleRecompute();
+    // A user-driven add (open chart, add formula) is a document edit. Adds
+    // that come from a restore or from the recompute pass are gated out inside
+    // scheduleCommit().
+    scheduleCommit();
 }
 void AnalyserPlot::onChannelRemoved(QString name) {
     if (plotted_.contains(name)) {
@@ -557,6 +639,7 @@ void AnalyserPlot::onChannelRemoved(QString name) {
     }
     rebuildTable();
     redrawForActiveChannels();
+    scheduleCommit();   // a removed channel is a document edit
 }
 
 void AnalyserPlot::clearAllPlottables() {
@@ -1198,6 +1281,9 @@ void AnalyserPlot::loadLayoutDialog() {
         return;
     }
     applyLayout(layout);
+    // applyLayout recomputes formulas, so its channelAdded bursts are gated
+    // out of scheduleCommit — record the loaded layout as one step explicitly.
+    scheduleCommit();
 }
 
 void AnalyserPlot::addChannelDialog() {

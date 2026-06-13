@@ -26,6 +26,8 @@ enum class Glyph {
     FolderOpen,
     Save,
     Refresh,
+    Undo,         // curved arrow pointing back (left)
+    Redo,         // curved arrow pointing forward (right)
     Plug,         // connect
     Unplug,       // disconnect
     SendToAnalyser,    // record dot → waveform (Recorder "Send to Analyser")
