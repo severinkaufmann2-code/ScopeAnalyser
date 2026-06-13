@@ -47,12 +47,13 @@ TEST(CsvWriter, SharedTimeColumnDefaults) {
     // Re-import via CsvSource → confirm structure and values.
     CsvSource src(path);
     EXPECT_GE(src.rowCount(), 5);   // header + 4 data rows
-    EXPECT_EQ(src.columnCount(), 3); // t [s], speed, torque
+    EXPECT_EQ(src.columnCount(), 3); // t [ns], speed, torque
 
+    // Default time axis is epoch ns → the X column is integer nanoseconds.
     ConverterProfile p;
     p.headerRow = 1;
     p.columns = {
-        {"A", ColumnMapping::Role::XTime,  "", "s"},
+        {"A", ColumnMapping::Role::XTime,  "", "ns"},
         {"B", ColumnMapping::Role::Signal, "speed",  "rpm"},
         {"C", ColumnMapping::Role::Signal, "torque", "Nm"},
     };
@@ -76,6 +77,12 @@ TEST(CsvWriter, SharedTimeColumnDefaults) {
         EXPECT_NEAR(sv[i], 0.0 + i * 10.0, 1e-6);
         EXPECT_NEAR(tv[i], 1.0 + i * 0.5,  1e-6);
     }
+    // Epoch-ns time column round-trips exactly (dt = 0.1 s = 1e8 ns).
+    auto svv = speedOut->snapshotForRead();
+    ASSERT_EQ(svv.count, 4u);
+    EXPECT_EQ(svv.timestamps[0], 0);
+    EXPECT_EQ(svv.timestamps[1], 100000000LL);
+    EXPECT_EQ(svv.timestamps[3], 300000000LL);
 
     std::filesystem::remove(path);
 }
@@ -136,7 +143,7 @@ TEST(CsvWriter, CustomSeparatorsRoundTrip) {
     p.headerRow = 1;
     p.decimalSeparator = ",";
     p.columns = {
-        {"A", ColumnMapping::Role::XTime,  "", "s"},
+        {"A", ColumnMapping::Role::XTime,  "", "ns"},
         {"B", ColumnMapping::Role::Signal, "v", ""},
     };
     auto loaded = src.apply(p, &err);
@@ -212,7 +219,7 @@ TEST(CsvWriter, SharedMixedDomainGetsTwoXColumns) {
 
     std::ifstream in(path);
     std::string header; std::getline(in, header);
-    EXPECT_NE(header.find("t [s]"),  std::string::npos) << header;
+    EXPECT_NE(header.find("t [ns]"), std::string::npos) << header;
     EXPECT_NE(header.find("f [Hz]"), std::string::npos);
     EXPECT_NE(header.find("speed"), std::string::npos);
     EXPECT_NE(header.find("spec"),  std::string::npos);
@@ -420,7 +427,7 @@ TEST(CsvWriter, MetadataHeaderCanBeDisabled) {
     std::ifstream in(path);
     std::string firstLine; std::getline(in, firstLine);
     // No metadata line — first line is the column header.
-    EXPECT_NE(firstLine.find("t [s]"), std::string::npos) << firstLine;
+    EXPECT_NE(firstLine.find("t [ns]"), std::string::npos) << firstLine;
     in.close();  // close before removing (Windows locks open files)
     std::filesystem::remove(path);
 }
@@ -494,4 +501,136 @@ TEST(CsvWriter, SaveChartCustomRangeMatchesChartRelativeSeconds) {
     ASSERT_EQ(loaded.channels.size(), 1u);
     EXPECT_EQ(loaded.channels[0]->sampleCount(), 5u);
     std::filesystem::remove(base);
+}
+
+// ---- Epoch-ns time axis (the default) -----------------------------------
+
+// The default epoch-ns time column survives a save → re-open bit-exact, even
+// for epoch-scale timestamps a double cannot represent.
+TEST(CsvWriter, EpochNsRoundTripIsBitExact) {
+    Signal::Meta m; m.name = "speed"; m.unit = "rpm";
+    m.dataType = DataType::Float64; m.domain = Signal::Domain::Time;
+    auto sig = std::make_shared<Signal>(m);
+    const TimestampNs t0 = 1'700'000'000'000'000'001LL;   // epoch ns, odd
+    std::vector<TimestampNs> ts{t0, t0 + 1'000'000LL, t0 + 2'000'000LL};
+    std::vector<double>      vs{1.5, 2.5, 3.5};
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), 3);
+
+    auto path = std::filesystem::temp_directory_path() / "scope_csv_epoch_rt.csv";
+    QString err;
+    ASSERT_TRUE(writeCsv(path, {sig}, CsvExportOptions{}, &err)) << err.toStdString();
+
+    auto r = loadFile(path, FileFormat::Csv);
+    ASSERT_TRUE(r.ok) << r.error.toStdString();
+    ASSERT_EQ(r.channels.size(), 1u);
+    auto v = r.channels[0]->snapshotForRead();
+    ASSERT_EQ(v.count, 3u);
+    EXPECT_EQ(v.timestamps[0], t0);                  // bit-exact int64
+    EXPECT_EQ(v.timestamps[1], t0 + 1'000'000LL);
+    EXPECT_EQ(v.timestamps[2], t0 + 2'000'000LL);
+    std::filesystem::remove(path);
+}
+
+// The relative-seconds toggle still writes a "t [s]" column rebased to the
+// earliest sample, and re-opens correctly.
+TEST(CsvWriter, RelativeSecondsModeWritesSeconds) {
+    Signal::Meta m; m.name = "speed"; m.unit = "rpm";
+    m.dataType = DataType::Float64; m.domain = Signal::Domain::Time;
+    auto sig = std::make_shared<Signal>(m);
+    const TimestampNs t0 = 1'700'000'000'000'000'000LL;
+    std::vector<TimestampNs> ts{t0, t0 + 100'000'000LL, t0 + 200'000'000LL};
+    std::vector<double>      vs{1.0, 2.0, 3.0};
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), 3);
+
+    CsvExportOptions opts;
+    opts.timeAxis = CsvExportOptions::TimeAxis::RelativeSeconds;
+    opts.includeMetadata = false;   // inspect the header directly
+    auto path = std::filesystem::temp_directory_path() / "scope_csv_relsec.csv";
+    QString err;
+    ASSERT_TRUE(writeCsv(path, {sig}, opts, &err)) << err.toStdString();
+
+    std::ifstream in(path);
+    std::string header; std::getline(in, header);
+    EXPECT_NE(header.find("t [s]"), std::string::npos) << header;
+    std::string firstRow; std::getline(in, firstRow);
+    EXPECT_EQ(firstRow.substr(0, 1), "0") << firstRow;   // rebased to 0
+    in.close();
+
+    auto r = loadFile(path, FileFormat::Csv);
+    ASSERT_TRUE(r.ok) << r.error.toStdString();
+    ASSERT_EQ(r.channels.size(), 1u);
+    auto v = r.channels[0]->snapshotForRead();
+    ASSERT_EQ(v.count, 3u);
+    EXPECT_EQ(v.timestamps[0], 0);                       // relative origin
+    EXPECT_EQ(v.timestamps[1], 100'000'000LL);
+    std::filesystem::remove(path);
+}
+
+// Epoch-ns without the metadata header: the heuristic loader reads the unit
+// from the "t [ns]" header string and parses exactly.
+TEST(CsvWriter, EpochNsHeuristicWithoutMetadata) {
+    Signal::Meta m; m.name = "speed"; m.unit = "rpm";
+    m.dataType = DataType::Float64; m.domain = Signal::Domain::Time;
+    auto sig = std::make_shared<Signal>(m);
+    const TimestampNs t0 = 1'700'000'000'000'000'005LL;
+    std::vector<TimestampNs> ts{t0, t0 + 5'000'000LL};
+    std::vector<double>      vs{9.0, 8.0};
+    sig->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), 2);
+
+    CsvExportOptions opts;
+    opts.includeMetadata = false;   // force the header heuristic on read
+    auto path = std::filesystem::temp_directory_path() / "scope_csv_epoch_heur.csv";
+    QString err;
+    ASSERT_TRUE(writeCsv(path, {sig}, opts, &err)) << err.toStdString();
+
+    auto r = loadFile(path, FileFormat::Csv);
+    ASSERT_TRUE(r.ok) << r.error.toStdString();
+    ASSERT_EQ(r.channels.size(), 1u);
+    auto v = r.channels[0]->snapshotForRead();
+    ASSERT_EQ(v.count, 2u);
+    EXPECT_EQ(v.timestamps[0], t0);                      // exact via "t [ns]"
+    std::filesystem::remove(path);
+}
+
+// ---- "ScopeAnalyser / headered CSV" auto-detect (request 2) --------------
+
+// A CSV saved from the Analyser is auto-detected two ways: via the scope-csv
+// metadata header, and — when that header is absent — via the column header
+// row alone. Both yield a profile that re-imports the channel, with the
+// epoch-ns X column round-tripping exactly through the detected "ns" unit.
+TEST(CsvWriter, ScopeCsvAutoDetectViaMetadataAndHeader) {
+    auto sig = makeRamp("speed", 4, 0.1, 0.0, 10.0, "rpm");
+
+    // (a) With the metadata header → profileFromScopeMetadata.
+    {
+        auto path = std::filesystem::temp_directory_path() / "scope_csv_detect_meta.csv";
+        QString err;
+        ASSERT_TRUE(writeCsv(path, {sig}, CsvExportOptions{}, &err)) << err.toStdString();
+        ConverterProfile prof;
+        ASSERT_TRUE(profileFromScopeMetadata(path, &prof));
+        CsvSource src(path);
+        auto sigs = src.apply(prof, &err);
+        ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+        EXPECT_EQ(sigs[0]->meta().name, "speed");
+        EXPECT_EQ(sigs[0]->snapshotForRead().timestamps[1], 100000000LL);
+        std::filesystem::remove(path);
+    }
+    // (b) Without the metadata header → profileFromCsvHeader.
+    {
+        auto path = std::filesystem::temp_directory_path() / "scope_csv_detect_hdr.csv";
+        CsvExportOptions opts; opts.includeMetadata = false;
+        QString err;
+        ASSERT_TRUE(writeCsv(path, {sig}, opts, &err)) << err.toStdString();
+        ConverterProfile metaProf;
+        EXPECT_FALSE(profileFromScopeMetadata(path, &metaProf));   // no header
+        ConverterProfile prof;
+        ASSERT_TRUE(profileFromCsvHeader(path, &prof, &err)) << err.toStdString();
+        CsvSource src(path, prof.columnDelimiter, prof.rowDelimiter);
+        auto sigs = src.apply(prof, &err);
+        ASSERT_EQ(sigs.size(), 1u) << err.toStdString();
+        EXPECT_EQ(sigs[0]->meta().name, "speed");
+        EXPECT_EQ(sigs[0]->meta().unit, "rpm");
+        EXPECT_EQ(sigs[0]->snapshotForRead().timestamps[1], 100000000LL);
+        std::filesystem::remove(path);
+    }
 }

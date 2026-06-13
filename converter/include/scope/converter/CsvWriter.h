@@ -17,11 +17,24 @@ struct CsvExportOptions {
         PerSignal,  // each signal gets its own (t, value) pair; exact timestamps.
     };
 
+    // How the time-domain X column is written:
+    //   EpochNs         — the signal's absolute timestamp as integer
+    //                     nanoseconds. Lossless and absolute (no rebasing to
+    //                     t=0, no double rounding), at the cost of large
+    //                     integers that aren't spreadsheet-friendly.
+    //   RelativeSeconds — seconds relative to the earliest sample, as a double
+    //                     (the legacy, human-readable form).
+    // Frequency X is always Hz. On read the unit is recovered from the
+    // metadata / header and integer-vs-real is detected, so either mode
+    // round-trips.
+    enum class TimeAxis { EpochNs, RelativeSeconds };
+
     bool     includeHeader{true};
     QString  columnDelimiter{","};
     QString  rowDelimiter{"\n"};
     QString  decimalSeparator{"."};
     TimeMode timeMode{TimeMode::Shared};
+    TimeAxis timeAxis{TimeAxis::EpochNs};
     // Format precision for double values. -1 → "g" with 15 digits (round-trip).
     int      decimalDigits{-1};
 

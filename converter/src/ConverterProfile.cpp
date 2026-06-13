@@ -322,6 +322,138 @@ bool profileFromScopeJson(const std::filesystem::path& path,
     }
 }
 
+bool profileFromCsvHeader(const std::filesystem::path& path,
+                          ConverterProfile* out,
+                          QString* errorOut) {
+    if (!out) return false;
+    QFile f(QString::fromStdString(path.string()));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (errorOut) *errorOut = "Couldn't open file.";
+        return false;
+    }
+    QTextStream ts(&f);
+    // First non-blank, non-comment line is the column header.
+    QString headerLine;
+    while (true) {
+        headerLine = ts.readLine();
+        if (headerLine.isNull()) break;
+        const QString t = headerLine.trimmed();
+        if (t.isEmpty()) continue;
+        if (t.startsWith('#')) continue;   // skip scope-csv / comment lines
+        break;
+    }
+    if (headerLine.isNull() || headerLine.trimmed().isEmpty()) {
+        if (errorOut) *errorOut = "No header row found.";
+        return false;
+    }
+
+    // Auto-detect the delimiter (the one most frequent in the header).
+    QChar sep(',');
+    {
+        int best = -1;
+        for (QChar c : {QChar(','), QChar(';'), QChar('\t'), QChar('|')}) {
+            const int n = headerLine.count(c);
+            if (n > best) { best = n; sep = c; }
+        }
+    }
+    const QStringList headers = headerLine.split(sep);
+    if (headers.size() < 2) {
+        if (errorOut) *errorOut = "Need at least an X column and a value column.";
+        return false;
+    }
+
+    auto isSharedX = [](const QString& h) {
+        const QString t = h.trimmed();
+        return t == "t" || t == "f" || t.startsWith("t ") || t.startsWith("f ")
+            || t.startsWith("t[") || t.startsWith("f[");
+    };
+    auto isFreqHeader = [](const QString& h) {
+        const QString t = h.trimmed();
+        return t == "f" || t.startsWith("f ") || t.startsWith("f[")
+            || t.startsWith("f_");
+    };
+    auto splitNameUnit = [](const QString& header, QString* name, QString* unit) {
+        QString h = header.trimmed();
+        const int open  = h.lastIndexOf('[');
+        const int close = h.lastIndexOf(']');
+        if (open > 0 && close > open && close == h.size() - 1) {
+            *name = h.left(open).trimmed();
+            *unit = h.mid(open + 1, close - open - 1).trimmed();
+        } else {
+            *name = h;
+            *unit = QString();
+        }
+    };
+
+    ConverterProfile prof;
+    prof.sourceType       = "csv";
+    prof.headerRow        = 1;
+    prof.decimalSeparator = ".";
+    prof.columnDelimiter  = QString(sep);
+    prof.rowDelimiter     = "\n";
+
+    auto addX = [&](int col, bool freq, const QString& unit) {
+        ColumnMapping x;
+        x.columnId = columnLetter(col);
+        x.role     = freq ? ColumnMapping::Role::XFrequency
+                          : ColumnMapping::Role::XTime;
+        x.unit     = unit;
+        prof.columns.push_back(std::move(x));
+    };
+    auto addY = [&](int col, const QString& name, const QString& unit, int xCol) {
+        ColumnMapping y;
+        y.columnId      = columnLetter(col);
+        y.role          = ColumnMapping::Role::Signal;
+        y.signalName    = name;
+        y.unit          = unit;
+        y.xSourceColumn = columnLetter(xCol);
+        prof.columns.push_back(std::move(y));
+    };
+
+    // Shared single-X layout ("t [s], a, b, …") vs per-signal pairs
+    // ("t_a, a, t_b, b"). Mirrors loadCsvChart's detection.
+    const bool shared = isSharedX(headers[0])
+        && (headers.size() < 3
+            || (!headers[2].trimmed().startsWith("t_")
+                && !headers[2].trimmed().startsWith("f_")));
+
+    if (shared) {
+        int curX = -1;
+        for (int i = 0; i < headers.size(); ++i) {
+            if (isSharedX(headers[i])) {
+                QString xn, xu; splitNameUnit(headers[i], &xn, &xu);
+                addX(i, isFreqHeader(headers[i]), xu);
+                curX = i;
+                continue;
+            }
+            if (curX < 0) continue;   // Y before any X column
+            QString n, u; splitNameUnit(headers[i], &n, &u);
+            if (!n.isEmpty()) addY(i, n, u, curX);
+        }
+    } else {
+        for (int i = 0; i + 1 < headers.size(); i += 2) {
+            QString xn, xu; splitNameUnit(headers[i], &xn, &xu);
+            addX(i, isFreqHeader(headers[i]), xu);
+            QString n, u; splitNameUnit(headers[i + 1], &n, &u);
+            if (n.isEmpty()) n = "Col" + columnLetter(i + 1);
+            addY(i + 1, n, u, i);
+        }
+    }
+
+    // Need at least one X and one Y.
+    int xs = 0, ys = 0;
+    for (const auto& c : prof.columns) {
+        if (c.role == ColumnMapping::Role::Signal) ++ys;
+        else                                       ++xs;
+    }
+    if (xs == 0 || ys == 0) {
+        if (errorOut) *errorOut = "Couldn't recognise channel columns in the header.";
+        return false;
+    }
+    *out = std::move(prof);
+    return true;
+}
+
 // ---- TwinCAT Scope CSV ------------------------------------------------------
 namespace {
 

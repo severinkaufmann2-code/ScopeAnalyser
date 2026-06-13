@@ -53,6 +53,54 @@ void splitNameUnit(const QString& header, QString* name, QString* unit) {
     }
 }
 
+// Parse an X-axis cell into the Signal's int64 storage.
+//   Time: an integer "ns" literal is read exactly via toLongLong — no double
+//     round-trip — which is what keeps epoch-ns CSVs lossless. Other units
+//     (s default, ms, us/µs) and real-valued ns go through a double × scale.
+//     A unit-less time column whose value is an unmistakably-nanosecond
+//     integer (|v| ≥ 1e15) is treated as ns; everything else stays seconds,
+//     preserving legacy / foreign behaviour.
+//   Frequency: Hz (default), kHz, MHz — stored as Hz × 1e9.
+// `cell` is expected to already have its decimal mark normalised to '.'.
+TimestampNs parseXValue(const QString& cell, const QString& unit,
+                        Signal::Domain domain, bool* ok) {
+    const QString t = cell.trimmed();
+    const bool integer = !t.contains('.') && !t.contains('e') && !t.contains('E');
+    const QString u = unit.trimmed();
+
+    if (domain == Signal::Domain::Time) {
+        bool treatAsNs = (u.compare("ns", Qt::CaseInsensitive) == 0);
+        if (!treatAsNs && u.isEmpty() && integer) {
+            bool okI = false;
+            const qlonglong iv = t.toLongLong(&okI);
+            if (okI && (iv >= 1000000000000000LL || iv <= -1000000000000000LL))
+                treatAsNs = true;
+        }
+        if (treatAsNs && integer) {
+            bool okI = false;
+            const qlonglong iv = t.toLongLong(&okI);
+            if (okI) { *ok = true; return static_cast<TimestampNs>(iv); }
+        }
+        bool okD = false;
+        const double d = t.toDouble(&okD);
+        *ok = okD;
+        double scale = 1e9;  // seconds (default / empty unit)
+        if      (u.compare("ms", Qt::CaseInsensitive) == 0) scale = 1e6;
+        else if (u.compare("us", Qt::CaseInsensitive) == 0
+                 || u == QString::fromUtf8("µs"))           scale = 1e3;
+        else if (treatAsNs)                                 scale = 1.0;
+        return static_cast<TimestampNs>(d * scale);
+    }
+
+    bool okD = false;
+    const double d = t.toDouble(&okD);
+    *ok = okD;
+    double scale = 1e9;  // Hz (default / empty unit)
+    if      (u.compare("kHz", Qt::CaseInsensitive) == 0) scale = 1e12;
+    else if (u.compare("MHz", Qt::CaseInsensitive) == 0) scale = 1e15;
+    return static_cast<TimestampNs>(d * scale);
+}
+
 // Stream a TwinCAT Scope export into one Signal per channel. The layout
 // (delimiter, decimal, per-channel time/value columns, data-start row) is
 // sniffed from the header by detectTwinCatScopeCsv; here we just skip to the
@@ -180,7 +228,7 @@ bool loadCsvChart(const std::filesystem::path& path,
         return false;
     }
 
-    struct Target { QString name, unit; int tCol{-1}, vCol{-1};
+    struct Target { QString name, unit, xUnit; int tCol{-1}, vCol{-1};
                     Signal::Domain domain{Signal::Domain::Time}; };
     std::vector<Target> targets;
 
@@ -230,6 +278,8 @@ bool loadCsvChart(const std::filesystem::path& path,
                         ? Signal::Domain::Frequency
                         : Signal::Domain::Time;
                 }
+                if (t.tCol >= 0 && t.tCol < static_cast<int>(units.size()))
+                    t.xUnit = QString::fromStdString(units[t.tCol]);
                 if (!t.name.isEmpty() && t.tCol >= 0) targets.push_back(std::move(t));
             }
         } catch (...) {
@@ -274,6 +324,7 @@ bool loadCsvChart(const std::filesystem::path& path,
                 if (curX < 0) continue;   // Y before any X column
                 Target t;
                 splitNameUnit(headers[i], &t.name, &t.unit);
+                { QString xn; splitNameUnit(headers[curX], &xn, &t.xUnit); }
                 t.tCol   = curX;
                 t.vCol   = i;
                 t.domain = curD;
@@ -283,6 +334,7 @@ bool loadCsvChart(const std::filesystem::path& path,
             for (int i = 0; i + 1 < headers.size(); i += 2) {
                 Target t;
                 splitNameUnit(headers[i + 1], &t.name, &t.unit);
+                { QString xn; splitNameUnit(headers[i], &xn, &t.xUnit); }
                 t.tCol = i;
                 t.vCol = i + 1;
                 t.domain = isFreqHeader(headers[i])
@@ -313,10 +365,10 @@ bool loadCsvChart(const std::filesystem::path& path,
             tStr.replace(',', '.');
             vStr.replace(',', '.');
             bool okT = false, okV = false;
-            const double xSec = tStr.toDouble(&okT);
-            const double v    = vStr.toDouble(&okV);
+            const TimestampNs x = parseXValue(tStr, tg.xUnit, tg.domain, &okT);
+            const double v      = vStr.toDouble(&okV);
             if (!okT || !okV) continue;
-            tsBufs[k].push_back(static_cast<TimestampNs>(xSec * 1e9));
+            tsBufs[k].push_back(x);
             vsBufs[k].push_back(v);
         }
     }

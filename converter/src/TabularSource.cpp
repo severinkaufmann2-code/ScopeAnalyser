@@ -188,6 +188,21 @@ std::vector<std::shared_ptr<Signal>> TabularSource::apply(
 
     auto tryNs = [&](const QString& s, const QString& unit,
                      TimestampNs* out, bool* wasNumeric) -> bool {
+        // Integer "ns" literal → exact int64 (no double round-trip), so an
+        // epoch-ns CSV column re-imports bit-exact.
+        if (unit.compare("ns", Qt::CaseInsensitive) == 0) {
+            const QString t = s.trimmed();
+            if (!t.isEmpty() && !t.contains('.') && !t.contains('e')
+                && !t.contains('E') && !t.contains(profile.decimalSeparator)) {
+                bool okI = false;
+                const qlonglong iv = t.toLongLong(&okI);
+                if (okI) {
+                    *out = static_cast<TimestampNs>(iv);
+                    *wasNumeric = true;
+                    return true;
+                }
+            }
+        }
         double v = 0.0;
         const bool ok = tryVal(s, &v, wasNumeric);
         if (unit.compare("ms", Qt::CaseInsensitive) == 0)

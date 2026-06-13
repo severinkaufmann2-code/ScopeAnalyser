@@ -114,6 +114,17 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     timeModeCombo_->addItem("Shared time column (interpolated)");
     timeModeCombo_->addItem("Per-signal time columns (exact)");
 
+    timeAxisCombo_ = new QComboBox(csvGroup_);
+    timeAxisCombo_->addItem("Epoch nanoseconds (exact)");
+    timeAxisCombo_->addItem("Relative seconds (readable)");
+    timeAxisCombo_->setToolTip(
+        "How the time column is written.\n"
+        "Epoch nanoseconds: the absolute timestamp as integer ns — lossless\n"
+        "and absolute, but large integers (not spreadsheet-friendly).\n"
+        "Relative seconds: seconds from the first sample, as a decimal —\n"
+        "readable, but loses the absolute time and sub-ns precision.\n"
+        "Either re-opens correctly in ScopeAnalyser.");
+
     metadataCheck_ = new QCheckBox(
         "Include scope metadata header (# scope-csv: …)", csvGroup_);
     metadataCheck_->setChecked(true);
@@ -139,6 +150,7 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     csvForm->addRow("Row separator:", rowSepWrap);
     csvForm->addRow("Decimal separator:", decimalEdit_);
     csvForm->addRow("Time mode:", timeModeCombo_);
+    csvForm->addRow("Time column:", timeAxisCombo_);
 
     // ---- Channel filters ---------------------------------------------
     filtersGroup_ = new QGroupBox("Channels to include", this);
@@ -322,6 +334,9 @@ scope::converter::CsvExportOptions SaveChartDialog::csvOptions() const {
     o.timeMode = (timeModeCombo_->currentIndex() == 1)
         ? scope::converter::CsvExportOptions::TimeMode::PerSignal
         : scope::converter::CsvExportOptions::TimeMode::Shared;
+    o.timeAxis = (timeAxisCombo_->currentIndex() == 1)
+        ? scope::converter::CsvExportOptions::TimeAxis::RelativeSeconds
+        : scope::converter::CsvExportOptions::TimeAxis::EpochNs;
     return o;
 }
 

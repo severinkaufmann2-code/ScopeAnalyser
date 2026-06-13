@@ -56,13 +56,14 @@ QString columnHeader(const std::shared_ptr<Signal>& s) {
 bool isFreq(const std::shared_ptr<Signal>& s) {
     return s->meta().domain == Signal::Domain::Frequency;
 }
-const char* sharedXLabel(Signal::Domain d) {
-    return d == Signal::Domain::Frequency ? "f [Hz]" : "t [s]";
+QString sharedXLabel(Signal::Domain d, const QString& timeUnit) {
+    return d == Signal::Domain::Frequency ? QStringLiteral("f [Hz]")
+                                          : QStringLiteral("t [%1]").arg(timeUnit);
 }
-QString perSigXHeader(const std::shared_ptr<Signal>& s) {
-    const char* prefix = isFreq(s) ? "f_" : "t_";
-    const char* unit   = isFreq(s) ? "Hz" : "s";
-    return QString("%1%2 [%3]").arg(prefix, s->meta().name, unit);
+QString perSigXHeader(const std::shared_ptr<Signal>& s, const QString& timeUnit) {
+    const QString prefix = isFreq(s) ? QStringLiteral("f_") : QStringLiteral("t_");
+    const QString unit   = isFreq(s) ? QStringLiteral("Hz") : timeUnit;
+    return QStringLiteral("%1%2 [%3]").arg(prefix, s->meta().name, unit);
 }
 
 }  // namespace
@@ -88,6 +89,11 @@ bool writeCsv(const std::filesystem::path& path,
     const QString sep = opts.columnDelimiter.isEmpty() ? QString(",") : opts.columnDelimiter;
     const QString row = opts.rowDelimiter.isEmpty()    ? QString("\n") : opts.rowDelimiter;
     const QString dec = opts.decimalSeparator.isEmpty() ? QString(".") : opts.decimalSeparator;
+
+    // Time-X formatting. EpochNs writes the absolute timestamp as integer ns
+    // (lossless); RelativeSeconds rebases to the earliest sample as a double.
+    const bool    epochNs  = (opts.timeAxis == CsvExportOptions::TimeAxis::EpochNs);
+    const QString timeUnit = epochNs ? QStringLiteral("ns") : QStringLiteral("s");
 
     // Per-signal cache: view + values pulled once.
     struct Cache {
@@ -116,6 +122,12 @@ bool writeCsv(const std::filesystem::path& path,
             timeOriginNs = std::min(timeOriginNs, c->view.timestamps[0]);
     if (timeOriginNs == std::numeric_limits<TimestampNs>::max()) timeOriginNs = 0;
 
+    auto fmtTimeX = [&](TimestampNs t) -> QString {
+        return epochNs
+            ? QString::number(static_cast<qlonglong>(t))
+            : fmtDouble((t - timeOriginNs) / 1e9, dec, opts.decimalDigits);
+    };
+
     // ----- Build the column-descriptor list ---------------------------
     //
     // One entry per column we're about to write, in column order. The
@@ -131,7 +143,7 @@ bool writeCsv(const std::filesystem::path& path,
     std::vector<ColDesc> cols;
     if (opts.timeMode == CsvExportOptions::TimeMode::Shared) {
         if (!timeC.empty()) {
-            cols.push_back({"x_time", "s", "", "", -1});
+            cols.push_back({"x_time", timeUnit.toStdString(), "", "", -1});
             const int xIdx = static_cast<int>(cols.size()) - 1;
             for (const auto* c : timeC) {
                 cols.push_back({"signal",
@@ -156,7 +168,8 @@ bool writeCsv(const std::filesystem::path& path,
         for (const auto& c : caches) {
             const bool freq = isFreq(c.sig);
             cols.push_back({freq ? "x_frequency" : "x_time",
-                            freq ? "Hz" : "s", "", "", -1});
+                            freq ? std::string("Hz") : timeUnit.toStdString(),
+                            "", "", -1});
             const int xIdx = static_cast<int>(cols.size()) - 1;
             cols.push_back({"signal",
                             c.sig->meta().unit.toStdString(),
@@ -217,11 +230,11 @@ bool writeCsv(const std::filesystem::path& path,
             bool firstCol = true;
             auto colSep = [&]{ if (!firstCol) out << sep; firstCol = false; };
             if (!timeC.empty()) {
-                colSep(); out << sharedXLabel(Signal::Domain::Time);
+                colSep(); out << sharedXLabel(Signal::Domain::Time, timeUnit);
                 for (const auto* c : timeC) { colSep(); out << columnHeader(c->sig); }
             }
             if (!freqC.empty()) {
-                colSep(); out << sharedXLabel(Signal::Domain::Frequency);
+                colSep(); out << sharedXLabel(Signal::Domain::Frequency, timeUnit);
                 for (const auto* c : freqC) { colSep(); out << columnHeader(c->sig); }
             }
             out << row;
@@ -237,7 +250,7 @@ bool writeCsv(const std::filesystem::path& path,
                 if (r < timeGrid.size()) {
                     const TimestampNs t = timeGrid[r];
                     colSep();
-                    out << fmtDouble((t - timeOriginNs) / 1e9, dec, opts.decimalDigits);
+                    out << fmtTimeX(t);
                     for (const auto* c : timeC) {
                         colSep();
                         out << fmtDouble(
@@ -277,7 +290,7 @@ bool writeCsv(const std::filesystem::path& path,
             bool first = true;
             for (const auto& c : caches) {
                 if (!first) out << sep;
-                out << perSigXHeader(c.sig) << sep << columnHeader(c.sig);
+                out << perSigXHeader(c.sig, timeUnit) << sep << columnHeader(c.sig);
                 first = false;
             }
             out << row;
@@ -289,11 +302,10 @@ bool writeCsv(const std::filesystem::path& path,
                 if (!first) out << sep;
                 if (r < c.view.count) {
                     const TimestampNs xRaw = c.view.timestamps[r];
-                    const double xVal = isFreq(c.sig)
-                        ? (xRaw / 1e9)
-                        : ((xRaw - timeOriginNs) / 1e9);
-                    out << fmtDouble(xVal, dec, opts.decimalDigits)
-                        << sep
+                    const QString xCell = isFreq(c.sig)
+                        ? fmtDouble(xRaw / 1e9, dec, opts.decimalDigits)
+                        : fmtTimeX(xRaw);
+                    out << xCell << sep
                         << fmtDouble(c.vals[r], dec, opts.decimalDigits);
                 } else {
                     out << sep;  // two empty cells for this signal

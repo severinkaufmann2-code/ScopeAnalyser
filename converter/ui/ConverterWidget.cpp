@@ -919,6 +919,12 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         if (detectorId == "twincat") {
             ok = converter::profileFromTwinCatScope(
                 std::filesystem::path(f.path.toStdString()), &prof, &err);
+        } else if (detectorId == "scopecsv") {
+            // Prefer the authoritative scope-csv metadata header; fall back to
+            // the column-header heuristic for metadata-less Analyser CSVs.
+            const std::filesystem::path p(f.path.toStdString());
+            ok = converter::profileFromScopeMetadata(p, &prof)
+              || converter::profileFromCsvHeader(p, &prof, &err);
         }
         if (!ok) {
             QMessageBox::information(this, "Auto-detect",
@@ -946,10 +952,12 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         impl_->mapping->setProfile(prof);
         impl_->preview->setModel(f.previewModel.get());
         impl_->suppressSave = false;
+        int yCount = 0;
+        for (const auto& c : prof.columns)
+            if (c.role == ColumnMapping::Role::Signal) ++yCount;
         impl_->statusLabel->setText(
             QString("%1: auto-detected %2 channel(s) — review, then Apply")
-                .arg(f.displayName)
-                .arg(static_cast<int>(prof.columns.size()) / 2));
+                .arg(f.displayName).arg(yCount));
     });
 
     // ---- Save / Load profile (per-file scaconv) ---------------------

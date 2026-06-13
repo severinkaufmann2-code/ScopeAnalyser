@@ -108,6 +108,16 @@ bool profileFromScopeJson(const std::filesystem::path& path,
                           ConverterProfile* out,
                           QString* errorOut = nullptr);
 
+// Header-row fallback for the "ScopeAnalyser / headered CSV" auto-detector:
+// build a profile from the column header row alone (no scope-csv metadata
+// line required) using the same shared-X / per-signal-pair heuristic the chart
+// loader uses. Reads ns / s / Hz units from the "name [unit]" header strings so
+// an epoch-ns time column re-imports exactly. Returns false if no usable header
+// row is found.
+bool profileFromCsvHeader(const std::filesystem::path& path,
+                          ConverterProfile* out,
+                          QString* errorOut = nullptr);
+
 // ---- TwinCAT Scope CSV auto-detection ---------------------------------
 // A TwinCAT Measurement / Scope export is a Tab- (or ';'-) delimited file
 // with a metadata preamble, then a multi-row per-channel header block —

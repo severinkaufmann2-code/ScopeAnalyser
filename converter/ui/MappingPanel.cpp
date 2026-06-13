@@ -173,11 +173,11 @@ MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
     decimalEdit_ = new QLineEdit(".", this);
     decimalEdit_->setMaximumWidth(40);
 
-    // Auto-detect: pick a known vendor layout and let the host fill the
-    // mapping in one click. Currently TwinCAT Scope exports only; the
-    // userData carries the detector id the host dispatches on.
+    // Auto-detect: pick a known layout and let the host fill the mapping in
+    // one click. The userData carries the detector id the host dispatches on.
     autoDetectCombo_ = new QComboBox(this);
     autoDetectCombo_->addItem("TwinCAT Scope export", "twincat");
+    autoDetectCombo_->addItem("ScopeAnalyser / headered CSV", "scopecsv");
     autoDetectBtn_ = new QPushButton("Apply auto-detect", this);
     autoDetectBtn_->setToolTip(
         "Detect the channel layout for the chosen format and fill the mapping "

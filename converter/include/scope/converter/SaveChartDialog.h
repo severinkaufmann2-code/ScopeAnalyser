@@ -89,6 +89,7 @@ private:
     QLineEdit*  rowSepCustom_{nullptr};
     QLineEdit*  decimalEdit_{nullptr};
     QComboBox*  timeModeCombo_{nullptr};
+    QComboBox*  timeAxisCombo_{nullptr};
 
     QGroupBox*  filtersGroup_{nullptr};
     QCheckBox*  includeTimeCheck_{nullptr};
