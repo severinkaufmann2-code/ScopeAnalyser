@@ -59,6 +59,7 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     table_->horizontalHeader()->setSectionResizeMode(ColAxis, QHeaderView::ResizeToContents);
     table_->verticalHeader()->setVisible(false);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table_->setAlternatingRowColors(true);
     table_->setShowGrid(false);
@@ -144,7 +145,8 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     auto* editChBtn   = smallBtn(style::Glyph::Pencil,
         "Edit the selected formula channel (double-click also works).");
     auto* removeChBtn = smallBtn(style::Glyph::Minus,
-        "Remove the selected channel from the store.");
+        "Remove the selected channel(s) from the store. Ctrl/Shift-click "
+        "to select several rows and remove them all at once.");
 
     auto* chHeader = new QHBoxLayout();
     chHeader->setSpacing(2);
@@ -294,14 +296,23 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         }
     });
     connect(removeChBtn,  &QToolButton::clicked, this, [this]{
-        const int r = table_->currentRow();
-        if (r < 0) return;
-        const QString name = table_->item(r, /*ColName=*/1)->text();
+        // Collect the names up front: removing a channel rebuilds the table,
+        // so we can't read rows mid-loop.
+        QStringList names;
+        for (const auto& idx : table_->selectionModel()->selectedRows()) {
+            if (auto* it = table_->item(idx.row(), ColName)) names << it->text();
+        }
+        if (names.isEmpty()) return;
+        const QString title  = names.size() == 1 ? "Remove channel?"
+                                                 : "Remove channels?";
+        const QString prompt = names.size() == 1
+            ? QString("Remove channel '%1' from the store?").arg(names.first())
+            : QString("Remove these %1 channels from the store?\n\n%2")
+                  .arg(names.size()).arg(names.join("\n"));
         const auto resp = QMessageBox::question(
-            this, "Remove channel?",
-            QString("Remove channel '%1' from the store?").arg(name),
-            QMessageBox::Yes | QMessageBox::Cancel);
-        if (resp == QMessageBox::Yes) store_.remove(name);
+            this, title, prompt, QMessageBox::Yes | QMessageBox::Cancel);
+        if (resp == QMessageBox::Yes)
+            for (const auto& name : names) store_.remove(name);
     });
 
     // A new/replaced source fires channelAdded, which may feed derived
