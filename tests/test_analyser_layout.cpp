@@ -67,6 +67,12 @@ protected:
                AnalyserPlot::FormulaImport mode) {
         p.applyLayout(l, mode);
     }
+    // What openChartDialog does for an additional file: merge the layout's
+    // axes into whatever is already on screen.
+    void applyMerge(AnalyserPlot& p, const scope::plot::PlotLayout& l) {
+        p.applyLayout(l, AnalyserPlot::FormulaImport::Recalculate,
+                      AnalyserPlot::LayoutApply::Merge);
+    }
 
     // ---- display-correctness helpers (also via friendship) ----
     QCPAbstractPlottable* plottableFor(AnalyserPlot& p, const QString& name) {
@@ -169,6 +175,92 @@ TEST_F(AnalyserPlotLayoutTest, TimeAxisAssignmentsRoundTripThroughWidget) {
     for (const auto& c : out.channelsByDomain.value("time"))
         if (c.name == "torque") torqueAxis = c.axisIndex;
     EXPECT_EQ(torqueAxis, 1) << "axis assignment lost through the widget";
+}
+
+// Opening a second chart must NOT clobber the first file's axis names.
+// Merge keeps the existing axes and appends the new file's distinct ones,
+// remapping the new channels onto them.
+TEST_F(AnalyserPlotLayoutTest, MergeKeepsExistingAxisNamesAndAppendsNew) {
+    SignalStore store;
+    scope::analyser::FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    // File 1 — two channels on two named axes (Replace, like the first open).
+    addTimeChannel(store, "speed",  "rpm");
+    addTimeChannel(store, "torque", "Nm");
+    scope::plot::PlotLayout l1;
+    l1.viewMode = "time";
+    l1.axesByDomain.insert("time", {{"rpm", "left", true, 0.0, 6000.0},
+                                    {"Nm",  "right", true, 0.0, 500.0}});
+    QList<scope::plot::PlotLayoutChannel> c1;
+    { scope::plot::PlotLayoutChannel c; c.name = "speed";  c.axisIndex = 0; c.domain = "time"; c1.append(c); }
+    { scope::plot::PlotLayoutChannel c; c.name = "torque"; c.axisIndex = 1; c.domain = "time"; c1.append(c); }
+    l1.channelsByDomain.insert("time", c1);
+    apply(plot, l1);
+
+    // File 2 — two more channels on two DIFFERENT named axes (Merge).
+    addTimeChannel(store, "pressure", "bar");
+    addTimeChannel(store, "temp",     "degC");
+    scope::plot::PlotLayout l2;
+    l2.viewMode = "time";
+    l2.axesByDomain.insert("time", {{"bar",  "left",  true, 0.0, 10.0},
+                                    {"degC", "right", true, 0.0, 100.0}});
+    QList<scope::plot::PlotLayoutChannel> c2;
+    { scope::plot::PlotLayoutChannel c; c.name = "pressure"; c.axisIndex = 0; c.domain = "time"; c2.append(c); }
+    { scope::plot::PlotLayoutChannel c; c.name = "temp";     c.axisIndex = 1; c.domain = "time"; c2.append(c); }
+    l2.channelsByDomain.insert("time", c2);
+    applyMerge(plot, l2);
+
+    const auto out = grab(plot);
+    ASSERT_TRUE(out.axesByDomain.contains("time"));
+    const auto& axes = out.axesByDomain["time"];
+    ASSERT_EQ(axes.size(), 4) << "second file should append its axes, not replace";
+    EXPECT_EQ(axes[0].label, "rpm");   // file 1's names preserved
+    EXPECT_EQ(axes[1].label, "Nm");
+    EXPECT_EQ(axes[2].label, "bar");   // file 2's appended
+    EXPECT_EQ(axes[3].label, "degC");
+
+    auto axisOf = [&](const QString& n) {
+        for (const auto& c : out.channelsByDomain.value("time"))
+            if (c.name == n) return c.axisIndex;
+        return -1;
+    };
+    EXPECT_EQ(axisOf("speed"),    0);
+    EXPECT_EQ(axisOf("torque"),   1);
+    EXPECT_EQ(axisOf("pressure"), 2);  // remapped onto the appended axes
+    EXPECT_EQ(axisOf("temp"),     3);
+}
+
+// A second file whose axis shares a label with an existing one reuses that
+// axis (no duplicate) and lands its channel there.
+TEST_F(AnalyserPlotLayoutTest, MergeReusesAxisWithSameLabel) {
+    SignalStore store;
+    scope::analyser::FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    addTimeChannel(store, "speedA", "rpm");
+    scope::plot::PlotLayout l1;
+    l1.viewMode = "time";
+    l1.axesByDomain.insert("time", {{"rpm", "left", true, 0.0, 6000.0}});
+    QList<scope::plot::PlotLayoutChannel> c1;
+    { scope::plot::PlotLayoutChannel c; c.name = "speedA"; c.axisIndex = 0; c.domain = "time"; c1.append(c); }
+    l1.channelsByDomain.insert("time", c1);
+    apply(plot, l1);
+
+    addTimeChannel(store, "speedB", "rpm");
+    scope::plot::PlotLayout l2;
+    l2.viewMode = "time";
+    l2.axesByDomain.insert("time", {{"rpm", "left", true, 0.0, 8000.0}});
+    QList<scope::plot::PlotLayoutChannel> c2;
+    { scope::plot::PlotLayoutChannel c; c.name = "speedB"; c.axisIndex = 0; c.domain = "time"; c2.append(c); }
+    l2.channelsByDomain.insert("time", c2);
+    applyMerge(plot, l2);
+
+    const auto out = grab(plot);
+    ASSERT_TRUE(out.axesByDomain.contains("time"));
+    EXPECT_EQ(out.axesByDomain["time"].size(), 1) << "same-label axis should be reused";
+    for (const auto& c : out.channelsByDomain.value("time"))
+        EXPECT_EQ(c.axisIndex, 0) << c.name.toStdString() << " should share the rpm axis";
 }
 
 // The Open-chart formula-import modes, applied per channel. Mirrors Open:

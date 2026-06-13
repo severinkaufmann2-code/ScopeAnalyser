@@ -40,6 +40,16 @@ public:
     //                     reopened with exactly the data it contains.
     enum class FormulaImport { Recalculate, ImportDataOnly };
 
+    // How applyLayout() reconciles the incoming layout's Y axes with what's
+    // already on screen.
+    //   Replace — drop the existing per-domain axes + assignments and use the
+    //             layout's (a deliberate "Load layout…", or the first file).
+    //   Merge   — keep existing axes (names/sides/ranges); axes from the new
+    //             layout are matched to existing ones by label and reused, or
+    //             appended when unmatched. Used when opening an additional
+    //             chart so a second file can't clobber the first's axis names.
+    enum class LayoutApply { Replace, Merge };
+
 public slots:
     void redrawAll();
     void onChannelAdded(QString name);
@@ -123,7 +133,8 @@ private:
     // and differ only in whether the formula metadata is retained or wiped.
     scope::plot::PlotLayout currentLayout();
     void applyLayout(const scope::plot::PlotLayout& layout,
-                     FormulaImport mode = FormulaImport::Recalculate);
+                     FormulaImport mode = FormulaImport::Recalculate,
+                     LayoutApply   axes = LayoutApply::Replace);
 
     // The current per-domain view (axes, channel→axis assignments,
     // visibility, display colours) for the interactive-HTML exporter —

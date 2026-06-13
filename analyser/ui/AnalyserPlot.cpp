@@ -1023,18 +1023,51 @@ void AnalyserPlot::saveLayoutDialog() {
 }
 
 void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout,
-                               FormulaImport mode) {
+                               FormulaImport mode, LayoutApply axes) {
     // ---- Hydrate stateByDomain_ from the layout ----------------------
     using Domain = scope::core::Signal::Domain;
+
+    // Merge keeps the axes already on screen, so capture any live edits (a
+    // renamed axis, a manual range) into the active domain's state first;
+    // otherwise applyFromDomain would rebuild from a stale snapshot.
+    if (axes == LayoutApply::Merge)
+        snapshotIntoDomain(activeDomain());
+
     auto loadDomain = [&](Domain d, const QString& key) {
-        PerDomainState st;
-        st.axes = layout.axesByDomain.value(key);
-        // Channels → per-channel axis assignment. Visibility defaults to
-        // true (layout doesn't persist visibility — it's transient UI).
-        for (const auto& c : layout.channelsByDomain.value(key)) {
-            st.rowState[c.name] = {true, c.axisIndex};
+        const auto& inAxes  = layout.axesByDomain.value(key);
+        const auto& inChans = layout.channelsByDomain.value(key);
+
+        if (axes == LayoutApply::Replace) {
+            PerDomainState st;
+            st.axes = inAxes;
+            // Channels → per-channel axis assignment. Visibility defaults to
+            // true (layout doesn't persist visibility — it's transient UI).
+            for (const auto& c : inChans)
+                st.rowState[c.name] = {true, c.axisIndex};
+            stateByDomain_[static_cast<int>(d)] = std::move(st);
+            return;
         }
-        stateByDomain_[static_cast<int>(d)] = std::move(st);
+
+        // Merge: reconcile incoming axes with the existing ones by label —
+        // reuse a matching axis (keeping its name / side / range), append the
+        // rest, and remap each incoming axis index to the merged index so the
+        // assignments land on the right axis. Existing channels' assignments
+        // are left untouched, so a second file can't clobber the first's.
+        PerDomainState& st = stateByDomain_[static_cast<int>(d)];
+        QHash<int, int> remap;
+        for (int i = 0; i < inAxes.size(); ++i) {
+            int match = -1;
+            for (int j = 0; j < st.axes.size(); ++j) {
+                if (st.axes[j].label == inAxes[i].label) { match = j; break; }
+            }
+            if (match < 0) {
+                st.axes.append(inAxes[i]);
+                match = st.axes.size() - 1;
+            }
+            remap.insert(i, match);
+        }
+        for (const auto& c : inChans)
+            st.rowState[c.name] = {true, remap.value(c.axisIndex, 0)};
     };
     loadDomain(Domain::Time,      "time");
     loadDomain(Domain::Frequency, "frequency");
@@ -1407,7 +1440,9 @@ void AnalyserPlot::openChartDialog() {
     }
 
     if (haveLayout) {
-        applyLayout(layout, formulaMode);
+        // Merge into whatever's already on screen so opening a second chart
+        // doesn't overwrite the first file's Y-axis names / assignments.
+        applyLayout(layout, formulaMode, LayoutApply::Merge);
     }
 
     QMessageBox::information(this, "Opened",
