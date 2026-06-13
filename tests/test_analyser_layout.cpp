@@ -63,6 +63,10 @@ protected:
     // These run as members of the friend class, so they may touch privates.
     scope::plot::PlotLayout grab(AnalyserPlot& p) { return p.currentLayout(); }
     void apply(AnalyserPlot& p, const scope::plot::PlotLayout& l) { p.applyLayout(l); }
+    void apply(AnalyserPlot& p, const scope::plot::PlotLayout& l,
+               AnalyserPlot::FormulaImport mode) {
+        p.applyLayout(l, mode);
+    }
 
     // ---- display-correctness helpers (also via friendship) ----
     QCPAbstractPlottable* plottableFor(AnalyserPlot& p, const QString& name) {
@@ -165,6 +169,73 @@ TEST_F(AnalyserPlotLayoutTest, TimeAxisAssignmentsRoundTripThroughWidget) {
     for (const auto& c : out.channelsByDomain.value("time"))
         if (c.name == "torque") torqueAxis = c.axisIndex;
     EXPECT_EQ(torqueAxis, 1) << "axis assignment lost through the widget";
+}
+
+// The two Open-chart formula-import modes. Mirrors Open: data already in
+// the store, then applyLayout with the chosen mode.
+//   ImportDataOnly — exact saved values, formula metadata wiped (plain channel).
+//   Recalculate    — re-derived from the sources.
+TEST_F(AnalyserPlotLayoutTest, FormulaImportModes) {
+    // "double" = 2*speed, loaded with deliberately stale values and the
+    // formula text in sourceSymbol (as a round-tripped file would carry it).
+    auto addStaleDouble = [](SignalStore& store) {
+        Signal::Meta m;
+        m.name = "double"; m.unit = "rpm";
+        m.dataType = DataType::Float64; m.domain = Signal::Domain::Time;
+        m.sourceSymbol = "double = 2 * speed";
+        std::vector<TimestampNs> ts{0, 1'000'000LL, 2'000'000LL};
+        std::vector<double> vs{99.0, 99.0, 99.0};
+        auto s = std::make_shared<Signal>(m);
+        s->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), ts.size());
+        store.add(s);
+    };
+    auto layout = [] {
+        scope::plot::PlotLayout in; in.viewMode = "time";
+        QList<scope::plot::PlotLayoutAxis> axes;
+        axes.append({"rpm", "left", false, 0.0, 0.0});
+        in.axesByDomain.insert("time", axes);
+        QList<scope::plot::PlotLayoutChannel> chans;
+        { scope::plot::PlotLayoutChannel c; c.name = "speed";  c.axisIndex = 0; c.domain = "time"; chans.append(c); }
+        { scope::plot::PlotLayoutChannel c; c.name = "double"; c.axisIndex = 0; c.domain = "time"; c.formula = "2 * speed"; chans.append(c); }
+        in.channelsByDomain.insert("time", chans);
+        return in;
+    };
+    using FI = AnalyserPlot::FormulaImport;
+
+    // ImportDataOnly — values untouched and the formula wiped → plain channel:
+    // not registered (so a Redraw won't recompute it) and sourceSymbol cleared
+    // (so editChannelDialog treats it as "not a formula channel").
+    {
+        SignalStore store;
+        scope::analyser::FormulaEngine engine(store);
+        AnalyserPlot plot(store, engine);
+        addTimeChannel(store, "speed", "rpm");   // {1, 2, 3}
+        addStaleDouble(store);                   // {99, 99, 99}
+        apply(plot, layout(), FI::ImportDataOnly);
+        auto sig = store.get("double");
+        auto vs = sig->readAsDouble();
+        ASSERT_EQ(vs.size(), 3u);
+        EXPECT_DOUBLE_EQ(vs[0], 99.0);
+        EXPECT_DOUBLE_EQ(vs[2], 99.0);
+        EXPECT_TRUE(engine.formulaFor("double").isEmpty())
+            << "ImportDataOnly must not register the formula";
+        EXPECT_TRUE(sig->meta().sourceSymbol.isEmpty())
+            << "ImportDataOnly must strip the formula metadata";
+    }
+    // Recalculate — re-derived to 2*speed = {2, 4, 6}.
+    {
+        SignalStore store;
+        scope::analyser::FormulaEngine engine(store);
+        AnalyserPlot plot(store, engine);
+        addTimeChannel(store, "speed", "rpm");   // {1, 2, 3}
+        addStaleDouble(store);                   // {99, 99, 99}
+        apply(plot, layout(), FI::Recalculate);
+        auto vs = store.get("double")->readAsDouble();
+        ASSERT_EQ(vs.size(), 3u);
+        EXPECT_DOUBLE_EQ(vs[0], 2.0);
+        EXPECT_DOUBLE_EQ(vs[1], 4.0);
+        EXPECT_DOUBLE_EQ(vs[2], 6.0);
+    }
 }
 
 // Smoke test: the Add-Channel dialog (filter builder + response charts) must

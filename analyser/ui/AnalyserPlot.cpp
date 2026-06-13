@@ -1022,7 +1022,8 @@ void AnalyserPlot::saveLayoutDialog() {
     }
 }
 
-void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout) {
+void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout,
+                               FormulaImport mode) {
     // ---- Hydrate stateByDomain_ from the layout ----------------------
     using Domain = scope::core::Signal::Domain;
     auto loadDomain = [&](Domain d, const QString& key) {
@@ -1038,27 +1039,46 @@ void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout) {
     loadDomain(Domain::Time,      "time");
     loadDomain(Domain::Frequency, "frequency");
 
-    // ---- Re-evaluate formula channels --------------------------------
-    // Register every formula with the engine first, then recompute the
-    // whole set. This (a) recomputes derived channels even when their data
-    // was embedded in the file and reloaded as a plain channel — so they
-    // reflect the current sources instead of stale saved values; and
-    // (b) restores the formula definition even for formats that don't
-    // round-trip Signal::Meta::sourceSymbol, so the next save keeps it.
+    // ---- Formula (math) channels -------------------------------------
+    // Two behaviours, picked by the Open-chart popup:
+    //   Recalculate    — register each formula then recompute the whole set,
+    //                    so derived channels reflect the current sources
+    //                    instead of the saved values, and the definition is
+    //                    restored even for formats that don't round-trip
+    //                    Signal::Meta::sourceSymbol.
+    //   ImportDataOnly — keep the loaded values untouched and strip the
+    //                    formula entirely: forget any registration and clear
+    //                    sourceSymbol, so the channel becomes a plain signal
+    //                    (not editable as a formula, never recomputed — a
+    //                    later Redraw leaves it alone).
     const auto allLayoutChans = [&] {
         QList<scope::plot::PlotLayoutChannel> all;
         for (const auto& list : layout.channelsByDomain) all.append(list);
         return all;
     }();
-    for (const auto& c : allLayoutChans) {
-        if (!c.formula.isEmpty()) engine_.rememberFormula(c.name, c.formula);
-    }
-    QStringList formulaErrors;
-    engine_.recomputeAll(&formulaErrors);
-    if (!formulaErrors.isEmpty()) {
-        QMessageBox::warning(this, "Some formulas failed",
-            "Couldn't re-evaluate (kept any saved data as-is):\n"
-                + formulaErrors.join("\n"));
+    if (mode == FormulaImport::Recalculate) {
+        for (const auto& c : allLayoutChans) {
+            if (!c.formula.isEmpty()) engine_.rememberFormula(c.name, c.formula);
+        }
+        QStringList formulaErrors;
+        engine_.recomputeAll(&formulaErrors);
+        if (!formulaErrors.isEmpty()) {
+            QMessageBox::warning(this, "Some formulas failed",
+                "Couldn't re-evaluate (kept any saved data as-is):\n"
+                    + formulaErrors.join("\n"));
+        }
+    } else {  // ImportDataOnly
+        for (const auto& c : allLayoutChans) {
+            if (c.formula.isEmpty()) continue;
+            engine_.forget(c.name);
+            if (auto s = store_.get(c.name)) {
+                auto m = s->meta();
+                if (!m.sourceSymbol.isEmpty()) {
+                    m.sourceSymbol.clear();
+                    s->setMeta(m);
+                }
+            }
+        }
     }
     pendingAssignments_.clear();
     for (const auto& c : allLayoutChans) {
@@ -1314,6 +1334,59 @@ void AnalyserPlot::openChartDialog() {
         if (resp != QMessageBox::Ok) return;
     }
 
+    // If the file carries an embedded PlotLayout (any ScopeAnalyser-saved
+    // .h5 / .mf4 / .csv / .html), parse it up front. Foreign / pre-layout
+    // files leave layoutJson empty.
+    scope::plot::PlotLayout layout;
+    bool haveLayout = false;
+    if (!r.layoutJson.isEmpty()) {
+        QString lerr;
+        layout = scope::plot::PlotLayout::fromJsonString(r.layoutJson, &lerr);
+        haveLayout = lerr.isEmpty();
+    }
+
+    // When the layout defines formula (math) channels, opening normally
+    // would re-evaluate them and overwrite the saved values. Ask the user
+    // how to treat them — so a reopen can leave the file's data untouched.
+    // Done before any channel is added so Cancel is a clean no-op.
+    FormulaImport formulaMode = FormulaImport::Recalculate;
+    if (haveLayout) {
+        int formulaCount = 0;
+        for (const auto& list : layout.channelsByDomain)
+            for (const auto& c : list)
+                if (!c.formula.isEmpty()) ++formulaCount;
+
+        if (formulaCount > 0) {
+            QMessageBox box(this);
+            box.setIcon(QMessageBox::Question);
+            box.setWindowTitle("Formula channels");
+            box.setText(QString("This file contains %1 formula (math) "
+                                "channel(s).").arg(formulaCount));
+            box.setInformativeText(
+                "How should they be imported?\n\n"
+                "• Import data only — keep every stored value exactly and "
+                "discard the formula metadata, so they become plain signal "
+                "channels (not editable as formulas, never recalculated).\n"
+                "• Import formula — re-run each formula over the current "
+                "sources (may change the saved values).");
+            // All three share ActionRole so QMessageBox lays them out in the
+            // order added (left → right): data, formula, then Cancel on the
+            // right. Escape / window-close maps to Cancel.
+            auto* dataBtn    = box.addButton("Import data only",
+                                             QMessageBox::ActionRole);
+            auto* formulaBtn = box.addButton("Import formula",
+                                             QMessageBox::ActionRole);
+            auto* cancelBtn  = box.addButton("Cancel", QMessageBox::ActionRole);
+            box.setDefaultButton(dataBtn);
+            box.setEscapeButton(cancelBtn);
+            box.exec();
+            auto* clicked = box.clickedButton();
+            if (clicked == dataBtn)         formulaMode = FormulaImport::ImportDataOnly;
+            else if (clicked == formulaBtn) formulaMode = FormulaImport::Recalculate;
+            else return;   // Cancel / closed — nothing added
+        }
+    }
+
     for (auto& s : r.channels) {
         auto meta = s->meta();
         meta.name = uniqueStoreName(store_, meta.name);
@@ -1321,18 +1394,8 @@ void AnalyserPlot::openChartDialog() {
         store_.add(s);
     }
 
-    // If the file carried an embedded PlotLayout (Analyser-written CSV /
-    // HDF5 / MDF4), apply it now that the channels are in the store.
-    // applyLayout will also re-evaluate any formula channels it referenced.
-    // Foreign / pre-layout files leave layoutJson empty — fall through
-    // silently.
-    if (!r.layoutJson.isEmpty()) {
-        QString lerr;
-        auto layout = scope::plot::PlotLayout::fromJsonString(
-            r.layoutJson, &lerr);
-        if (lerr.isEmpty()) {
-            applyLayout(layout);
-        }
+    if (haveLayout) {
+        applyLayout(layout, formulaMode);
     }
 
     QMessageBox::information(this, "Opened",

@@ -29,6 +29,17 @@ public:
                  FormulaEngine&            engine,
                  QWidget*                  parent = nullptr);
 
+    // How applyLayout() treats formula (math) channels on open. Chosen via
+    // the Open-chart popup when the file carries formula channels.
+    //   Recalculate    — re-evaluate each formula against its sources
+    //                     (values may change; channels stay live/editable).
+    //   ImportDataOnly — keep the exact saved values and strip all formula
+    //                     metadata (forget it + clear sourceSymbol), so the
+    //                     channels become plain signal channels: not editable
+    //                     as formulas and never recomputed. Lets a file be
+    //                     reopened with exactly the data it contains.
+    enum class FormulaImport { Recalculate, ImportDataOnly };
+
 public slots:
     void redrawAll();
     void onChannelAdded(QString name);
@@ -105,8 +116,14 @@ private:
     // applyLayout() does everything loadLayoutDialog does after the
     // file has been parsed — hydrate stateByDomain_, re-eval formulas,
     // switch viewMode, rebuild the table.
+    //
+    // `mode` controls what happens to formula channels (see FormulaImport):
+    // Recalculate re-evaluates them; KeepFrozen / RemoveFormulas keep the
+    // exact values loaded from the file (so reopening never alters the data)
+    // and differ only in whether the formula metadata is retained or wiped.
     scope::plot::PlotLayout currentLayout();
-    void applyLayout(const scope::plot::PlotLayout& layout);
+    void applyLayout(const scope::plot::PlotLayout& layout,
+                     FormulaImport mode = FormulaImport::Recalculate);
 
     // The current per-domain view (axes, channel→axis assignments,
     // visibility, display colours) for the interactive-HTML exporter —
