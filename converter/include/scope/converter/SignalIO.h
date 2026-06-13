@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CsvWriter.h"
+#include "HtmlExport.h"
 
 #include "scope/core/Signal.h"
 #include "scope/core/SignalStore.h"
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace scope::converter {
@@ -25,10 +27,12 @@ enum class FileFormat {
     Csv,
     Hdf5,
     Mdf4,
+    Html,    // self-contained interactive chart with an embedded data island
 };
 
 // Pick a format from a path's extension. ".h5"/".hdf5" → Hdf5, ".mf4" →
-// Mdf4, ".csv"/".txt" → Csv. Returns Auto if nothing matches.
+// Mdf4, ".csv"/".txt" → Csv, ".html"/".htm" → Html. Returns Auto if nothing
+// matches.
 FileFormat detectFormatFromExtension(const std::filesystem::path& path);
 
 // File-dialog name filters and the default suffix for a given format.
@@ -56,6 +60,13 @@ struct SaveOptions {
     // → falls back to `layoutJson`. Lets each split file embed only the
     // axes / channels for the domain it actually contains.
     QHash<QString, QString> layoutJsonByDomain;
+
+    // Consulted only for FileFormat::Html: the axis / colour / visibility /
+    // view layout the storable HTML page should mirror (built by the
+    // Analyser from its live plot). Absent → the HTML writer derives a
+    // default view (one axis per domain, palette colours), which is what the
+    // Converter — having no plot — uses.
+    std::optional<HtmlExportView> htmlView;
 };
 
 struct LoadResult {

@@ -1,7 +1,12 @@
 #pragma once
 
+#include "scope/core/Signal.h"
+
 #include <QList>
 #include <QString>
+
+#include <memory>
+#include <vector>
 
 namespace scope::core { class SignalStore; }
 
@@ -36,6 +41,13 @@ struct HtmlExportView {
     // that has channels.
     QString initialView{"time"};
     QString xyChannel;
+
+    // Compact PlotLayout JSON to embed in a *storable* export so re-opening
+    // restores Y axes / view mode / channel assignments — exactly like the
+    // HDF5 / MDF4 / CSV save paths. Consumed only by exportStorableHtml();
+    // the visualisation-only exportInteractiveHtml() ignores it. Empty →
+    // nothing embedded (e.g. the Converter, which has no plot).
+    QString layoutJson;
 };
 
 // Write a fully self-contained interactive HTML chart that mirrors the
@@ -62,5 +74,36 @@ bool exportInteractiveHtml(const QString& path,
                            const scope::core::SignalStore& store,
                            const HtmlExportView& view,
                            QString* errorOut = nullptr);
+
+// ---------- Storable HTML (data island + re-import) --------------------
+//
+// Like exportInteractiveHtml(), but writes the channel data ONCE, as a
+// single canonical JSON island (<script type="application/json"
+// id="scope-data">). The page renders from that island (no second copy of
+// the data) and ScopeAnalyser can re-open the file: HTML becomes a peer of
+// .h5 / .mf4 / .csv — both saveable and openable. Timestamps are stored as
+// exact int64-ns strings, units / domains are explicit, and an optional
+// PlotLayout (view.layoutJson) is embedded for axis/view restore.
+//
+// The original exportInteractiveHtml() above is kept untouched as the
+// visualisation-only "Export HTML…" path; its output has no data island and
+// is NOT re-loadable.
+bool exportStorableHtml(const QString& path,
+                        const scope::core::SignalStore& store,
+                        QString* errorOut = nullptr);
+bool exportStorableHtml(const QString& path,
+                        const scope::core::SignalStore& store,
+                        const HtmlExportView& view,
+                        QString* errorOut = nullptr);
+
+// Re-import a storable HTML's embedded "scope-data" island. Rebuilds one
+// Signal per channel (name / unit / domain / values / timestamps restored)
+// and, when present, returns the embedded PlotLayout JSON via layoutJsonOut.
+// Returns false (with *errorOut set) when the file carries no island — e.g.
+// an old visualisation-only export, or any non-scope HTML.
+bool loadStorableHtml(const QString& path,
+                      std::vector<std::shared_ptr<scope::core::Signal>>* channelsOut,
+                      QString* layoutJsonOut = nullptr,
+                      QString* errorOut = nullptr);
 
 }  // namespace scope::converter

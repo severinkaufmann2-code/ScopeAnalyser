@@ -522,7 +522,11 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             this, [switchTo](int row){ switchTo(row); });
 
     auto addFileToList = [this](const OpenedFile& f) {
-        const QString tag = (f.type == FileType::Csv) ? "[csv]" : "[h5]";
+        // HTML rides the recording (H5) path but deserves an honest tag.
+        const QString suffix = QFileInfo(f.displayName).suffix().toLower();
+        const QString tag = (f.type == FileType::Csv) ? "[csv]"
+                          : (suffix == "html" || suffix == "htm") ? "[html]"
+                                                                   : "[h5]";
         impl_->fileList->addItem(QString("%1 %2").arg(tag, f.displayName));
     };
 
@@ -620,16 +624,21 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             [this, openRecording, openCsvForMapping]{
         const QString path = QFileDialog::getOpenFileName(
             this, "Open chart", QString(),
-            "Scope files (*.h5 *.mf4 *.csv *.tsv *.txt);;"
+            "Scope files (*.h5 *.mf4 *.csv *.tsv *.txt *.html *.htm);;"
             "Recordings (*.h5 *.mf4);;"
             "HDF5 (*.h5);;MDF4 (*.mf4);;"
             "CSV / text (*.csv *.tsv *.txt);;"
+            "Interactive HTML chart (*.html *.htm);;"
             "All files (*)");
         if (path.isEmpty()) return;
         const auto fmt = converter::detectFormatFromExtension(
             std::filesystem::path(path.toStdString()));
         if (fmt == converter::FileFormat::Hdf5
-            || fmt == converter::FileFormat::Mdf4) {
+            || fmt == converter::FileFormat::Mdf4
+            || fmt == converter::FileFormat::Html) {
+            // HTML carries fully-formed signals (its embedded data island),
+            // so it loads exactly like a recording: into memory, then the
+            // user picks channels and Applies.
             openRecording(path);
         } else {
             // .csv / .tsv / .txt / unknown → mapping panel.
@@ -1238,6 +1247,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         const converter::FileFormat fmt =
               (fmtChoice == converter::ui::SaveChartDialog::Format::Csv)  ? converter::FileFormat::Csv
             : (fmtChoice == converter::ui::SaveChartDialog::Format::Mdf4) ? converter::FileFormat::Mdf4
+            : (fmtChoice == converter::ui::SaveChartDialog::Format::Html) ? converter::FileFormat::Html
                                                                           : converter::FileFormat::Hdf5;
 
         QFileDialog fileDlg(this,

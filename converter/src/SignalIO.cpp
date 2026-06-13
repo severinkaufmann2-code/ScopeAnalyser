@@ -1,6 +1,7 @@
 #include "scope/converter/SignalIO.h"
 
 #include "scope/converter/ConverterProfile.h"
+#include "scope/converter/HtmlExport.h"
 #include "scope/core/Hdf5Session.h"
 #include "scope/core/Mdf4Session.h"
 
@@ -400,9 +401,10 @@ bool writeMdf4(const std::filesystem::path& path,
 
 FileFormat detectFormatFromExtension(const std::filesystem::path& path) {
     const QString e = lowerExt(path);
-    if (e == ".h5" || e == ".hdf5") return FileFormat::Hdf5;
-    if (e == ".mf4")                return FileFormat::Mdf4;
-    if (e == ".csv" || e == ".txt") return FileFormat::Csv;
+    if (e == ".h5" || e == ".hdf5")  return FileFormat::Hdf5;
+    if (e == ".mf4")                 return FileFormat::Mdf4;
+    if (e == ".csv" || e == ".txt")  return FileFormat::Csv;
+    if (e == ".html" || e == ".htm") return FileFormat::Html;
     return FileFormat::Auto;
 }
 
@@ -411,12 +413,14 @@ QStringList nameFilters(FileFormat fmt) {
         case FileFormat::Csv:  return {"CSV (*.csv)", "Text (*.txt)", "All files (*)"};
         case FileFormat::Hdf5: return {"HDF5 (*.h5)", "All files (*)"};
         case FileFormat::Mdf4: return {"MDF4 (*.mf4)", "All files (*)"};
+        case FileFormat::Html: return {"Interactive HTML chart (*.html)", "All files (*)"};
         case FileFormat::Auto:
         default:
-            return {"Scope chart (*.h5 *.mf4 *.csv *.txt)",
+            return {"Scope chart (*.h5 *.mf4 *.csv *.txt *.html)",
                     "HDF5 (*.h5)",
                     "MDF4 (*.mf4)",
                     "CSV / text (*.csv *.txt)",
+                    "Interactive HTML chart (*.html *.htm)",
                     "All files (*)"};
     }
 }
@@ -426,6 +430,7 @@ QString defaultSuffix(FileFormat fmt) {
         case FileFormat::Csv:  return "csv";
         case FileFormat::Hdf5: return "h5";
         case FileFormat::Mdf4: return "mf4";
+        case FileFormat::Html: return "html";
         case FileFormat::Auto:
         default:               return "h5";
     }
@@ -458,6 +463,12 @@ LoadResult loadFile(const std::filesystem::path& path, FileFormat fmt) {
             r.ok = loadCsvChart(path, &r.channels, &r.error, &r.layoutJson,
                                 &r.autoDetectedFormat);
             return r;
+        case FileFormat::Html: {
+            r.ok = loadStorableHtml(QString::fromStdString(path.string()),
+                                    &r.channels, &r.layoutJson, &err);
+            r.error = err;
+            return r;
+        }
         case FileFormat::Auto:
         default:
             r.error = "Unsupported file format (couldn't detect from extension).";
@@ -481,6 +492,22 @@ bool saveFile(const std::filesystem::path& path,
             CsvExportOptions csvOpts = opts.csv;
             if (!opts.layoutJson.isEmpty()) csvOpts.layoutJson = opts.layoutJson;
             return writeCsv(path, channels, csvOpts, errorOut);
+        }
+        case FileFormat::Html: {
+            // Storable HTML stores the data once and re-imports via
+            // loadStorableHtml. Stage the (already filtered / trimmed)
+            // channels into a scratch store so exportStorableHtml can read
+            // them; mirror the live plot layout when the caller supplied one
+            // (Analyser), else fall back to a default view (Converter).
+            scope::core::SignalStore tmp;
+            for (const auto& s : channels) if (s) tmp.add(s);
+            const QString out = QString::fromStdString(path.string());
+            if (opts.htmlView) {
+                HtmlExportView view = *opts.htmlView;
+                if (!opts.layoutJson.isEmpty()) view.layoutJson = opts.layoutJson;
+                return exportStorableHtml(out, tmp, view, errorOut);
+            }
+            return exportStorableHtml(out, tmp, errorOut);
         }
         case FileFormat::Auto:
         default:
@@ -584,7 +611,10 @@ ChartSaveResult saveChartFromStore(
     }
 
     const bool haveBoth = !timeChans.empty() && !freqChans.empty();
-    const bool reallySplit = filters.splitDomainsIntoTwoFiles && haveBoth;
+    // HTML is always a single file: the page has its own Time / Frequency /
+    // XY view selector, so a per-domain split makes no sense for it.
+    const bool reallySplit = filters.splitDomainsIntoTwoFiles && haveBoth
+                          && fmt != FileFormat::Html;
 
     // Each write gets its own layout string: a split single-domain file
     // carries only that domain's layout (opts.layoutJsonByDomain), while a

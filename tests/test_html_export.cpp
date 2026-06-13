@@ -5,6 +5,7 @@
 // gaps instead of fabricated numbers.
 
 #include "scope/converter/HtmlExport.h"
+#include "scope/converter/SignalIO.h"
 #include "scope/core/Signal.h"
 #include "scope/core/SignalStore.h"
 
@@ -205,4 +206,184 @@ TEST(HtmlExport, InitialViewAndXyChannelAreEmbedded) {
 
     EXPECT_TRUE(html.contains("makeApp({view:\"xy\",xyChannel:\"a\""));
     EXPECT_TRUE(html.contains("function pairXY"));
+}
+
+// ---------------------------------------------------------------------------
+// Storable HTML: the data is written ONCE (a JSON island) and re-imported, so
+// HTML is a peer of .h5 / .mf4 / .csv — saveable and openable. The original
+// exportInteractiveHtml() above is kept as the visualisation-only path.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+QString writeStorable(const SignalStore& store, const HtmlExportView* view,
+                      const QString& tag, bool* okOut, QString* errOut) {
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("scope_storable_" + tag.toStdString() + ".html");
+    const QString p = QString::fromStdString(path.string());
+    QString err;
+    const bool ok = view ? exportStorableHtml(p, store, *view, &err)
+                         : exportStorableHtml(p, store, &err);
+    if (okOut) *okOut = ok;
+    if (errOut) *errOut = err;
+    return p;
+}
+
+std::shared_ptr<Signal> byName(
+    const std::vector<std::shared_ptr<Signal>>& v, const QString& name) {
+    for (const auto& s : v) if (s && s->meta().name == name) return s;
+    return nullptr;
+}
+
+}  // namespace
+
+TEST(StorableHtml, RoundTripsChannelsValuesUnitsAndDomains) {
+    SignalStore store;
+    store.add(makeSig("speed", "rpm", Signal::Domain::Time,
+                      5'000'000'000LL, 100'000'000LL, {1.5, 2.5, 3.5}));
+    store.add(makeSig("mag", "dB", Signal::Domain::Frequency,
+                      0, 1'000'000'000LL, {9.0, 8.0, 7.0}));
+
+    bool ok = false;
+    QString err;
+    const QString p = writeStorable(store, nullptr, "rt", &ok, &err);
+    ASSERT_TRUE(ok) << err.toStdString();
+
+    std::vector<std::shared_ptr<Signal>> chans;
+    QString layout, lerr;
+    ASSERT_TRUE(loadStorableHtml(p, &chans, &layout, &lerr)) << lerr.toStdString();
+    std::error_code ec; std::filesystem::remove(p.toStdString(), ec);
+
+    ASSERT_EQ(chans.size(), 2u);
+
+    auto speed = byName(chans, "speed");
+    ASSERT_TRUE(speed != nullptr);
+    EXPECT_EQ(speed->meta().unit.toStdString(), "rpm");
+    EXPECT_EQ(static_cast<int>(speed->meta().domain),
+              static_cast<int>(Signal::Domain::Time));
+    ASSERT_EQ(speed->sampleCount(), 3u);
+    {
+        auto rv = speed->snapshotForRead();
+        auto vs = speed->readAsDouble();
+        EXPECT_EQ(rv.timestamps[0], 5'000'000'000LL);   // exact int64 ns
+        EXPECT_EQ(rv.timestamps[1], 5'100'000'000LL);
+        EXPECT_EQ(rv.timestamps[2], 5'200'000'000LL);
+        EXPECT_DOUBLE_EQ(vs[0], 1.5);
+        EXPECT_DOUBLE_EQ(vs[2], 3.5);
+    }
+
+    auto mag = byName(chans, "mag");
+    ASSERT_TRUE(mag != nullptr);
+    EXPECT_EQ(mag->meta().unit.toStdString(), "dB");
+    EXPECT_EQ(static_cast<int>(mag->meta().domain),
+              static_cast<int>(Signal::Domain::Frequency));
+    {
+        auto rv = mag->snapshotForRead();
+        EXPECT_EQ(rv.timestamps[1], 1'000'000'000LL);
+    }
+}
+
+TEST(StorableHtml, CompressesIslandStaysOfflineAndStillRoundTrips) {
+    SignalStore store;
+    store.add(makeSig("a", "V", Signal::Domain::Time, 0, 1'000'000LL,
+                      {11.5, 22.5, 33.5}));
+    bool ok = false;
+    QString err;
+    const QString p = writeStorable(store, nullptr, "compress", &ok, &err);
+    ASSERT_TRUE(ok) << err.toStdString();
+
+    QString html;
+    { QFile f(p); ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+      html = QString::fromUtf8(f.readAll()); }
+
+    EXPECT_TRUE(html.contains("id=\"scope-data\""));            // the single island
+    EXPECT_TRUE(html.contains("data-encoding=\"gzip+base64\"")); // …compressed
+    EXPECT_TRUE(html.contains("gunzipSync"));                   // fflate decoder embedded
+    EXPECT_GT(html.size(), 50'000);                             // uPlot embedded
+    EXPECT_TRUE(html.contains("uPlot"));
+    EXPECT_FALSE(html.contains("http://"));
+    // The island is gzipped, so the plaintext values must NOT appear verbatim.
+    EXPECT_FALSE(html.contains("11.5,22.5,33.5"))
+        << "data island should be compressed, not plaintext";
+
+    // …and it still re-imports losslessly through the gunzip path.
+    std::vector<std::shared_ptr<Signal>> chans;
+    QString lerr;
+    ASSERT_TRUE(loadStorableHtml(p, &chans, nullptr, &lerr)) << lerr.toStdString();
+    std::error_code ec; std::filesystem::remove(p.toStdString(), ec);
+    ASSERT_EQ(chans.size(), 1u);
+    auto vs = chans[0]->readAsDouble();
+    ASSERT_EQ(vs.size(), 3u);
+    EXPECT_DOUBLE_EQ(vs[1], 22.5);
+}
+
+TEST(StorableHtml, EmbedsAndRestoresLayoutJson) {
+    SignalStore store;
+    store.add(makeSig("a", "", Signal::Domain::Time, 0, 1'000'000LL, {1, 2}));
+
+    HtmlExportView view;
+    HtmlAxis y1; y1.label = "Y1"; y1.color = "#1e1e1e";
+    view.time.axes = {y1};
+    HtmlChannel ca; ca.name = "a"; ca.color = "#112233";
+    view.time.channels = {ca};
+    view.layoutJson = "{\"schema\":1,\"label\":\"Y1\"}";
+
+    bool ok = false;
+    QString err;
+    const QString p = writeStorable(store, &view, "layout", &ok, &err);
+    ASSERT_TRUE(ok) << err.toStdString();
+
+    std::vector<std::shared_ptr<Signal>> chans;
+    QString layout, lerr;
+    ASSERT_TRUE(loadStorableHtml(p, &chans, &layout, &lerr)) << lerr.toStdString();
+    std::error_code ec; std::filesystem::remove(p.toStdString(), ec);
+
+    EXPECT_TRUE(layout.contains("\"label\":\"Y1\""));
+    EXPECT_TRUE(layout.contains("\"schema\":1"));
+}
+
+TEST(StorableHtml, OldVisualisationOnlyExportHasNoIslandAndWontLoad) {
+    SignalStore store;
+    store.add(makeSig("a", "", Signal::Domain::Time, 0, 1'000'000LL, {1, 2, 3}));
+    const auto path = std::filesystem::temp_directory_path() /
+                      "scope_old_export.html";
+    const QString p = QString::fromStdString(path.string());
+    // The original, untouched export path still works and produces no island.
+    ASSERT_TRUE(exportInteractiveHtml(p, store, nullptr));
+    QString html;
+    { QFile f(p); ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+      html = QString::fromUtf8(f.readAll()); }
+    EXPECT_FALSE(html.contains("id=\"scope-data\""));
+
+    std::vector<std::shared_ptr<Signal>> chans;
+    QString err;
+    EXPECT_FALSE(loadStorableHtml(p, &chans, nullptr, &err));
+    EXPECT_FALSE(err.isEmpty());
+    std::error_code ec; std::filesystem::remove(path, ec);
+}
+
+TEST(SignalIo, HtmlFormatDetectionAndFilters) {
+    using namespace scope::converter;
+    EXPECT_EQ(static_cast<int>(detectFormatFromExtension("foo.html")),
+              static_cast<int>(FileFormat::Html));
+    EXPECT_EQ(static_cast<int>(detectFormatFromExtension("foo.HTM")),
+              static_cast<int>(FileFormat::Html));
+    EXPECT_EQ(defaultSuffix(FileFormat::Html).toStdString(), "html");
+    EXPECT_FALSE(nameFilters(FileFormat::Html).isEmpty());
+}
+
+TEST(SignalIo, LoadFileDispatchesHtmlByExtension) {
+    SignalStore store;
+    store.add(makeSig("a", "V", Signal::Domain::Time, 0, 1'000'000LL, {1, 2, 3}));
+    const auto path = std::filesystem::temp_directory_path() /
+                      "scope_loadfile_dispatch.html";
+    const QString p = QString::fromStdString(path.string());
+    QString err;
+    ASSERT_TRUE(exportStorableHtml(p, store, &err)) << err.toStdString();
+
+    const auto r = scope::converter::loadFile(path);   // FileFormat::Auto
+    std::error_code ec; std::filesystem::remove(path, ec);
+    EXPECT_TRUE(r.ok);
+    ASSERT_EQ(r.channels.size(), 1u);
+    EXPECT_EQ(r.channels[0]->meta().name.toStdString(), "a");
 }

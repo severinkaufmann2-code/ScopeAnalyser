@@ -24,7 +24,7 @@ namespace scope::converter::ui {
 class SaveChartDialog : public QDialog {
     Q_OBJECT
 public:
-    enum class Format { Hdf5, Csv, Mdf4 };
+    enum class Format { Hdf5, Csv, Mdf4, Html };
 
     SaveChartDialog(double currentXMinSec, double currentXMaxSec,
                     QWidget* parent = nullptr);
@@ -49,6 +49,7 @@ private:
     QRadioButton*   h5Radio_{nullptr};
     QRadioButton*   csvRadio_{nullptr};
     QRadioButton*   mf4Radio_{nullptr};
+    QRadioButton*   htmlRadio_{nullptr};
     QRadioButton*   allRangeRadio_{nullptr};
     QRadioButton*   customRangeRadio_{nullptr};
     QDoubleSpinBox* fromSpin_{nullptr};

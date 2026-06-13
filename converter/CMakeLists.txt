@@ -27,6 +27,10 @@ set(CONVERTER_SOURCES
     ui/SaveChartDialog.cpp
 )
 
+# zlib: gzip-compress the storable-HTML data island (the browser gunzips it
+# with the embedded fflate; loadStorableHtml() inflates it on re-open).
+find_package(ZLIB REQUIRED)
+
 scope_add_library(scope_converter
     SOURCES ${CONVERTER_SOURCES}
     HEADERS ${CONVERTER_HEADERS}
@@ -43,6 +47,7 @@ scope_add_library(scope_converter
         scope::scope_style
         spdlog::spdlog
         nlohmann_json::nlohmann_json
+        ZLIB::ZLIB
     FOLDER scope/converter
 )
 

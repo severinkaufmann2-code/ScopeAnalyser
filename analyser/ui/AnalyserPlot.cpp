@@ -1175,6 +1175,7 @@ void AnalyserPlot::saveChartDialog() {
     const converter::FileFormat fmt =
           (fmtChoice == converter::ui::SaveChartDialog::Format::Csv)  ? converter::FileFormat::Csv
         : (fmtChoice == converter::ui::SaveChartDialog::Format::Mdf4) ? converter::FileFormat::Mdf4
+        : (fmtChoice == converter::ui::SaveChartDialog::Format::Html) ? converter::FileFormat::Html
                                                                       : converter::FileFormat::Hdf5;
 
     QFileDialog fileDlg(this,
@@ -1212,6 +1213,13 @@ void AnalyserPlot::saveChartDialog() {
             "time", fullLayout.restrictedToDomain("time").toJsonString());
         opts.layoutJsonByDomain.insert(
             "frequency", fullLayout.restrictedToDomain("frequency").toJsonString());
+    }
+    // Storable HTML mirrors the live plot (axes / colours / assignments /
+    // view). Build the view here on the GUI thread, before the write runs
+    // off-thread. The embedded layout (opts.layoutJson) is folded in by the
+    // HTML writer so re-opening restores axes / view like the other formats.
+    if (fmt == converter::FileFormat::Html) {
+        opts.htmlView = htmlExportView();
     }
 
     // Run the (potentially slow) write off the GUI thread behind a busy

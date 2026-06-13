@@ -46,12 +46,16 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     h5Radio_  = new QRadioButton("HDF5 (.h5) — lossless recording format", this);
     mf4Radio_ = new QRadioButton("MDF4 (.mf4) — ASAM standard, opens in DiaDem / asammdf / MATLAB", this);
     csvRadio_ = new QRadioButton("CSV (.csv) — text, configurable below", this);
+    htmlRadio_ = new QRadioButton(
+        "HTML (.html) — interactive chart, opens in any browser (offline) and "
+        "re-opens in ScopeAnalyser", this);
     h5Radio_->setChecked(true);
     auto* formatBox = new QGroupBox("Format", this);
     auto* formatLayout = new QVBoxLayout(formatBox);
     formatLayout->addWidget(h5Radio_);
     formatLayout->addWidget(mf4Radio_);
     formatLayout->addWidget(csvRadio_);
+    formatLayout->addWidget(htmlRadio_);
 
     // ---- Time range --------------------------------------------------
     allRangeRadio_    = new QRadioButton("All data", this);
@@ -169,9 +173,10 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     root->addStretch();
     root->addWidget(buttons);
 
-    connect(h5Radio_,  &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
-    connect(mf4Radio_, &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
-    connect(csvRadio_, &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
+    connect(h5Radio_,   &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
+    connect(mf4Radio_,  &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
+    connect(csvRadio_,  &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
+    connect(htmlRadio_, &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
     connect(allRangeRadio_,    &QRadioButton::toggled, this, [this](bool){ onRangeModeChanged(); });
     connect(customRangeRadio_, &QRadioButton::toggled, this, [this](bool){ onRangeModeChanged(); });
 
@@ -186,6 +191,11 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
 
 void SaveChartDialog::onFormatChanged() {
     csvGroup_->setEnabled(csvRadio_->isChecked());
+    // HTML is always a single file with its own Time / Frequency / XY view
+    // selector, so the split-files option doesn't apply.
+    const bool html = htmlRadio_->isChecked();
+    splitFilesCheck_->setEnabled(!html);
+    if (html) splitFilesCheck_->setChecked(false);
 }
 
 void SaveChartDialog::onRangeModeChanged() {
@@ -195,8 +205,9 @@ void SaveChartDialog::onRangeModeChanged() {
 }
 
 SaveChartDialog::Format SaveChartDialog::format() const {
-    if (csvRadio_->isChecked()) return Format::Csv;
-    if (mf4Radio_->isChecked()) return Format::Mdf4;
+    if (csvRadio_->isChecked())  return Format::Csv;
+    if (mf4Radio_->isChecked())  return Format::Mdf4;
+    if (htmlRadio_->isChecked()) return Format::Html;
     return Format::Hdf5;
 }
 
