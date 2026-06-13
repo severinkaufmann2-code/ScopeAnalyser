@@ -65,6 +65,49 @@ void ChannelTableWidget::addChannelFromSymbol(const scope::core::AdsSymbol& sym,
 
 void ChannelTableWidget::clear() { table_->setRowCount(0); }
 
+std::vector<ChannelTableWidget::Row> ChannelTableWidget::rows() const {
+    std::vector<Row> out;
+    out.reserve(table_->rowCount());
+    auto cell = [&](int r, int c) {
+        auto* item = table_->item(r, c);
+        return item ? item->text() : QString();
+    };
+    for (int r = 0; r < table_->rowCount(); ++r) {
+        Row row;
+        row.name        = cell(r, ColName);
+        row.type        = cell(r, ColType);
+        row.mode        = cell(r, ColMode);
+        row.unit        = cell(r, ColUnit);
+        row.cycleUs     = cell(r, ColCycleUs).toUInt();
+        row.indexGroup  = cell(r, ColIndexGroup).toUInt();
+        row.indexOffset = cell(r, ColIndexOffset).toUInt();
+        out.push_back(std::move(row));
+    }
+    return out;
+}
+
+void ChannelTableWidget::setRows(const std::vector<Row>& rows) {
+    table_->setRowCount(0);
+    for (const auto& row : rows) {
+        const int r = table_->rowCount();
+        table_->insertRow(r);
+        auto setCell = [&](int col, const QString& text) {
+            auto* item = new QTableWidgetItem(text);
+            if (col == ColIndexGroup || col == ColIndexOffset) {
+                item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+            }
+            table_->setItem(r, col, item);
+        };
+        setCell(ColName,        row.name);
+        setCell(ColType,        row.type);
+        setCell(ColMode,        row.mode.isEmpty() ? QString("AdsNotify") : row.mode);
+        setCell(ColCycleUs,     QString::number(row.cycleUs == 0 ? 1000 : row.cycleUs));
+        setCell(ColUnit,        row.unit);
+        setCell(ColIndexGroup,  QString::number(row.indexGroup));
+        setCell(ColIndexOffset, QString::number(row.indexOffset));
+    }
+}
+
 std::vector<NotifyChannel::Config> ChannelTableWidget::buildConfigs() const {
     std::vector<NotifyChannel::Config> cfgs;
     cfgs.reserve(table_->rowCount());

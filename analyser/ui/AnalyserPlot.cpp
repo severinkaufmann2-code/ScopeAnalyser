@@ -96,10 +96,10 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     ab->addSpacing(12);
     auto* saveLayoutBtn = barBtn(style::Glyph::Save, "Save layout…",
         "Save Y axes, channel→axis assignments, and view mode to a "
-        ".scolayout file (no signal data).");
+        ".scoana file (no signal data).");
     auto* loadLayoutBtn = barBtn(style::Glyph::FolderOpen, "Load layout…",
         "Restore Y axes, channel→axis assignments, and view mode from a "
-        ".scolayout file.");
+        ".scoana file.");
     ab->addStretch();
     auto* redrawBtn = new QPushButton(
         style::icon(style::Glyph::Refresh, Qt::white), "Redraw", actionBar);
@@ -1007,13 +1007,13 @@ scope::converter::HtmlExportView AnalyserPlot::htmlExportView() {
 void AnalyserPlot::saveLayoutDialog() {
     QFileDialog dlg(this, "Save plot layout");
     dlg.setAcceptMode(QFileDialog::AcceptSave);
-    dlg.setNameFilters({"Scope plot layout (*.scolayout)", "All files (*)"});
-    dlg.setDefaultSuffix("scolayout");
+    dlg.setNameFilters({"Scope analyser layout (*.scoana)", "All files (*)"});
+    dlg.setDefaultSuffix("scoana");
     if (dlg.exec() != QDialog::Accepted) return;
     const auto sel = dlg.selectedFiles();
     if (sel.isEmpty()) return;
     QString path = sel.first();
-    if (!path.endsWith(".scolayout", Qt::CaseInsensitive)) path += ".scolayout";
+    if (!path.endsWith(".scoana", Qt::CaseInsensitive)) path += ".scoana";
 
     QString err;
     if (!currentLayout().saveToFile(
@@ -1128,7 +1128,7 @@ void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout,
 void AnalyserPlot::loadLayoutDialog() {
     QFileDialog dlg(this, "Load plot layout");
     dlg.setAcceptMode(QFileDialog::AcceptOpen);
-    dlg.setNameFilters({"Scope plot layout (*.scolayout)", "All files (*)"});
+    dlg.setNameFilters({"Scope analyser layout (*.scoana)", "All files (*)"});
     if (dlg.exec() != QDialog::Accepted) return;
     const auto sel = dlg.selectedFiles();
     if (sel.isEmpty()) return;

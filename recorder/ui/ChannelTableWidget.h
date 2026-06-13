@@ -2,9 +2,11 @@
 
 #include "scope/recorder/NotifyChannel.h"
 
+#include <QString>
 #include <QWidget>
 #include <QTableWidget>
 
+#include <cstdint>
 #include <vector>
 
 namespace scope::recorder::ui {
@@ -21,6 +23,21 @@ public:
     void addChannelFromSymbol(const scope::core::AdsSymbol& sym, std::uint32_t taskCycleUs);
     void clear();
     std::vector<NotifyChannel::Config> buildConfigs() const;
+
+    // Lossless view of the table for save/restore (recorder layout). Carries
+    // the raw cell text incl. the hidden IndexGroup / IndexOffset, so a
+    // restored row records exactly like the original once reconnected.
+    struct Row {
+        QString       name;
+        QString       type;
+        QString       mode;
+        QString       unit;
+        std::uint32_t cycleUs{0};
+        std::uint32_t indexGroup{0};
+        std::uint32_t indexOffset{0};
+    };
+    std::vector<Row> rows() const;
+    void setRows(const std::vector<Row>& rows);
 
 private:
     QTableWidget* table_;

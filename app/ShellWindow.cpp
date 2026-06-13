@@ -120,9 +120,9 @@ void ShellWindow::buildMenus() {
         QMessageBox::about(this, "About ScopeAnalyser",
             "<b>ScopeAnalyser</b><br>"
             "Signal recording (TwinCAT ADS), analysis, and data conversion.<br><br>"
-            "Recorder, Analyser and Converter share one in-memory signal "
-            "store — recorded or imported channels are immediately available "
-            "everywhere.");
+            "The Analyser and Converter share one in-memory signal store, so "
+            "imported or derived channels are available in both. The Recorder "
+            "keeps its captures separate until you press “Send to Analyser”.");
     });
 }
 

@@ -8,11 +8,9 @@
 
 #include <QCheckBox>
 #include <QComboBox>
-#include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -22,7 +20,6 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
-#include <filesystem>
 #include <limits>
 
 namespace scope::recorder::ui {
@@ -48,8 +45,9 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
     table_->setAlternatingRowColors(true);
     table_->setShowGrid(false);
     style::installEmptyHint(table_,
-        "Channels appear here as soon as they land in the signal store "
-        "(recorded, imported, or derived).");
+        "Recorded channels appear here live. Use “Send to Analyser” to push "
+        "them into the Analyser / Converter — nothing leaves the Recorder "
+        "until you do.");
 
     auto* saveBtn = new QPushButton("Save layout…", this);
     auto* loadBtn = new QPushButton("Load layout…", this);
@@ -92,8 +90,8 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
     connect(scope_, &scope::plot::ScopePlot::themePaletteChanged,
             this, [this]{ recolorChannels(); });
 
-    connect(saveBtn, &QPushButton::clicked, this, &LivePreviewPlot::saveLayoutDialog);
-    connect(loadBtn, &QPushButton::clicked, this, &LivePreviewPlot::loadLayoutDialog);
+    connect(saveBtn, &QPushButton::clicked, this, &LivePreviewPlot::saveLayoutRequested);
+    connect(loadBtn, &QPushButton::clicked, this, &LivePreviewPlot::loadLayoutRequested);
 
     auto* tick = new QTimer(this);
     connect(tick, &QTimer::timeout, this, &LivePreviewPlot::onTick);
@@ -294,17 +292,17 @@ void LivePreviewPlot::onTick() {
     plot->replot(QCustomPlot::rpQueuedReplot);
 }
 
-void LivePreviewPlot::saveLayoutDialog() {
-    QFileDialog dlg(this, "Save plot layout");
-    dlg.setAcceptMode(QFileDialog::AcceptSave);
-    dlg.setNameFilters({"Scope plot layout (*.scolayout)", "All files (*)"});
-    dlg.setDefaultSuffix("scolayout");
-    if (dlg.exec() != QDialog::Accepted) return;
-    const auto sel = dlg.selectedFiles();
-    if (sel.isEmpty()) return;
-    QString path = sel.first();
-    if (!path.endsWith(".scolayout", Qt::CaseInsensitive)) path += ".scolayout";
+QStringList LivePreviewPlot::checkedChannelNames() const {
+    QStringList out;
+    for (int r = 0; r < table_->rowCount(); ++r) {
+        auto* cb = qobject_cast<QCheckBox*>(table_->cellWidget(r, ColVis));
+        auto* item = table_->item(r, ColName);
+        if (cb && cb->isChecked() && item) out << item->text();
+    }
+    return out;
+}
 
+scope::plot::PlotLayout LivePreviewPlot::currentPlotLayout() const {
     scope::plot::PlotLayout layout;
     for (int i = 0; i < scope_->yAxisCount(); ++i) {
         auto* ax = scope_->yAxis(i);
@@ -322,27 +320,10 @@ void LivePreviewPlot::saveLayoutDialog() {
         c.axisIndex = axisIndexForRow(r);
         layout.channels.append(c);
     }
-    QString err;
-    if (!layout.saveToFile(std::filesystem::path(path.toStdString()), &err))
-        QMessageBox::critical(this, "Save failed", err);
+    return layout;
 }
 
-void LivePreviewPlot::loadLayoutDialog() {
-    QFileDialog dlg(this, "Load plot layout");
-    dlg.setAcceptMode(QFileDialog::AcceptOpen);
-    dlg.setNameFilters({"Scope plot layout (*.scolayout)", "All files (*)"});
-    if (dlg.exec() != QDialog::Accepted) return;
-    const auto sel = dlg.selectedFiles();
-    if (sel.isEmpty()) return;
-
-    QString err;
-    auto layout = scope::plot::PlotLayout::loadFromFile(
-        std::filesystem::path(sel.first().toStdString()), &err);
-    if (!err.isEmpty()) {
-        QMessageBox::critical(this, "Load failed", err);
-        return;
-    }
-
+void LivePreviewPlot::applyPlotLayout(const scope::plot::PlotLayout& layout) {
     while (scope_->yAxisCount() > 1) {
         const int idx = scope_->yAxisCount() - 1;
         for (int g = 0; g < scope_->plot()->graphCount(); ++g) {

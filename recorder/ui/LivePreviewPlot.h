@@ -1,8 +1,10 @@
 #pragma once
 
 #include "scope/core/SignalStore.h"
+#include "scope/plot/PlotLayout.h"
 
 #include <QHash>
+#include <QStringList>
 #include <QWidget>
 
 class QCPGraph;
@@ -19,9 +21,22 @@ public:
 
     void setWindowSeconds(double seconds);
 
-public slots:
-    void saveLayoutDialog();
-    void loadLayoutDialog();
+    // Channels whose visibility box is ticked in the live-channels table.
+    // Used by the Recorder's "Send checked to Analyser" action.
+    QStringList checkedChannelNames() const;
+
+    // The preview plot's own layout (Y axes + channel→axis), as a pure value.
+    // The Recorder embeds this inside its .scorec file — file IO lives in the
+    // Recorder, not here, so this plot has no link to the Analyser's layout
+    // files. Reuses scope::plot::PlotLayout purely as a serialiser.
+    scope::plot::PlotLayout currentPlotLayout() const;
+    void applyPlotLayout(const scope::plot::PlotLayout& layout);
+
+signals:
+    // The sidebar Save/Load buttons only request; the Recorder performs the
+    // full save/load (connection + channel table + this plot layout).
+    void saveLayoutRequested();
+    void loadLayoutRequested();
 
 private slots:
     void onChannelAdded(QString name);

@@ -120,7 +120,7 @@ axes, alternating between the left and right side. To use them:
    same axis share the hue and vary in saturation/brightness so
    they're related but visually distinct.
 7. **`Save layout…` / `Load layout…`** in the channels sidebar writes
-   a `.scolayout` JSON file with the axes (labels, sides, ranges) and
+   a `.scoana` JSON file with the axes (labels, sides, ranges) and
    the channel→axis assignments. Loading a layout restores everything
    and remembers channel names that aren't currently in the store —
    when those channels later appear, they're placed on the saved axis
@@ -137,7 +137,17 @@ axes, alternating between the left and right side. To use them:
    auto-detected sample rates.
 4. **Record** → choose `.h5` save path → samples stream into the live preview
    (lower pane, scope-style "seconds before now" axis) and into HDF5 on disk.
+   Captures stay in the Recorder — they do **not** appear in the Analyser
+   automatically.
 5. **Stop** when done.
+6. **Send to Analyser** pushes the captures into the shared signal store so the
+   Analyser and Converter can see them; **Send checked to Analyser** pushes
+   only the channels ticked in the live list. Re-sending a channel replaces
+   its previous copy.
+7. **`Save layout…` / `Load layout…`** in the live-preview sidebar store the
+   whole recorder setup — connection settings, the channel table, and the
+   preview's Y-axes / channel→axis assignments — in a `.scorec` file. (This is
+   independent of the Analyser's `.scoana` layout.)
 
 ### Analyser
 

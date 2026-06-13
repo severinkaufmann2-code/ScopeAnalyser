@@ -4,6 +4,9 @@
 #include "scope/core/IAdsClient.h"
 #include "scope/recorder/RecordingSession.h"
 
+#include <QHash>
+#include <QString>
+#include <QStringList>
 #include <QWidget>
 
 #include <memory>
@@ -39,9 +42,27 @@ private slots:
     void onStopClicked();
     void onChannelOverrun(QString name, std::uint64_t total);
     void onStats(RecordingSession::Stats s);
+    void onSendAll();
+    void onSendSelected();
+    void onSaveLayout();
+    void onLoadLayout();
 
 private:
+    // Copy the named recorded channels from recordStore_ into the shared
+    // store_ (the Analyser / Converter bus). Snapshots a frozen copy and
+    // replaces any copy a previous Send pushed for the same channel.
+    void sendChannels(const QStringList& names);
+    void updateSendButtons();
+
+    // The shared store is the Analyser / Converter bus. The Recorder keeps
+    // its captures in a PRIVATE store so nothing reaches the Analyser until
+    // the user presses a Send button.
     scope::core::SignalStore& store_;
+    scope::core::SignalStore  recordStore_;
+    // recorder channel name → the (unique) name it was last sent under in
+    // store_. Lets a re-Send replace its earlier copy instead of duplicating.
+    QHash<QString, QString>   appliedMap_;
+
     std::unique_ptr<scope::core::IAdsClient> client_;
     std::unique_ptr<RecordingSession> session_;
 
@@ -56,6 +77,8 @@ private:
     QPushButton*     disconnectBtn_;
     QPushButton*     startBtn_;
     QPushButton*     stopBtn_;
+    QPushButton*     sendAllBtn_;       // push all captures to the Analyser
+    QPushButton*     sendSelectedBtn_;  // push only the selected captures
     QLabel*          statusLabel_;   // live recording stats / warnings
     QLabel*          connPill_;      // connection state chip
     QString          connectedLabel_;  // pill text while connected
