@@ -138,7 +138,8 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     csvForm->addRow("Time mode:", timeModeCombo_);
 
     // ---- Channel filters ---------------------------------------------
-    auto* filtersBox = new QGroupBox("Channels to include", this);
+    filtersGroup_ = new QGroupBox("Channels to include", this);
+    auto* filtersBox = filtersGroup_;
     includeTimeCheck_     = new QCheckBox("Time-domain channels", filtersBox);
     includeFreqCheck_     = new QCheckBox("Frequency-domain channels", filtersBox);
     includeDerivedCheck_  = new QCheckBox("Derived (formula) channels", filtersBox);
@@ -255,6 +256,20 @@ bool SaveChartDialog::noDataForMathChannels() const {
 }
 bool SaveChartDialog::includeLayout() const {
     return addMetadata() && layoutCheck_->isChecked();
+}
+
+void SaveChartDialog::setChannelFiltersVisible(bool on) {
+    filtersGroup_->setVisible(on);
+}
+
+void SaveChartDialog::setMetadataLayoutOnly(bool layoutOnly) {
+    if (!layoutOnly) return;
+    // Keep the master checked (hidden) so includeLayout() stays honoured,
+    // then hide everything in the group except the Layout checkbox.
+    addMetadataCheck_->setChecked(true);
+    addMetadataCheck_->setVisible(false);
+    mathFormulaCheck_->setVisible(false);
+    noMathDataCheck_->setVisible(false);
 }
 
 void SaveChartDialog::onFormatChanged() {

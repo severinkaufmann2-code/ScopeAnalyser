@@ -402,6 +402,10 @@ void RecorderWidget::onSaveChart() {
         return;
     }
     converter::ui::SaveChartDialog dlg(0.0, 0.0, this);
+    // The recorder is time-domain only with no math channels: drop the
+    // "Channels to include" group and show only the Layout metadata choice.
+    dlg.setChannelFiltersVisible(false);
+    dlg.setMetadataLayoutOnly(true);
     if (dlg.exec() != QDialog::Accepted) return;
 
     const auto fmtChoice = dlg.format();
@@ -431,8 +435,9 @@ void RecorderWidget::onSaveChart() {
 
     converter::SaveOptions opts;
     opts.csv = dlg.csvOptions();
-    // Embed the preview layout so a re-opened file restores the axes.
-    if (dlg.addMetadata() && dlg.includeLayout()) {
+    // Embed only the Analyser-relevant plot layout (axes + channel→axis) so a
+    // re-opened file restores the view. No recorder-specific data is written.
+    if (dlg.includeLayout()) {
         opts.layoutJson = preview_->currentPlotLayout().toJsonString();
     }
     // Storable HTML mirrors the preview (axes / colours / assignments).

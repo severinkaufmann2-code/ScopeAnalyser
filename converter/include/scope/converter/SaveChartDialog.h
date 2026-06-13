@@ -53,6 +53,17 @@ public:
     bool      noDataForMathChannels()  const;
     bool      includeLayout()          const;
 
+    // Opt-in section trimming for hosts with a narrower scope (e.g. the
+    // Recorder, which is time-domain only with no math channels).
+    //   setChannelFiltersVisible(false) — hide the "Channels to include"
+    //     group; its checkboxes stay checked so the include-all / no-split
+    //     getters keep their defaults.
+    //   setMetadataLayoutOnly(true) — within "Metadata", show only the
+    //     Layout checkbox (hide the "Add metadata" master + the math
+    //     toggles). The master stays checked so includeLayout() is honoured.
+    void setChannelFiltersVisible(bool on);
+    void setMetadataLayoutOnly(bool layoutOnly);
+
 private slots:
     void onFormatChanged();
     void onRangeModeChanged();
@@ -78,6 +89,7 @@ private:
     QLineEdit*  decimalEdit_{nullptr};
     QComboBox*  timeModeCombo_{nullptr};
 
+    QGroupBox*  filtersGroup_{nullptr};
     QCheckBox*  includeTimeCheck_{nullptr};
     QCheckBox*  includeFreqCheck_{nullptr};
     QCheckBox*  includeDerivedCheck_{nullptr};
