@@ -216,4 +216,20 @@ PlotLayout PlotLayout::restrictedToDomain(const QString& domain) const {
     return r;
 }
 
+void PlotLayout::stripFormulas() {
+    for (auto& c : channels) c.formula.clear();
+    for (auto& list : channelsByDomain)
+        for (auto& c : list) c.formula.clear();
+}
+
+void PlotLayout::stripLayout() {
+    axes.clear();
+    axesByDomain.clear();
+    for (auto& c : channels) c.axisIndex = 0;
+    for (auto& list : channelsByDomain)
+        for (auto& c : list) c.axisIndex = 0;
+    viewMode = "time";
+    xyChannel.clear();
+}
+
 }  // namespace scope::plot

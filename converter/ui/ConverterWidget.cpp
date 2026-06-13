@@ -1239,8 +1239,9 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             return;
         }
         // No plot here → custom range box opens at 0…0, but it's
-        // disabled unless the user picks "Custom range" anyway.
-        converter::ui::SaveChartDialog dlg(0.0, 0.0, this);
+        // disabled unless the user picks "Custom range" anyway. The Converter
+        // embeds no layout/formula metadata, so hide that group.
+        converter::ui::SaveChartDialog dlg(0.0, 0.0, this, /*offerMetadata=*/false);
         if (dlg.exec() != QDialog::Accepted) return;
 
         const auto fmtChoice = dlg.format();

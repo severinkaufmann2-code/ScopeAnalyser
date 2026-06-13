@@ -778,3 +778,38 @@ TEST(ScopePlot, SaveImageWritesPngPdfSvg) {
 
     EXPECT_FALSE(plot.saveImage(QString::fromStdString((dir / "x.bmp").string())));
 }
+
+// Save chart "Metadata" toggles map onto these PlotLayout helpers: opting out
+// of math formulas strips the formula text (layout kept); opting out of the
+// layout strips axes / assignments / view (formulas kept).
+TEST(PlotLayout, StripFormulasAndStripLayoutAreIndependent) {
+    using namespace scope::plot;
+    PlotLayout l;
+    l.viewMode = "xy";
+    l.xyChannel = "a";
+    QList<PlotLayoutAxis> axes;
+    axes.append(PlotLayoutAxis{"V", "left", true, 0.0, 10.0});
+    l.axesByDomain.insert("time", axes);
+    PlotLayoutChannel c;
+    c.name = "a"; c.axisIndex = 1; c.domain = "time"; c.formula = "2 * b";
+    QList<PlotLayoutChannel> chans;
+    chans.append(c);
+    l.channelsByDomain.insert("time", chans);
+    l.axes = axes;
+    l.channels = chans;
+
+    PlotLayout f = l;
+    f.stripFormulas();
+    EXPECT_TRUE(f.channelsByDomain["time"][0].formula.isEmpty());
+    EXPECT_EQ(f.channelsByDomain["time"][0].axisIndex, 1);      // layout kept
+    EXPECT_FALSE(f.axesByDomain["time"].isEmpty());
+    EXPECT_EQ(f.viewMode.toStdString(), "xy");
+
+    PlotLayout g = l;
+    g.stripLayout();
+    EXPECT_EQ(g.channelsByDomain["time"][0].formula.toStdString(), "2 * b");  // formula kept
+    EXPECT_EQ(g.channelsByDomain["time"][0].axisIndex, 0);
+    EXPECT_TRUE(g.axesByDomain.isEmpty());
+    EXPECT_EQ(g.viewMode.toStdString(), "time");
+    EXPECT_TRUE(g.xyChannel.isEmpty());
+}

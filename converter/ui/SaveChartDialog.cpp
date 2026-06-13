@@ -37,7 +37,7 @@ constexpr int kCustomRowIdx = 2;
 }  // namespace
 
 SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
-                                 QWidget* parent)
+                                 QWidget* parent, bool offerMetadata)
     : QDialog(parent) {
     setWindowTitle("Save chart");
     resize(420, 480);
@@ -160,6 +160,48 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     filtersLayout->addWidget(includeDerivedCheck_);
     filtersLayout->addWidget(splitFilesCheck_);
 
+    // ---- Metadata (Analyser only) ------------------------------------
+    // What gets embedded in the saved file so it can be re-opened: the math
+    // formulas and/or the plot layout. Nested so a child is only choosable
+    // once its parent is on.
+    metadataGroup_ = new QGroupBox("Metadata", this);
+    addMetadataCheck_ = new QCheckBox("Add metadata", metadataGroup_);
+    addMetadataCheck_->setChecked(true);
+    addMetadataCheck_->setToolTip(
+        "Embed metadata so the file re-opens in ScopeAnalyser with its math\n"
+        "channels and layout. Off → a plain data file (no layout / formulas).");
+    mathFormulaCheck_ = new QCheckBox("Math formula", metadataGroup_);
+    mathFormulaCheck_->setChecked(true);
+    mathFormulaCheck_->setToolTip(
+        "Embed each derived channel's formula so it can be edited / recomputed\n"
+        "after re-opening. Off → math channels re-open as plain signals.");
+    noMathDataCheck_ = new QCheckBox(
+        "No data for math channels", metadataGroup_);
+    noMathDataCheck_->setChecked(false);
+    noMathDataCheck_->setToolTip(
+        "Don't write the computed samples of math channels — keep only the\n"
+        "formula. They're recomputed from the sources on re-open (smaller\n"
+        "file; needs the sources present and 'Import formula' on re-open).");
+    layoutCheck_ = new QCheckBox("Layout", metadataGroup_);
+    layoutCheck_->setChecked(true);
+    layoutCheck_->setToolTip(
+        "Embed the Y axes, channel→axis assignments and view mode so the\n"
+        "chart re-opens looking the same.");
+
+    auto* metaLayout = new QVBoxLayout(metadataGroup_);
+    metaLayout->addWidget(addMetadataCheck_);
+    auto indent = [&](QCheckBox* cb, int px) {
+        auto* row = new QHBoxLayout();
+        row->addSpacing(px);
+        row->addWidget(cb);
+        row->addStretch();
+        metaLayout->addLayout(row);
+    };
+    indent(mathFormulaCheck_, 20);
+    indent(noMathDataCheck_, 40);
+    indent(layoutCheck_, 20);
+    metadataGroup_->setVisible(offerMetadata);
+
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
@@ -169,6 +211,7 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     root->addWidget(formatBox);
     root->addWidget(rangeBox);
     root->addWidget(filtersBox);
+    root->addWidget(metadataGroup_);
     root->addWidget(csvGroup_);
     root->addStretch();
     root->addWidget(buttons);
@@ -185,8 +228,33 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     connect(rowSepCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int i){ rowSepCustom_->setVisible(i == kCustomRowIdx); });
 
+    connect(addMetadataCheck_, &QCheckBox::toggled, this, [this](bool){ onMetadataChanged(); });
+    connect(mathFormulaCheck_, &QCheckBox::toggled, this, [this](bool){ onMetadataChanged(); });
+
     onFormatChanged();
     onRangeModeChanged();
+    onMetadataChanged();
+}
+
+void SaveChartDialog::onMetadataChanged() {
+    const bool meta    = addMetadataCheck_->isChecked();
+    const bool formula = meta && mathFormulaCheck_->isChecked();
+    mathFormulaCheck_->setEnabled(meta);
+    layoutCheck_->setEnabled(meta);
+    noMathDataCheck_->setEnabled(formula);
+}
+
+bool SaveChartDialog::addMetadata() const {
+    return addMetadataCheck_->isChecked();
+}
+bool SaveChartDialog::includeMathFormula() const {
+    return addMetadata() && mathFormulaCheck_->isChecked();
+}
+bool SaveChartDialog::noDataForMathChannels() const {
+    return includeMathFormula() && noMathDataCheck_->isChecked();
+}
+bool SaveChartDialog::includeLayout() const {
+    return addMetadata() && layoutCheck_->isChecked();
 }
 
 void SaveChartDialog::onFormatChanged() {

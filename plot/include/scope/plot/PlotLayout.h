@@ -90,6 +90,16 @@ struct PlotLayout {
     // channel still lives in the kept domain. The flat v1 mirror is
     // rebuilt from the kept domain.
     PlotLayout restrictedToDomain(const QString& domain) const;
+
+    // Drop every channel's formula text (keep names / axis assignments /
+    // view). Used by Save chart when the user opts out of embedding the
+    // math formulas — reopened math channels then load as plain signals.
+    void stripFormulas();
+
+    // Drop the layout (Y axes, per-channel axis assignment, view mode, XY
+    // channel) while keeping the channel entries and their formulas. Used
+    // by Save chart when the user opts out of embedding the layout.
+    void stripLayout();
 };
 
 }  // namespace scope::plot

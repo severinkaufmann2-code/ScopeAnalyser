@@ -1210,7 +1210,10 @@ void AnalyserPlot::saveChartDialog() {
     converter::ChartSaveFilters filters;
     filters.includeTime               = dlg.includeTimeDomain();
     filters.includeFrequency          = dlg.includeFrequencyDomain();
-    filters.includeDerived            = dlg.includeDerivedChannels();
+    // Derived-channel DATA is dropped when the user excluded derived channels
+    // OR chose "No data for math channels" (formula-only — recomputed on open).
+    filters.includeDerived            = dlg.includeDerivedChannels()
+                                        && !dlg.noDataForMathChannels();
     filters.splitDomainsIntoTwoFiles  = dlg.splitDomainsIntoTwoFiles();
     filters.useCustomRange            = dlg.useCustomRange();
     filters.fromSec                   = dlg.fromSec();
@@ -1218,21 +1221,23 @@ void AnalyserPlot::saveChartDialog() {
 
     converter::SaveOptions opts;
     opts.csv = dlg.csvOptions();
-    // Embed the layout for every format (CSV scope-csv header, HDF5
-    // /metadata attribute, MDF4 header metadata) so re-opening an exported
-    // chart restores per-domain Y-axis assignments / view mode / XY-X
-    // channel without a separate Load layout… step.
-    const auto fullLayout = currentLayout();
-    opts.layoutJson = fullLayout.toJsonString();
-    // On a split export each single-domain file should carry only its own
-    // domain's layout. Precompute the restricted variants; saveChartFromStore
-    // picks the matching one per file (and falls back to the full layout for
-    // a combined write).
-    if (filters.splitDomainsIntoTwoFiles) {
-        opts.layoutJsonByDomain.insert(
-            "time", fullLayout.restrictedToDomain("time").toJsonString());
-        opts.layoutJsonByDomain.insert(
-            "frequency", fullLayout.restrictedToDomain("frequency").toJsonString());
+    // Embedded metadata (CSV scope-csv header, HDF5 /metadata, MDF4 header,
+    // HTML island) so a re-open restores math channels / layout. The
+    // Metadata checkboxes decide what goes in: strip the formulas and/or the
+    // layout the user opted out of; embed nothing when "Add metadata" is off.
+    if (dlg.addMetadata()) {
+        auto layout = currentLayout();
+        if (!dlg.includeMathFormula()) layout.stripFormulas();
+        if (!dlg.includeLayout())      layout.stripLayout();
+        opts.layoutJson = layout.toJsonString();
+        // On a split export each single-domain file carries only its own
+        // domain's layout; fall back to the full layout for a combined write.
+        if (filters.splitDomainsIntoTwoFiles) {
+            opts.layoutJsonByDomain.insert(
+                "time", layout.restrictedToDomain("time").toJsonString());
+            opts.layoutJsonByDomain.insert(
+                "frequency", layout.restrictedToDomain("frequency").toJsonString());
+        }
     }
     // Storable HTML mirrors the live plot (axes / colours / assignments /
     // view). Build the view here on the GUI thread, before the write runs

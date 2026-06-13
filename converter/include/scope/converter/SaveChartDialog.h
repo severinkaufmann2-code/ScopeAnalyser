@@ -26,8 +26,10 @@ class SaveChartDialog : public QDialog {
 public:
     enum class Format { Hdf5, Csv, Mdf4, Html };
 
+    // offerMetadata=false hides the "Metadata" group (the Converter embeds no
+    // layout/formula metadata, so the toggles would be inert there).
     SaveChartDialog(double currentXMinSec, double currentXMaxSec,
-                    QWidget* parent = nullptr);
+                    QWidget* parent = nullptr, bool offerMetadata = true);
 
     Format    format()    const;
     bool      useCustomRange() const;
@@ -41,9 +43,20 @@ public:
     bool      includeDerivedChannels()   const;
     bool      splitDomainsIntoTwoFiles() const;
 
+    // Embedded-metadata toggles (Analyser). Each accessor returns the
+    // *effective* value, already accounting for the parent toggles:
+    //   includeMathFormula()    ⇒ addMetadata() && the box
+    //   noDataForMathChannels() ⇒ includeMathFormula() && the box
+    //   includeLayout()         ⇒ addMetadata() && the box
+    bool      addMetadata()            const;
+    bool      includeMathFormula()     const;
+    bool      noDataForMathChannels()  const;
+    bool      includeLayout()          const;
+
 private slots:
     void onFormatChanged();
     void onRangeModeChanged();
+    void onMetadataChanged();
 
 private:
     QRadioButton*   h5Radio_{nullptr};
@@ -69,6 +82,12 @@ private:
     QCheckBox*  includeFreqCheck_{nullptr};
     QCheckBox*  includeDerivedCheck_{nullptr};
     QCheckBox*  splitFilesCheck_{nullptr};
+
+    QGroupBox*  metadataGroup_{nullptr};
+    QCheckBox*  addMetadataCheck_{nullptr};
+    QCheckBox*  mathFormulaCheck_{nullptr};
+    QCheckBox*  noMathDataCheck_{nullptr};
+    QCheckBox*  layoutCheck_{nullptr};
 };
 
 }  // namespace scope::converter::ui
