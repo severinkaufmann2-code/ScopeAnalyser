@@ -21,6 +21,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QHash>
 #include <QListWidget>
 
 #include <cmath>
@@ -72,6 +73,10 @@ protected:
     void applyMerge(AnalyserPlot& p, const scope::plot::PlotLayout& l) {
         p.applyLayout(l, AnalyserPlot::FormulaImport::Recalculate,
                       AnalyserPlot::LayoutApply::Merge);
+    }
+    void remapNames(scope::plot::PlotLayout& l,
+                    const QHash<QString, QString>& renamed) {
+        AnalyserPlot::remapLayoutChannelNames(l, renamed);
     }
 
     // ---- display-correctness helpers (also via friendship) ----
@@ -261,6 +266,50 @@ TEST_F(AnalyserPlotLayoutTest, MergeReusesAxisWithSameLabel) {
     EXPECT_EQ(out.axesByDomain["time"].size(), 1) << "same-label axis should be reused";
     for (const auto& c : out.channelsByDomain.value("time"))
         EXPECT_EQ(c.axisIndex, 0) << c.name.toStdString() << " should share the rpm axis";
+}
+
+// A second file whose channel name collides with one already loaded is
+// renamed for uniqueness on open; remapping the layout's references through
+// that rename keeps the renamed channel's saved axis assignment.
+TEST_F(AnalyserPlotLayoutTest, MergeHonoursRenamedCollidingChannel) {
+    SignalStore store;
+    scope::analyser::FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    // File 1 — "speed" on the "rpm" axis.
+    addTimeChannel(store, "speed", "rpm");
+    scope::plot::PlotLayout l1;
+    l1.viewMode = "time";
+    l1.axesByDomain.insert("time", {{"rpm", "left", true, 0.0, 6000.0}});
+    QList<scope::plot::PlotLayoutChannel> c1;
+    { scope::plot::PlotLayoutChannel c; c.name = "speed"; c.axisIndex = 0; c.domain = "time"; c1.append(c); }
+    l1.channelsByDomain.insert("time", c1);
+    apply(plot, l1);
+
+    // File 2 — also a "speed", which openChartDialog renames to "speed (2)";
+    // its layout (still referencing "speed") puts it on a new "kph" axis.
+    addTimeChannel(store, "speed (2)", "kph");
+    scope::plot::PlotLayout l2;
+    l2.viewMode = "time";
+    l2.axesByDomain.insert("time", {{"kph", "left", true, 0.0, 200.0}});
+    QList<scope::plot::PlotLayoutChannel> c2;
+    { scope::plot::PlotLayoutChannel c; c.name = "speed"; c.axisIndex = 0; c.domain = "time"; c2.append(c); }
+    l2.channelsByDomain.insert("time", c2);
+
+    QHash<QString, QString> renamed;
+    renamed.insert("speed", "speed (2)");
+    remapNames(l2, renamed);          // what openChartDialog does post-rename
+    applyMerge(plot, l2);
+
+    const auto out = grab(plot);
+    ASSERT_TRUE(out.axesByDomain.contains("time"));
+    ASSERT_EQ(out.axesByDomain["time"].size(), 2);
+    EXPECT_EQ(out.axesByDomain["time"][1].label, "kph");
+
+    int axisOfRenamed = -1;
+    for (const auto& c : out.channelsByDomain.value("time"))
+        if (c.name == "speed (2)") axisOfRenamed = c.axisIndex;
+    EXPECT_EQ(axisOfRenamed, 1) << "renamed channel lost its axis after merge";
 }
 
 // The Open-chart formula-import modes, applied per channel. Mirrors Open:

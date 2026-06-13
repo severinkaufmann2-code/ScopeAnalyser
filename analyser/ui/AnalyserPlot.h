@@ -136,6 +136,16 @@ private:
                      FormulaImport mode = FormulaImport::Recalculate,
                      LayoutApply   axes = LayoutApply::Replace);
 
+    // Rewrite the channel-name references in a layout (per-domain + flat
+    // channel lists and the XY channel) through a {original → new} map.
+    // openChartDialog uses it: channels whose names collided with the store
+    // are renamed for uniqueness, so the embedded layout's references must be
+    // remapped or the renamed channels lose their saved axis assignment.
+    // Static + befriended so it's unit-testable without the modal Open dialog.
+    static void remapLayoutChannelNames(
+        scope::plot::PlotLayout& layout,
+        const QHash<QString, QString>& renamed);
+
     // The current per-domain view (axes, channel→axis assignments,
     // visibility, display colours) for the interactive-HTML exporter —
     // so the exported page mirrors what's on screen. Colours use the

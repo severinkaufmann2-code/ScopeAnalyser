@@ -1158,6 +1158,19 @@ void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout,
     redrawForActiveChannels();
 }
 
+void AnalyserPlot::remapLayoutChannelNames(
+        scope::plot::PlotLayout& layout,
+        const QHash<QString, QString>& renamed) {
+    auto remap = [&](QString& n) {
+        const auto it = renamed.constFind(n);
+        if (it != renamed.constEnd()) n = it.value();
+    };
+    for (auto& list : layout.channelsByDomain)
+        for (auto& c : list) remap(c.name);
+    for (auto& c : layout.channels) remap(c.name);
+    remap(layout.xyChannel);
+}
+
 void AnalyserPlot::loadLayoutDialog() {
     QFileDialog dlg(this, "Load plot layout");
     dlg.setAcceptMode(QFileDialog::AcceptOpen);
@@ -1432,16 +1445,23 @@ void AnalyserPlot::openChartDialog() {
         }
     }
 
+    QHash<QString, QString> renamed;   // original → unique store name
     for (auto& s : r.channels) {
         auto meta = s->meta();
+        const QString original = meta.name;
         meta.name = uniqueStoreName(store_, meta.name);
         s->setMeta(meta);
+        renamed.insert(original, meta.name);
         store_.add(s);
     }
 
     if (haveLayout) {
-        // Merge into whatever's already on screen so opening a second chart
-        // doesn't overwrite the first file's Y-axis names / assignments.
+        // Channels that collided with the store were renamed (e.g.
+        // "Speed (2)"); the embedded layout still uses the original names, so
+        // remap its references or the renamed channels would lose their saved
+        // axis assignment. Then merge so a second chart doesn't overwrite the
+        // first file's Y-axis names / assignments.
+        remapLayoutChannelNames(layout, renamed);
         applyLayout(layout, formulaMode, LayoutApply::Merge);
     }
 
