@@ -256,6 +256,72 @@ bool profileFromScopeMetadata(const std::filesystem::path& path,
     }
 }
 
+bool profileFromScopeJson(const std::filesystem::path& path,
+                          ConverterProfile* out,
+                          QString* errorOut) {
+    if (!out) return false;
+    try {
+        std::ifstream f(path);
+        if (!f) {
+            if (errorOut) *errorOut = "Couldn't open file.";
+            return false;
+        }
+        json root;
+        f >> root;
+        if (!root.is_object() || !root.contains("signals")
+            || !root["signals"].is_array())
+            return false;   // not native scope-json — caller maps manually
+
+        ConverterProfile prof;
+        prof.sourceType       = "json";
+        prof.headerRow        = 1;   // JsonSource puts column names on row 0
+        prof.decimalSeparator = ".";
+        // JSON has no delimiters; keep CSV-ish defaults so the (hidden) parse
+        // fields stay harmless if ever surfaced.
+        prof.columnDelimiter  = ",";
+        prof.rowDelimiter     = "\n";
+
+        int col = 0;
+        for (const auto& js : root["signals"]) {
+            if (!js.is_object()) continue;
+            if (!js.contains("t") || !js.contains("v")
+                || !js["t"].is_array() || !js["v"].is_array()) continue;
+            const QString name =
+                QString::fromStdString(js.value("name", std::string{}));
+            const QString unit =
+                QString::fromStdString(js.value("unit", std::string{}));
+            const bool freq =
+                js.value("domain", std::string("time")) == "frequency";
+            const QString xLetter = columnLetter(col);
+            const QString yLetter = columnLetter(col + 1);
+
+            ColumnMapping x;
+            x.columnId = xLetter;
+            x.role     = freq ? ColumnMapping::Role::XFrequency
+                              : ColumnMapping::Role::XTime;
+            // JsonSource emits time columns as raw ns and frequency columns
+            // divided back to Hz — these units map them straight in.
+            x.unit     = freq ? QStringLiteral("Hz") : QStringLiteral("ns");
+            prof.columns.push_back(std::move(x));
+
+            ColumnMapping y;
+            y.columnId      = yLetter;
+            y.role          = ColumnMapping::Role::Signal;
+            y.signalName    = name;
+            y.unit          = unit;
+            y.xSourceColumn = xLetter;
+            prof.columns.push_back(std::move(y));
+            col += 2;
+        }
+        if (prof.columns.empty()) return false;
+        *out = std::move(prof);
+        return true;
+    } catch (const std::exception& e) {
+        if (errorOut) *errorOut = QString::fromUtf8(e.what());
+        return false;
+    }
+}
+
 // ---- TwinCAT Scope CSV ------------------------------------------------------
 namespace {
 

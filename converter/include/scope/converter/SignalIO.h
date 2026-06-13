@@ -28,11 +28,12 @@ enum class FileFormat {
     Hdf5,
     Mdf4,
     Html,    // self-contained interactive chart with an embedded data island
+    Json,    // per-signal arrays; bit-exact (raw int64 ns) round-trip
 };
 
 // Pick a format from a path's extension. ".h5"/".hdf5" → Hdf5, ".mf4" →
-// Mdf4, ".csv"/".txt" → Csv, ".html"/".htm" → Html. Returns Auto if nothing
-// matches.
+// Mdf4, ".csv"/".txt" → Csv, ".html"/".htm" → Html, ".json" → Json. Returns
+// Auto if nothing matches.
 FileFormat detectFormatFromExtension(const std::filesystem::path& path);
 
 // File-dialog name filters and the default suffix for a given format.

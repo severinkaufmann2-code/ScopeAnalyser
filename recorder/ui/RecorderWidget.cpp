@@ -413,6 +413,7 @@ void RecorderWidget::onSaveChart() {
           (fmtChoice == converter::ui::SaveChartDialog::Format::Csv)  ? converter::FileFormat::Csv
         : (fmtChoice == converter::ui::SaveChartDialog::Format::Mdf4) ? converter::FileFormat::Mdf4
         : (fmtChoice == converter::ui::SaveChartDialog::Format::Html) ? converter::FileFormat::Html
+        : (fmtChoice == converter::ui::SaveChartDialog::Format::Json) ? converter::FileFormat::Json
                                                                       : converter::FileFormat::Hdf5;
 
     QFileDialog fileDlg(this,

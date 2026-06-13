@@ -3,6 +3,7 @@
 #include "scope/converter/ConverterProfile.h"
 #include "scope/converter/CsvSource.h"
 #include "scope/converter/CsvWriter.h"
+#include "scope/converter/JsonSource.h"
 #include "scope/converter/SaveChartDialog.h"
 #include "scope/converter/SignalIO.h"
 
@@ -42,15 +43,22 @@ namespace scope::converter {
 
 namespace {
 
-enum class FileType { Csv, H5 };
+enum class FileType { Csv, Json, H5 };
+
+// Csv and Json both ride the grid → MappingPanel flow; H5 (and HTML) ride the
+// in-memory recording → channel-selector flow.
+inline bool isMappingType(FileType t) {
+    return t == FileType::Csv || t == FileType::Json;
+}
 
 struct OpenedFile {
     FileType type{FileType::Csv};
     QString path;
     QString displayName;
 
-    // CSV-specific
-    std::unique_ptr<CsvSource> csv;
+    // CSV / JSON: a grid-backed source (CsvSource / JsonSource) mapped via the
+    // MappingPanel.
+    std::unique_ptr<TabularSource> grid;
     ConverterProfile profile;
     std::unique_ptr<QAbstractItemModel> previewModel;
 
@@ -454,8 +462,9 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         if (impl_->activeIndex < 0
             || impl_->activeIndex >= (int)impl_->files.size()) return;
         auto& f = *impl_->files[impl_->activeIndex];
-        if (f.type == FileType::Csv) {
-            f.profile = impl_->mapping->buildProfile("csv");
+        if (isMappingType(f.type)) {
+            f.profile = impl_->mapping->buildProfile(
+                f.type == FileType::Json ? "json" : "csv");
         } else {
             f.h5SelectedChannels = impl_->h5Selector->checkedNames();
             f.h5RelativeChannels = impl_->h5Selector->relativeNames();
@@ -474,15 +483,18 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         }
         auto& f = *impl_->files[impl_->activeIndex];
         impl_->suppressSave = true;
-        if (f.type == FileType::Csv) {
+        if (isMappingType(f.type)) {
+            impl_->mapping->setSourceKind(f.type == FileType::Json
+                ? ui::MappingPanel::SourceKind::Json
+                : ui::MappingPanel::SourceKind::Csv);
             impl_->mapping->setProfile(f.profile);
             impl_->preview->setModel(f.previewModel.get());
             impl_->rightStack->setCurrentIndex(0);
             impl_->statusLabel->setText(
                 QString("%1: %2 rows × %3 cols")
                     .arg(f.displayName)
-                    .arg(f.csv ? f.csv->rowCount()    : 0)
-                    .arg(f.csv ? f.csv->columnCount() : 0));
+                    .arg(f.grid ? f.grid->rowCount()    : 0)
+                    .arg(f.grid ? f.grid->columnCount() : 0));
         } else {
             // Skip the table rebuild when switching back to the same
             // H5 file (A→B→A) — its rows are already in the panel.
@@ -524,7 +536,8 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     auto addFileToList = [this](const OpenedFile& f) {
         // HTML rides the recording (H5) path but deserves an honest tag.
         const QString suffix = QFileInfo(f.displayName).suffix().toLower();
-        const QString tag = (f.type == FileType::Csv) ? "[csv]"
+        const QString tag = (f.type == FileType::Csv)  ? "[csv]"
+                          : (f.type == FileType::Json) ? "[json]"
                           : (suffix == "html" || suffix == "htm") ? "[html]"
                                                                    : "[h5]";
         impl_->fileList->addItem(QString("%1 %2").arg(tag, f.displayName));
@@ -597,11 +610,51 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             f->profile.decimalSeparator = ".";
         }
         try {
-            f->csv = std::make_unique<CsvSource>(
+            f->grid = std::make_unique<CsvSource>(
                 std::filesystem::path(path.toStdString()),
                 f->profile.columnDelimiter,
                 f->profile.rowDelimiter);
-            f->previewModel = f->csv->previewModel("file");
+            f->previewModel = f->grid->previewModel("file");
+        } catch (const std::exception& e) {
+            QMessageBox::critical(this, "Open failed",
+                QString("Couldn't open %1:\n%2").arg(path, e.what()));
+            return;
+        }
+
+        saveActiveState();
+        impl_->files.push_back(std::move(f));
+        addFileToList(*impl_->files.back());
+        impl_->activeIndex = (int)impl_->files.size() - 1;
+        {
+            QSignalBlocker b(impl_->fileList);
+            impl_->fileList->setCurrentRow(impl_->activeIndex);
+        }
+        loadActiveState();
+    };
+
+    // ---- Open JSON: lands in the mapping panel, exactly like CSV. Native
+    //      scope-json pre-fills the mapping; foreign JSON is mapped manually. ----
+    auto openJsonForMapping = [this, saveActiveState, loadActiveState, addFileToList]
+        (const QString& path) {
+        auto f = std::make_unique<OpenedFile>();
+        f->type = FileType::Json;
+        f->path = path;
+        f->displayName = QFileInfo(path).fileName();
+        ConverterProfile metaProfile;
+        const bool hadMeta = converter::profileFromScopeJson(
+            std::filesystem::path(path.toStdString()), &metaProfile);
+        if (hadMeta) {
+            f->profile = std::move(metaProfile);
+        } else {
+            f->profile = ConverterProfile{};
+            f->profile.sourceType = "json";
+            f->profile.headerRow = 1;
+            f->profile.decimalSeparator = ".";
+        }
+        try {
+            f->grid = std::make_unique<JsonSource>(
+                std::filesystem::path(path.toStdString()));
+            f->previewModel = f->grid->previewModel("file");
         } catch (const std::exception& e) {
             QMessageBox::critical(this, "Open failed",
                 QString("Couldn't open %1:\n%2").arg(path, e.what()));
@@ -621,14 +674,15 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
 
     // ---- One Open chart button — extension dispatch. ----
     connect(openChartBtn, &QPushButton::clicked, this,
-            [this, openRecording, openCsvForMapping]{
+            [this, openRecording, openCsvForMapping, openJsonForMapping]{
         const QString path = QFileDialog::getOpenFileName(
             this, "Open chart", QString(),
-            "Scope files (*.h5 *.mf4 *.csv *.tsv *.txt *.html *.htm);;"
+            "Scope files (*.h5 *.mf4 *.csv *.tsv *.txt *.html *.htm *.json);;"
             "Recordings (*.h5 *.mf4);;"
             "HDF5 (*.h5);;MDF4 (*.mf4);;"
             "CSV / text (*.csv *.tsv *.txt);;"
             "Interactive HTML chart (*.html *.htm);;"
+            "JSON (*.json);;"
             "All files (*)");
         if (path.isEmpty()) return;
         const auto fmt = converter::detectFormatFromExtension(
@@ -640,6 +694,9 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             // so it loads exactly like a recording: into memory, then the
             // user picks channels and Applies.
             openRecording(path);
+        } else if (fmt == converter::FileFormat::Json) {
+            // JSON rides the mapping panel like CSV (JsonSource flattens it).
+            openJsonForMapping(path);
         } else {
             // .csv / .tsv / .txt / unknown → mapping panel.
             openCsvForMapping(path);
@@ -654,13 +711,13 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     auto applyCsvWith = [this](OpenedFile& f,
                                const ConverterProfile& profile,
                                QString* errOut) -> int {
-        if (!f.csv) {
+        if (!f.grid) {
             if (errOut) *errOut = "File isn't loaded.";
             return 0;
         }
         QString err;
         QStringList warnings;
-        auto sigs = f.csv->apply(profile, &err, &warnings);
+        auto sigs = f.grid->apply(profile, &err, &warnings);
         if (!warnings.isEmpty()) {
             QMessageBox::warning(this, "Unit fallback",
                 "The parser fell back to a default for the following "
@@ -732,12 +789,13 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     };
 
     auto applyCsv = [this, applyCsvWith](OpenedFile& f) {
-        if (!f.csv) {
+        if (!f.grid) {
             QMessageBox::information(this, "No file",
                 "This file isn't loaded.");
             return;
         }
-        const auto profile = impl_->mapping->buildProfile("csv");
+        const auto profile = impl_->mapping->buildProfile(
+            f.type == FileType::Json ? "json" : "csv");
         f.profile = profile;
         QString err;
         const int n = applyCsvWith(f, profile, &err);
@@ -790,7 +848,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             [this, applyCsv]{
         if (impl_->activeIndex < 0) return;
         auto& f = *impl_->files[impl_->activeIndex];
-        if (f.type != FileType::Csv) return;
+        if (!isMappingType(f.type)) return;
         applyCsv(f);
     });
     impl_->h5Selector->onApply = [this, applyH5]{
@@ -812,26 +870,27 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         if (impl_->suppressSave) return;
         if (impl_->activeIndex < 0) return;
         auto& f = *impl_->files[impl_->activeIndex];
+        // JSON has no delimiter / header parse options, so only CSV reparses.
         if (f.type != FileType::Csv) return;
         // If the delimiters / parse options match what's already cached
         // on the CsvSource, nothing changed — skip the disk round-trip.
-        if (f.csv
+        if (f.grid
             && f.profile.columnDelimiter == impl_->mapping->columnDelimiter()
             && f.profile.rowDelimiter    == impl_->mapping->rowDelimiter()) {
             return;
         }
         try {
-            f.csv = std::make_unique<CsvSource>(
+            f.grid = std::make_unique<CsvSource>(
                 std::filesystem::path(f.path.toStdString()),
                 impl_->mapping->columnDelimiter(),
                 impl_->mapping->rowDelimiter());
-            f.previewModel = f.csv->previewModel("file");
+            f.previewModel = f.grid->previewModel("file");
             impl_->preview->setModel(f.previewModel.get());
             impl_->statusLabel->setText(
                 QString("%1: %2 rows × %3 cols")
                     .arg(f.displayName)
-                    .arg(f.csv->rowCount())
-                    .arg(f.csv->columnCount()));
+                    .arg(f.grid->rowCount())
+                    .arg(f.grid->columnCount()));
         } catch (const std::exception& e) {
             QMessageBox::warning(this, "Reparse failed",
                 QString::fromUtf8(e.what()));
@@ -867,10 +926,10 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         // and a subsequent Apply parse the right columns, then push the
         // profile into the panel (suppress the parse-options churn).
         try {
-            f.csv = std::make_unique<CsvSource>(
+            f.grid = std::make_unique<CsvSource>(
                 std::filesystem::path(f.path.toStdString()),
                 prof.columnDelimiter, prof.rowDelimiter);
-            f.previewModel = f.csv->previewModel("file");
+            f.previewModel = f.grid->previewModel("file");
         } catch (const std::exception& e) {
             QMessageBox::warning(this, "Auto-detect failed",
                 QString::fromUtf8(e.what()));
@@ -935,17 +994,20 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         impl_->suppressSave = true;
         impl_->mapping->setProfile(profile);
         impl_->suppressSave = false;
-        // Re-parse with the loaded delimiters.
-        try {
-            f.csv = std::make_unique<CsvSource>(
-                std::filesystem::path(f.path.toStdString()),
-                impl_->mapping->columnDelimiter(),
-                impl_->mapping->rowDelimiter());
-            f.previewModel = f.csv->previewModel("file");
-            impl_->preview->setModel(f.previewModel.get());
-        } catch (const std::exception& e) {
-            QMessageBox::warning(this, "Reparse failed",
-                QString::fromUtf8(e.what()));
+        // Re-parse with the loaded delimiters (CSV only — a JSON grid is
+        // fixed and doesn't depend on delimiter / header options).
+        if (f.type == FileType::Csv) {
+            try {
+                f.grid = std::make_unique<CsvSource>(
+                    std::filesystem::path(f.path.toStdString()),
+                    impl_->mapping->columnDelimiter(),
+                    impl_->mapping->rowDelimiter());
+                f.previewModel = f.grid->previewModel("file");
+                impl_->preview->setModel(f.previewModel.get());
+            } catch (const std::exception& e) {
+                QMessageBox::warning(this, "Reparse failed",
+                    QString::fromUtf8(e.what()));
+            }
         }
         impl_->statusLabel->setText(
             QString("Loaded profile %1 (%2 channel(s))")
@@ -1006,7 +1068,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             auto& f = *fp;
             int n = 0;
             QString err;
-            if (f.type == FileType::Csv) {
+            if (isMappingType(f.type)) {
                 n = applyCsvWith(f, f.profile, &err);
             } else {
                 n = applyH5With(f, f.h5SelectedChannels,
@@ -1079,8 +1141,8 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             nlohmann::json jf;
             jf["path"] = f.path.toStdString();
             jf["displayName"] = f.displayName.toStdString();
-            if (f.type == FileType::Csv) {
-                jf["type"] = "csv";
+            if (isMappingType(f.type)) {
+                jf["type"] = (f.type == FileType::Json) ? "json" : "csv";
                 QString perr;
                 auto tmp = std::filesystem::temp_directory_path()
                          / "ScopeAnalyser_ws_tmp.scaconv";
@@ -1160,8 +1222,8 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
             f->path = filePath;
             f->displayName = QString::fromStdString(
                 jf.value("displayName", QFileInfo(filePath).fileName().toStdString()));
-            if (type == "csv") {
-                f->type = FileType::Csv;
+            if (type == "csv" || type == "json") {
+                f->type = (type == "json") ? FileType::Json : FileType::Csv;
                 if (jf.contains("profile")) {
                     auto tmp = std::filesystem::temp_directory_path()
                              / "ScopeAnalyser_ws_load_tmp.scaconv";
@@ -1174,13 +1236,18 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                     std::error_code ec; std::filesystem::remove(tmp, ec);
                 }
                 try {
-                    f->csv = std::make_unique<CsvSource>(
-                        std::filesystem::path(filePath.toStdString()),
-                        f->profile.columnDelimiter.isEmpty()
-                            ? QString(",") : f->profile.columnDelimiter,
-                        f->profile.rowDelimiter.isEmpty()
-                            ? QString("\n") : f->profile.rowDelimiter);
-                    f->previewModel = f->csv->previewModel("file");
+                    if (type == "json") {
+                        f->grid = std::make_unique<JsonSource>(
+                            std::filesystem::path(filePath.toStdString()));
+                    } else {
+                        f->grid = std::make_unique<CsvSource>(
+                            std::filesystem::path(filePath.toStdString()),
+                            f->profile.columnDelimiter.isEmpty()
+                                ? QString(",") : f->profile.columnDelimiter,
+                            f->profile.rowDelimiter.isEmpty()
+                                ? QString("\n") : f->profile.rowDelimiter);
+                    }
+                    f->previewModel = f->grid->previewModel("file");
                 } catch (const std::exception& e) {
                     QMessageBox::warning(this, "Reparse failed",
                         QString("%1:\n%2").arg(filePath, e.what()));
@@ -1249,6 +1316,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
               (fmtChoice == converter::ui::SaveChartDialog::Format::Csv)  ? converter::FileFormat::Csv
             : (fmtChoice == converter::ui::SaveChartDialog::Format::Mdf4) ? converter::FileFormat::Mdf4
             : (fmtChoice == converter::ui::SaveChartDialog::Format::Html) ? converter::FileFormat::Html
+            : (fmtChoice == converter::ui::SaveChartDialog::Format::Json) ? converter::FileFormat::Json
                                                                           : converter::FileFormat::Hdf5;
 
         QFileDialog fileDlg(this,

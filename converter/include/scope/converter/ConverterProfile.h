@@ -99,6 +99,15 @@ bool profileFromScopeMetadata(const std::filesystem::path& path,
                               ConverterProfile* out,
                               QString* errorOut = nullptr);
 
+// Native-JSON counterpart of profileFromScopeMetadata: if `path` is a
+// scope-json file ({"signals":[…]}), build a profile pre-mapped to the grid
+// JsonSource produces — one XTime/"ns" (or XFrequency/"Hz") column plus one
+// pinned Y-signal column per signal — so the mapping panel fills in with one
+// click. Returns false (leaving `out` untouched) for non-native / foreign JSON.
+bool profileFromScopeJson(const std::filesystem::path& path,
+                          ConverterProfile* out,
+                          QString* errorOut = nullptr);
+
 // ---- TwinCAT Scope CSV auto-detection ---------------------------------
 // A TwinCAT Measurement / Scope export is a Tab- (or ';'-) delimited file
 // with a metadata preamble, then a multi-row per-channel header block —

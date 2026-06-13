@@ -24,7 +24,7 @@ namespace scope::converter::ui {
 class SaveChartDialog : public QDialog {
     Q_OBJECT
 public:
-    enum class Format { Hdf5, Csv, Mdf4, Html };
+    enum class Format { Hdf5, Csv, Mdf4, Html, Json };
 
     // offerMetadata=false hides the "Metadata" group (the Converter embeds no
     // layout/formula metadata, so the toggles would be inert there).
@@ -74,6 +74,7 @@ private:
     QRadioButton*   csvRadio_{nullptr};
     QRadioButton*   mf4Radio_{nullptr};
     QRadioButton*   htmlRadio_{nullptr};
+    QRadioButton*   jsonRadio_{nullptr};
     QRadioButton*   allRangeRadio_{nullptr};
     QRadioButton*   customRangeRadio_{nullptr};
     QDoubleSpinBox* fromSpin_{nullptr};

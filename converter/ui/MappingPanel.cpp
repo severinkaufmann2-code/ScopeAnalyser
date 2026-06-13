@@ -258,8 +258,15 @@ MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
     btnRow->addWidget(saveBtn_);
     btnRow->addWidget(loadBtn_);
 
+    // Wrap the parse-options grid so setSourceKind() can hide it wholesale
+    // for JSON (whose grid is fixed by JsonSource and has no delimiters /
+    // header / decimal / TwinCAT auto-detect to configure).
+    parseOptionsWidget_ = new QWidget(this);
+    opts->setContentsMargins(0, 0, 0, 0);
+    parseOptionsWidget_->setLayout(opts);
+
     auto* root = new QVBoxLayout(this);
-    root->addLayout(opts);
+    root->addWidget(parseOptionsWidget_);
     root->addWidget(new QLabel("Channels:", this));
     root->addWidget(channelTable_, /*stretch=*/1);
     root->addLayout(chBtnRow);
@@ -448,6 +455,11 @@ void MappingPanel::setProfile(const ConverterProfile& p) {
 
     channelTable_->setRowCount(0);
     for (const auto& c : p.columns) appendChannelRow(c);
+}
+
+void MappingPanel::setSourceKind(SourceKind kind) {
+    if (parseOptionsWidget_)
+        parseOptionsWidget_->setVisible(kind == SourceKind::Csv);
 }
 
 ConverterProfile MappingPanel::buildProfile(const QString& sourceType) const {

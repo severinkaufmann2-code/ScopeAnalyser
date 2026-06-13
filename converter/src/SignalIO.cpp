@@ -12,6 +12,10 @@
 #include <QTextStream>
 
 #include <array>
+#include <cmath>
+#include <cstdint>
+#include <fstream>
+#include <limits>
 
 namespace scope::converter {
 
@@ -397,6 +401,244 @@ bool writeMdf4(const std::filesystem::path& path,
     return session->finalize(errorOut);
 }
 
+// ---- JSON ------------------------------------------------------------
+//
+// Native "scope-json" format: one object per signal, timestamps written as
+// the Signal's internal int64 field verbatim (ns for time signals, Hz×1e9
+// for frequency signals) so a re-open is bit-exact. An optional top-level
+// "layout" carries the PlotLayout. The compact dump keeps multi-million-
+// sample files from exploding into one-number-per-line.
+bool writeJson(const std::filesystem::path& path,
+               const std::vector<std::shared_ptr<Signal>>& chans,
+               const QString& layoutJson,
+               QString* errorOut) {
+    if (chans.empty()) {
+        if (errorOut) *errorOut = "No channels to write";
+        return false;
+    }
+    nlohmann::json root;
+    root["scope-json"] = 1;
+    if (!layoutJson.isEmpty()) {
+        // Nested object (not an opaque string) so a reader can root["layout"]
+        // it directly. Malformed layout is dropped, not fatal — we'd rather
+        // save the data without the optional layout than refuse the save.
+        try {
+            root["layout"] = nlohmann::json::parse(layoutJson.toStdString());
+        } catch (...) {
+            // intentionally swallowed — see comment above
+        }
+    }
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& s : chans) {
+        if (!s) continue;
+        const auto& m = s->meta();
+        auto view = s->snapshotForRead();
+        auto vals = s->readAsDouble();
+        nlohmann::json js;
+        js["name"] = m.name.toStdString();
+        if (!m.unit.isEmpty()) js["unit"] = m.unit.toStdString();
+        js["domain"] = (m.domain == Signal::Domain::Frequency) ? "frequency" : "time";
+        if (!m.sourceSymbol.isEmpty()) js["src"] = m.sourceSymbol.toStdString();
+        if (m.sampleRateHz > 0.0)      js["sampleRateHz"] = m.sampleRateHz;
+        nlohmann::json jt = nlohmann::json::array();
+        nlohmann::json jv = nlohmann::json::array();
+        for (std::size_t i = 0; i < view.count; ++i) {
+            jt.push_back(static_cast<std::int64_t>(view.timestamps[i]));
+            jv.push_back(i < vals.size() ? vals[i] : 0.0);  // NaN → null
+        }
+        js["t"] = std::move(jt);
+        js["v"] = std::move(jv);
+        arr.push_back(std::move(js));
+    }
+    root["signals"] = std::move(arr);
+
+    try {
+        std::ofstream os(path, std::ios::binary | std::ios::trunc);
+        if (!os) {
+            if (errorOut) *errorOut = "Cannot open file for writing.";
+            return false;
+        }
+        os << root.dump();
+        if (!os) {
+            if (errorOut) *errorOut = "Write failed.";
+            return false;
+        }
+    } catch (const std::exception& e) {
+        if (errorOut) *errorOut = QString::fromUtf8(e.what());
+        return false;
+    }
+    return true;
+}
+
+// Best-effort numeric extraction from a *non-native* JSON table: an array of
+// record objects ([{…},{…}]) or a columnar object of arrays
+// ({"t":[…],"a":[…]}). The first column whose name looks like a time axis
+// (t/time/x/…) — else column 0 — becomes the X axis, read as SECONDS; every
+// other numeric column becomes a Time-domain signal. The mapping is a guess:
+// the caller surfaces it via autoDetectedFormat and points the user at the
+// Converter for exact control. Returns false if no table could be formed.
+bool loadForeignJson(const nlohmann::json& root,
+                     const std::filesystem::path& path,
+                     std::vector<std::shared_ptr<Signal>>* out) {
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+    std::vector<QString>             colNames;
+    std::vector<std::vector<double>> colVals;
+    auto colIndex = [&](const QString& name) -> std::size_t {
+        for (std::size_t i = 0; i < colNames.size(); ++i)
+            if (colNames[i] == name) return i;
+        colNames.push_back(name);
+        colVals.emplace_back();
+        return colNames.size() - 1;
+    };
+    auto toNum = [&](const nlohmann::json& v) -> double {
+        if (v.is_number())  return v.get<double>();
+        if (v.is_boolean()) return v.get<bool>() ? 1.0 : 0.0;
+        return kNaN;
+    };
+
+    if (root.is_array()) {
+        std::size_t rowIdx = 0;
+        for (const auto& rec : root) {
+            if (!rec.is_object()) continue;
+            for (auto it = rec.begin(); it != rec.end(); ++it) {
+                auto& cv = colVals[colIndex(QString::fromStdString(it.key()))];
+                cv.resize(rowIdx, kNaN);     // pad rows this column missed
+                cv.push_back(toNum(it.value()));
+            }
+            ++rowIdx;
+        }
+        for (auto& cv : colVals) cv.resize(rowIdx, kNaN);
+    } else if (root.is_object()) {
+        // A member that is itself an array of objects is a nested record
+        // table — recurse into the first such one.
+        for (auto it = root.begin(); it != root.end(); ++it)
+            if (it.value().is_array() && !it.value().empty()
+                && it.value()[0].is_object())
+                return loadForeignJson(it.value(), path, out);
+        std::size_t maxLen = 0;
+        for (auto it = root.begin(); it != root.end(); ++it) {
+            if (!it.value().is_array()) continue;
+            auto& cv = colVals[colIndex(QString::fromStdString(it.key()))];
+            for (const auto& cell : it.value()) cv.push_back(toNum(cell));
+            maxLen = std::max(maxLen, cv.size());
+        }
+        for (auto& cv : colVals) cv.resize(maxLen, kNaN);
+    } else {
+        return false;
+    }
+    if (colNames.size() < 2) return false;
+
+    auto looksTime = [](const QString& n) {
+        const QString t = n.trimmed().toLower();
+        return t == "t" || t == "time" || t == "timestamp" || t == "x"
+            || t == "sec" || t == "seconds" || t == "s";
+    };
+    std::size_t xIdx = 0;
+    for (std::size_t i = 0; i < colNames.size(); ++i)
+        if (looksTime(colNames[i])) { xIdx = i; break; }
+
+    bool any = false;
+    for (std::size_t c = 0; c < colNames.size(); ++c) {
+        if (c == xIdx) continue;
+        std::vector<TimestampNs> ts;
+        std::vector<double>      vs;
+        const std::size_t n = std::min(colVals[c].size(), colVals[xIdx].size());
+        for (std::size_t i = 0; i < n; ++i) {
+            const double x = colVals[xIdx][i];
+            if (std::isnan(x)) continue;                      // no X → skip row
+            ts.push_back(static_cast<TimestampNs>(x * 1e9));  // seconds → ns
+            vs.push_back(colVals[c][i]);
+        }
+        if (ts.empty()) continue;
+        Signal::Meta m;
+        m.name         = colNames[c];
+        m.dataType     = scope::core::DataType::Float64;
+        m.domain       = Signal::Domain::Time;
+        m.sourceSymbol = QString::fromStdString(path.filename().string());
+        auto sig = std::make_shared<Signal>(m);
+        sig->append(ts.data(),
+                    reinterpret_cast<const std::byte*>(vs.data()), ts.size());
+        out->push_back(std::move(sig));
+        any = true;
+    }
+    return any;
+}
+
+bool loadJsonChart(const std::filesystem::path& path,
+                   std::vector<std::shared_ptr<Signal>>* out,
+                   QString* errorOut,
+                   QString* layoutJsonOut = nullptr,
+                   QString* autoDetectedOut = nullptr) {
+    nlohmann::json root;
+    try {
+        std::ifstream is(path);
+        if (!is) { if (errorOut) *errorOut = "Couldn't open file."; return false; }
+        is >> root;
+    } catch (const std::exception& e) {
+        if (errorOut)
+            *errorOut = QString("Invalid JSON: %1").arg(QString::fromUtf8(e.what()));
+        return false;
+    }
+
+    // Embedded PlotLayout → up to the host (Analyser restores axes / view).
+    if (layoutJsonOut && root.is_object() && root.contains("layout"))
+        *layoutJsonOut = QString::fromStdString(root["layout"].dump());
+
+    // ---- Native per-signal format (bit-exact) -----------------------
+    if (root.is_object() && root.contains("signals")
+        && root["signals"].is_array()) {
+        for (const auto& js : root["signals"]) {
+            if (!js.is_object()) continue;
+            Signal::Meta m;
+            m.name = QString::fromStdString(js.value("name", std::string{}));
+            if (m.name.isEmpty()) continue;
+            m.unit     = QString::fromStdString(js.value("unit", std::string{}));
+            m.dataType = scope::core::DataType::Float64;
+            m.domain   = (js.value("domain", std::string("time")) == "frequency")
+                         ? Signal::Domain::Frequency : Signal::Domain::Time;
+            m.sourceSymbol = js.contains("src")
+                ? QString::fromStdString(js.value("src", std::string{}))
+                : QString::fromStdString(path.filename().string());
+            m.sampleRateHz = js.value("sampleRateHz", 0.0);
+
+            const auto jt = js.value("t", nlohmann::json::array());
+            const auto jv = js.value("v", nlohmann::json::array());
+            const std::size_t n = std::min(jt.size(), jv.size());
+            if (n == 0) continue;
+            std::vector<TimestampNs> ts; ts.reserve(n);
+            std::vector<double>      vs; vs.reserve(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                ts.push_back(jt[i].is_number_integer()
+                             ? jt[i].get<std::int64_t>()
+                             : static_cast<TimestampNs>(jt[i].is_number()
+                                   ? jt[i].get<double>() : 0.0));
+                vs.push_back(jv[i].is_number()
+                             ? jv[i].get<double>()
+                             : std::numeric_limits<double>::quiet_NaN());
+            }
+            auto sig = std::make_shared<Signal>(m);
+            sig->append(ts.data(),
+                        reinterpret_cast<const std::byte*>(vs.data()), ts.size());
+            out->push_back(std::move(sig));
+        }
+        if (out->empty()) {
+            if (errorOut) *errorOut = "JSON has no parseable signals.";
+            return false;
+        }
+        return true;
+    }
+
+    // ---- Foreign best-effort (records / columnar) -------------------
+    if (loadForeignJson(root, path, out)) {
+        if (autoDetectedOut) *autoDetectedOut = "JSON (guessed column mapping)";
+        return true;
+    }
+    if (errorOut)
+        *errorOut = "Unrecognised JSON. Open it in the Converter to map its "
+                    "columns to signals.";
+    return false;
+}
+
 }  // namespace
 
 FileFormat detectFormatFromExtension(const std::filesystem::path& path) {
@@ -405,6 +647,7 @@ FileFormat detectFormatFromExtension(const std::filesystem::path& path) {
     if (e == ".mf4")                 return FileFormat::Mdf4;
     if (e == ".csv" || e == ".txt")  return FileFormat::Csv;
     if (e == ".html" || e == ".htm") return FileFormat::Html;
+    if (e == ".json")                return FileFormat::Json;
     return FileFormat::Auto;
 }
 
@@ -414,13 +657,15 @@ QStringList nameFilters(FileFormat fmt) {
         case FileFormat::Hdf5: return {"HDF5 (*.h5)", "All files (*)"};
         case FileFormat::Mdf4: return {"MDF4 (*.mf4)", "All files (*)"};
         case FileFormat::Html: return {"Interactive HTML chart (*.html)", "All files (*)"};
+        case FileFormat::Json: return {"JSON (*.json)", "All files (*)"};
         case FileFormat::Auto:
         default:
-            return {"Scope chart (*.h5 *.mf4 *.csv *.txt *.html)",
+            return {"Scope chart (*.h5 *.mf4 *.csv *.txt *.html *.json)",
                     "HDF5 (*.h5)",
                     "MDF4 (*.mf4)",
                     "CSV / text (*.csv *.txt)",
                     "Interactive HTML chart (*.html *.htm)",
+                    "JSON (*.json)",
                     "All files (*)"};
     }
 }
@@ -431,6 +676,7 @@ QString defaultSuffix(FileFormat fmt) {
         case FileFormat::Hdf5: return "h5";
         case FileFormat::Mdf4: return "mf4";
         case FileFormat::Html: return "html";
+        case FileFormat::Json: return "json";
         case FileFormat::Auto:
         default:               return "h5";
     }
@@ -469,6 +715,10 @@ LoadResult loadFile(const std::filesystem::path& path, FileFormat fmt) {
             r.error = err;
             return r;
         }
+        case FileFormat::Json:
+            r.ok = loadJsonChart(path, &r.channels, &r.error, &r.layoutJson,
+                                 &r.autoDetectedFormat);
+            return r;
         case FileFormat::Auto:
         default:
             r.error = "Unsupported file format (couldn't detect from extension).";
@@ -509,6 +759,7 @@ bool saveFile(const std::filesystem::path& path,
             }
             return exportStorableHtml(out, tmp, errorOut);
         }
+        case FileFormat::Json: return writeJson(path, channels, opts.layoutJson, errorOut);
         case FileFormat::Auto:
         default:
             if (errorOut) *errorOut = "Unsupported file format (couldn't detect from extension).";

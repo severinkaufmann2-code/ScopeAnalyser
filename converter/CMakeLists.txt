@@ -2,7 +2,9 @@ set(CONVERTER_HEADERS
     include/scope/converter/IConverterSource.h
     include/scope/converter/ConverterProfile.h
     include/scope/converter/ExcelSource.h
+    include/scope/converter/TabularSource.h
     include/scope/converter/CsvSource.h
+    include/scope/converter/JsonSource.h
     include/scope/converter/CsvWriter.h
     include/scope/converter/SignalIO.h
     include/scope/converter/HtmlExport.h
@@ -16,7 +18,9 @@ set(CONVERTER_HEADERS
 set(CONVERTER_SOURCES
     src/ConverterProfile.cpp
     src/ExcelSource.cpp
+    src/TabularSource.cpp
     src/CsvSource.cpp
+    src/JsonSource.cpp
     src/CsvWriter.cpp
     src/SignalIO.cpp
     src/HtmlExport.cpp

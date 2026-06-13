@@ -25,6 +25,11 @@ public:
     void setProfile(const ConverterProfile& p);
     ConverterProfile buildProfile(const QString& sourceType) const;
 
+    // CSV exposes the delimiter / row / header / decimal / auto-detect parse
+    // options; JSON's grid is fixed by JsonSource, so those are hidden for it.
+    enum class SourceKind { Csv, Json };
+    void setSourceKind(SourceKind kind);
+
     QString columnDelimiter() const;
     QString rowDelimiter()    const;
     int     headerRow()       const;
@@ -56,6 +61,9 @@ private:
 
     QComboBox*    autoDetectCombo_{nullptr};
     QPushButton*  autoDetectBtn_{nullptr};
+
+    // Holds the CSV-only parse options grid so setSourceKind() can hide it.
+    QWidget*      parseOptionsWidget_{nullptr};
 
     QComboBox*    colSepCombo_;
     QLineEdit*    colSepCustom_;

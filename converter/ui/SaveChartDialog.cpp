@@ -49,6 +49,8 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     htmlRadio_ = new QRadioButton(
         "HTML (.html) — interactive chart, opens in any browser (offline) and "
         "re-opens in ScopeAnalyser", this);
+    jsonRadio_ = new QRadioButton(
+        "JSON (.json) — per-signal arrays, bit-exact re-open in ScopeAnalyser", this);
     h5Radio_->setChecked(true);
     auto* formatBox = new QGroupBox("Format", this);
     auto* formatLayout = new QVBoxLayout(formatBox);
@@ -56,6 +58,7 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     formatLayout->addWidget(mf4Radio_);
     formatLayout->addWidget(csvRadio_);
     formatLayout->addWidget(htmlRadio_);
+    formatLayout->addWidget(jsonRadio_);
 
     // ---- Time range --------------------------------------------------
     allRangeRadio_    = new QRadioButton("All data", this);
@@ -221,6 +224,7 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     connect(mf4Radio_,  &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
     connect(csvRadio_,  &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
     connect(htmlRadio_, &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
+    connect(jsonRadio_, &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
     connect(allRangeRadio_,    &QRadioButton::toggled, this, [this](bool){ onRangeModeChanged(); });
     connect(customRangeRadio_, &QRadioButton::toggled, this, [this](bool){ onRangeModeChanged(); });
 
@@ -291,6 +295,7 @@ SaveChartDialog::Format SaveChartDialog::format() const {
     if (csvRadio_->isChecked())  return Format::Csv;
     if (mf4Radio_->isChecked())  return Format::Mdf4;
     if (htmlRadio_->isChecked()) return Format::Html;
+    if (jsonRadio_->isChecked()) return Format::Json;
     return Format::Hdf5;
 }
 
