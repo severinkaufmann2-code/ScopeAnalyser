@@ -171,10 +171,11 @@ TEST_F(AnalyserPlotLayoutTest, TimeAxisAssignmentsRoundTripThroughWidget) {
     EXPECT_EQ(torqueAxis, 1) << "axis assignment lost through the widget";
 }
 
-// The two Open-chart formula-import modes. Mirrors Open: data already in
-// the store, then applyLayout with the chosen mode.
-//   ImportDataOnly — exact saved values, formula metadata wiped (plain channel).
-//   Recalculate    — re-derived from the sources.
+// The Open-chart formula-import modes, applied per channel. Mirrors Open:
+// data already in the store, then applyLayout with the chosen mode.
+//   "double"  — a CHOICE channel: its data is in the store. The mode decides.
+//   "triple"  — a FORMULA-ONLY channel: in the layout but not the store (no
+//               data was saved). Always recomputed, regardless of the mode.
 TEST_F(AnalyserPlotLayoutTest, FormulaImportModes) {
     // "double" = 2*speed, loaded with deliberately stale values and the
     // formula text in sourceSymbol (as a round-tripped file would carry it).
@@ -189,6 +190,8 @@ TEST_F(AnalyserPlotLayoutTest, FormulaImportModes) {
         s->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), ts.size());
         store.add(s);
     };
+    // Layout lists speed, the data-bearing "double", and the formula-only
+    // "triple" (no matching channel in the store).
     auto layout = [] {
         scope::plot::PlotLayout in; in.viewMode = "time";
         QList<scope::plot::PlotLayoutAxis> axes;
@@ -197,32 +200,40 @@ TEST_F(AnalyserPlotLayoutTest, FormulaImportModes) {
         QList<scope::plot::PlotLayoutChannel> chans;
         { scope::plot::PlotLayoutChannel c; c.name = "speed";  c.axisIndex = 0; c.domain = "time"; chans.append(c); }
         { scope::plot::PlotLayoutChannel c; c.name = "double"; c.axisIndex = 0; c.domain = "time"; c.formula = "2 * speed"; chans.append(c); }
+        { scope::plot::PlotLayoutChannel c; c.name = "triple"; c.axisIndex = 0; c.domain = "time"; c.formula = "3 * speed"; chans.append(c); }
         in.channelsByDomain.insert("time", chans);
         return in;
     };
     using FI = AnalyserPlot::FormulaImport;
 
-    // ImportDataOnly — values untouched and the formula wiped → plain channel:
-    // not registered (so a Redraw won't recompute it) and sourceSymbol cleared
-    // (so editChannelDialog treats it as "not a formula channel").
+    // ImportDataOnly — "double" keeps its values and loses its formula (plain
+    // channel); "triple" has no data, so it is still imported + computed.
     {
         SignalStore store;
         scope::analyser::FormulaEngine engine(store);
         AnalyserPlot plot(store, engine);
         addTimeChannel(store, "speed", "rpm");   // {1, 2, 3}
-        addStaleDouble(store);                   // {99, 99, 99}
+        addStaleDouble(store);                   // {99, 99, 99}, NO "triple"
         apply(plot, layout(), FI::ImportDataOnly);
-        auto sig = store.get("double");
-        auto vs = sig->readAsDouble();
-        ASSERT_EQ(vs.size(), 3u);
-        EXPECT_DOUBLE_EQ(vs[0], 99.0);
-        EXPECT_DOUBLE_EQ(vs[2], 99.0);
+
+        auto dbl = store.get("double");
+        auto dv = dbl->readAsDouble();
+        ASSERT_EQ(dv.size(), 3u);
+        EXPECT_DOUBLE_EQ(dv[0], 99.0);
+        EXPECT_DOUBLE_EQ(dv[2], 99.0);
         EXPECT_TRUE(engine.formulaFor("double").isEmpty())
-            << "ImportDataOnly must not register the formula";
-        EXPECT_TRUE(sig->meta().sourceSymbol.isEmpty())
-            << "ImportDataOnly must strip the formula metadata";
+            << "data-bearing channel must not be registered";
+        EXPECT_TRUE(dbl->meta().sourceSymbol.isEmpty())
+            << "data-bearing channel must be stripped to a plain signal";
+
+        ASSERT_TRUE(store.contains("triple"))
+            << "formula-only channel must be imported even under data-only";
+        auto tv = store.get("triple")->readAsDouble();
+        ASSERT_EQ(tv.size(), 3u);
+        EXPECT_DOUBLE_EQ(tv[0], 3.0);
+        EXPECT_DOUBLE_EQ(tv[2], 9.0);
     }
-    // Recalculate — re-derived to 2*speed = {2, 4, 6}.
+    // Recalculate — both are re-derived from speed.
     {
         SignalStore store;
         scope::analyser::FormulaEngine engine(store);
@@ -230,11 +241,16 @@ TEST_F(AnalyserPlotLayoutTest, FormulaImportModes) {
         addTimeChannel(store, "speed", "rpm");   // {1, 2, 3}
         addStaleDouble(store);                   // {99, 99, 99}
         apply(plot, layout(), FI::Recalculate);
-        auto vs = store.get("double")->readAsDouble();
-        ASSERT_EQ(vs.size(), 3u);
-        EXPECT_DOUBLE_EQ(vs[0], 2.0);
-        EXPECT_DOUBLE_EQ(vs[1], 4.0);
-        EXPECT_DOUBLE_EQ(vs[2], 6.0);
+
+        auto dv = store.get("double")->readAsDouble();
+        ASSERT_EQ(dv.size(), 3u);
+        EXPECT_DOUBLE_EQ(dv[0], 2.0);
+        EXPECT_DOUBLE_EQ(dv[2], 6.0);
+        ASSERT_TRUE(store.contains("triple"));
+        auto tv = store.get("triple")->readAsDouble();
+        ASSERT_EQ(tv.size(), 3u);
+        EXPECT_DOUBLE_EQ(tv[0], 3.0);
+        EXPECT_DOUBLE_EQ(tv[2], 9.0);
     }
 }
 

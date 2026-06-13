@@ -1040,36 +1040,27 @@ void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout,
     loadDomain(Domain::Frequency, "frequency");
 
     // ---- Formula (math) channels -------------------------------------
-    // Two behaviours, picked by the Open-chart popup:
-    //   Recalculate    — register each formula then recompute the whole set,
-    //                    so derived channels reflect the current sources
-    //                    instead of the saved values, and the definition is
-    //                    restored even for formats that don't round-trip
-    //                    Signal::Meta::sourceSymbol.
-    //   ImportDataOnly — keep the loaded values untouched and strip the
-    //                    formula entirely: forget any registration and clear
-    //                    sourceSymbol, so the channel becomes a plain signal
-    //                    (not editable as a formula, never recomputed — a
-    //                    later Redraw leaves it alone).
+    // Applied per channel. A formula channel that arrived WITH its data is a
+    // "choice" channel — the open popup's mode decides what happens to it:
+    //   Recalculate    — re-evaluate it from the sources (may change values).
+    //   ImportDataOnly — keep its exact saved values and strip the formula
+    //                    (forget it + clear sourceSymbol) → a plain signal,
+    //                    not editable as a formula and never recomputed.
+    // A formula channel saved WITHOUT data (only the formula survives, e.g.
+    // "No data for math channels") has nothing to keep, so it is always
+    // registered and recomputed — even under ImportDataOnly.
     const auto allLayoutChans = [&] {
         QList<scope::plot::PlotLayoutChannel> all;
         for (const auto& list : layout.channelsByDomain) all.append(list);
         return all;
     }();
-    if (mode == FormulaImport::Recalculate) {
-        for (const auto& c : allLayoutChans) {
-            if (!c.formula.isEmpty()) engine_.rememberFormula(c.name, c.formula);
-        }
-        QStringList formulaErrors;
-        engine_.recomputeAll(&formulaErrors);
-        if (!formulaErrors.isEmpty()) {
-            QMessageBox::warning(this, "Some formulas failed",
-                "Couldn't re-evaluate (kept any saved data as-is):\n"
-                    + formulaErrors.join("\n"));
-        }
-    } else {  // ImportDataOnly
-        for (const auto& c : allLayoutChans) {
-            if (c.formula.isEmpty()) continue;
+    for (const auto& c : allLayoutChans) {
+        if (c.formula.isEmpty()) continue;
+        // Checked before recomputeAll() below adds the formula-only channels.
+        const bool hasData = store_.contains(c.name);
+        if (mode == FormulaImport::Recalculate || !hasData) {
+            engine_.rememberFormula(c.name, c.formula);
+        } else {  // ImportDataOnly + data present → freeze as a plain signal
             engine_.forget(c.name);
             if (auto s = store_.get(c.name)) {
                 auto m = s->meta();
@@ -1079,6 +1070,16 @@ void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout,
                 }
             }
         }
+    }
+    // Recomputes whatever got registered: in Recalculate every formula; in
+    // ImportDataOnly only the formula-only channels (the data-bearing ones
+    // were forgotten, so they keep their saved values).
+    QStringList formulaErrors;
+    engine_.recomputeAll(&formulaErrors);
+    if (!formulaErrors.isEmpty()) {
+        QMessageBox::warning(this, "Some formulas failed",
+            "Couldn't re-evaluate (kept any saved data as-is):\n"
+                + formulaErrors.join("\n"));
     }
     pendingAssignments_.clear();
     for (const auto& c : allLayoutChans) {
@@ -1350,30 +1351,36 @@ void AnalyserPlot::openChartDialog() {
         haveLayout = lerr.isEmpty();
     }
 
-    // When the layout defines formula (math) channels, opening normally
-    // would re-evaluate them and overwrite the saved values. Ask the user
-    // how to treat them — so a reopen can leave the file's data untouched.
-    // Done before any channel is added so Cancel is a clean no-op.
+    // Only math channels that arrived WITH their data offer a real choice
+    // (keep the saved values, or recompute). Channels saved formula-only are
+    // always recomputed, so they don't need the popup. Count the choosable
+    // ones = formula channels whose data is actually in this file.
     FormulaImport formulaMode = FormulaImport::Recalculate;
     if (haveLayout) {
-        int formulaCount = 0;
+        QSet<QString> loadedNames;
+        for (const auto& s : r.channels)
+            if (s) loadedNames.insert(s->meta().name);
+        int choiceCount = 0;
         for (const auto& list : layout.channelsByDomain)
             for (const auto& c : list)
-                if (!c.formula.isEmpty()) ++formulaCount;
+                if (!c.formula.isEmpty() && loadedNames.contains(c.name))
+                    ++choiceCount;
 
-        if (formulaCount > 0) {
+        if (choiceCount > 0) {
             QMessageBox box(this);
             box.setIcon(QMessageBox::Question);
             box.setWindowTitle("Formula channels");
-            box.setText(QString("This file contains %1 formula (math) "
-                                "channel(s).").arg(formulaCount));
+            box.setText(QString("This file contains %1 math channel(s) saved "
+                                "with their data.").arg(choiceCount));
             box.setInformativeText(
                 "How should they be imported?\n\n"
-                "• Import data only — keep every stored value exactly and "
-                "discard the formula metadata, so they become plain signal "
-                "channels (not editable as formulas, never recalculated).\n"
+                "• Import data only — keep the saved values exactly and "
+                "discard the formula, so they become plain signal channels "
+                "(not editable as formulas, never recalculated).\n"
                 "• Import formula — re-run each formula over the current "
-                "sources (may change the saved values).");
+                "sources (may change the saved values).\n\n"
+                "Math channels saved as formula-only (no data) are recomputed "
+                "either way.");
             // All three share ActionRole so QMessageBox lays them out in the
             // order added (left → right): data, formula, then Cancel on the
             // right. Escape / window-close maps to Cancel.
