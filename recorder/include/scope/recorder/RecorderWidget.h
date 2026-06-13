@@ -44,6 +44,7 @@ private slots:
     void onStats(RecordingSession::Stats s);
     void onSendAll();
     void onSendSelected();
+    void onSaveChart();
     void onSaveLayout();
     void onLoadLayout();
 
@@ -52,7 +53,9 @@ private:
     // store_ (the Analyser / Converter bus). Snapshots a frozen copy and
     // replaces any copy a previous Send pushed for the same channel.
     void sendChannels(const QStringList& names);
-    void updateSendButtons();
+    // Enable/disable the Send + Save-chart buttons based on whether the
+    // private capture store has anything in it.
+    void updateActionButtons();
 
     // The shared store is the Analyser / Converter bus. The Recorder keeps
     // its captures in a PRIVATE store so nothing reaches the Analyser until
@@ -77,8 +80,9 @@ private:
     QPushButton*     disconnectBtn_;
     QPushButton*     startBtn_;
     QPushButton*     stopBtn_;
+    QPushButton*     saveChartBtn_;     // export captures (HDF5/MDF4/CSV/HTML)
     QPushButton*     sendAllBtn_;       // push all captures to the Analyser
-    QPushButton*     sendSelectedBtn_;  // push only the selected captures
+    QPushButton*     sendSelectedBtn_;  // push only the checked captures
     QLabel*          statusLabel_;   // live recording stats / warnings
     QLabel*          connPill_;      // connection state chip
     QString          connectedLabel_;  // pill text while connected

@@ -5,6 +5,10 @@
 #include "LivePreviewPlot.h"
 
 #include "scope/ads/MockAdsClient.h"
+#include "scope/converter/BusyRunner.h"
+#include "scope/converter/HtmlExport.h"
+#include "scope/converter/SaveChartDialog.h"
+#include "scope/converter/SignalIO.h"
 #include "scope/plot/PlotLayout.h"
 #include "scope/style/StyleKit.h"
 
@@ -26,6 +30,7 @@
 #include <QVBoxLayout>
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -83,6 +88,13 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     stopBtn_ = new QPushButton(
         scope::style::icon(scope::style::Glyph::Stop), "Stop", this);
     stopBtn_->setEnabled(false);
+    saveChartBtn_ = new QPushButton(
+        scope::style::icon(scope::style::Glyph::Save), "Save chart…", this);
+    saveChartBtn_->setEnabled(false);
+    saveChartBtn_->setToolTip(
+        "Save the recorded channels to HDF5 / MDF4 / CSV / HTML — the same "
+        "dialog the Analyser uses. Recordings stream to a temp file; this is "
+        "how you keep one.");
     sendSelectedBtn_ = new QPushButton(
         scope::style::icon(scope::style::Glyph::AnalyseTab),
         "Send checked to Analyser", this);
@@ -126,6 +138,8 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     captureRow->setSpacing(6);
     captureRow->addWidget(startBtn_);
     captureRow->addWidget(stopBtn_);
+    captureRow->addSpacing(8);
+    captureRow->addWidget(saveChartBtn_);
     captureRow->addSpacing(10);
     captureRow->addWidget(statusLabel_);
     captureRow->addStretch();
@@ -184,6 +198,7 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
 
     connect(sendAllBtn_,      &QPushButton::clicked, this, &RecorderWidget::onSendAll);
     connect(sendSelectedBtn_, &QPushButton::clicked, this, &RecorderWidget::onSendSelected);
+    connect(saveChartBtn_,    &QPushButton::clicked, this, &RecorderWidget::onSaveChart);
 
     // The preview's sidebar buttons only request — the full recorder layout
     // (connection + channel table + plot) is saved/loaded here.
@@ -192,12 +207,12 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     connect(preview_, &ui::LivePreviewPlot::loadLayoutRequested,
             this, &RecorderWidget::onLoadLayout);
 
-    // Send is available once there's something captured in the private store.
+    // Send / Save chart are available once there's something captured.
     connect(&recordStore_, &scope::core::SignalStore::channelAdded,
-            this, [this](const QString&){ updateSendButtons(); });
+            this, [this](const QString&){ updateActionButtons(); });
     connect(&recordStore_, &scope::core::SignalStore::channelRemoved,
-            this, [this](const QString&){ updateSendButtons(); });
-    updateSendButtons();
+            this, [this](const QString&){ updateActionButtons(); });
+    updateActionButtons();
 }
 
 RecorderWidget::~RecorderWidget() = default;
@@ -271,19 +286,10 @@ void RecorderWidget::onStartClicked() {
         QMessageBox::information(this, "Not connected", "Connect to a source first.");
         return;
     }
-    // Non-static QFileDialog + setDefaultSuffix("h5") so the existence-
-    // check runs against the real .h5 target and ".h5" is appended if
-    // the user didn't type it. Same trick as Save converter profile /
-    // Save plot layout.
-    QFileDialog dlg(this, "Save recording session");
-    dlg.setAcceptMode(QFileDialog::AcceptSave);
-    dlg.setNameFilters({"Scope sessions (*.h5)", "All files (*)"});
-    dlg.setDefaultSuffix("h5");
-    if (dlg.exec() != QDialog::Accepted) return;
-    const auto sel = dlg.selectedFiles();
-    if (sel.isEmpty()) return;
-    QString file = sel.first();
-    if (!file.endsWith(".h5", Qt::CaseInsensitive)) file += ".h5";
+    // Record straight into a temp .h5 (overwritten each Record) — no save
+    // prompt. The user persists a chosen file/format later via "Save chart…".
+    const auto tempFile = std::filesystem::temp_directory_path()
+                        / "ScopeAnalyser_recording.h5";
 
     session_ = std::make_unique<RecordingSession>(recordStore_, *client_, this);
     connect(session_.get(), &RecordingSession::statsChanged,
@@ -298,11 +304,17 @@ void RecorderWidget::onStartClicked() {
         session_.reset();
         return;
     }
-    if (!session_->start(file.toStdString(), &err)) {
+    // Channels now exist in recordStore_ → their preview graphs were created.
+    // Put each on the axis a loaded layout asked for (the layout was applied
+    // before any channel existed, so the assignment was deferred).
+    preview_->reapplyChannelAssignments();
+
+    if (!session_->start(tempFile, &err)) {
         QMessageBox::critical(this, "Failed to start", err);
         session_.reset();
         return;
     }
+    preview_->setRecording(true);
     startBtn_->setEnabled(false);
     stopBtn_->setEnabled(true);
     scope::style::setPill(connPill_, scope::style::PillTone::Rec, "● Recording");
@@ -312,6 +324,7 @@ void RecorderWidget::onStopClicked() {
     if (!session_) return;
     session_->stop();
     session_.reset();
+    preview_->setRecording(false);
     const bool connected = client_ && client_->isConnected();
     startBtn_->setEnabled(connected);
     stopBtn_->setEnabled(false);
@@ -333,10 +346,11 @@ void RecorderWidget::onStats(RecordingSession::Stats s) {
                               .arg(s.overruns));
 }
 
-void RecorderWidget::updateSendButtons() {
+void RecorderWidget::updateActionButtons() {
     const bool any = recordStore_.size() > 0;
     sendAllBtn_->setEnabled(any);
     sendSelectedBtn_->setEnabled(any);
+    saveChartBtn_->setEnabled(any);
 }
 
 void RecorderWidget::onSendAll() {
@@ -380,6 +394,82 @@ void RecorderWidget::sendChannels(const QStringList& names) {
     statusLabel_->setText(n == 0
         ? QString("Nothing to send")
         : QString("Sent %1 channel(s) to the Analyser").arg(n));
+}
+
+void RecorderWidget::onSaveChart() {
+    if (recordStore_.size() == 0) {
+        QMessageBox::information(this, "Nothing to save", "Record something first.");
+        return;
+    }
+    converter::ui::SaveChartDialog dlg(0.0, 0.0, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const auto fmtChoice = dlg.format();
+    const converter::FileFormat fmt =
+          (fmtChoice == converter::ui::SaveChartDialog::Format::Csv)  ? converter::FileFormat::Csv
+        : (fmtChoice == converter::ui::SaveChartDialog::Format::Mdf4) ? converter::FileFormat::Mdf4
+        : (fmtChoice == converter::ui::SaveChartDialog::Format::Html) ? converter::FileFormat::Html
+                                                                      : converter::FileFormat::Hdf5;
+
+    QFileDialog fileDlg(this,
+        QString("Save chart (.%1)").arg(converter::defaultSuffix(fmt)));
+    fileDlg.setAcceptMode(QFileDialog::AcceptSave);
+    fileDlg.setNameFilters(converter::nameFilters(fmt));
+    fileDlg.setDefaultSuffix(converter::defaultSuffix(fmt));
+    if (fileDlg.exec() != QDialog::Accepted) return;
+    const auto sel = fileDlg.selectedFiles();
+    if (sel.isEmpty()) return;
+
+    converter::ChartSaveFilters filters;
+    filters.includeTime              = dlg.includeTimeDomain();
+    filters.includeFrequency         = dlg.includeFrequencyDomain();
+    filters.includeDerived           = dlg.includeDerivedChannels();
+    filters.splitDomainsIntoTwoFiles = dlg.splitDomainsIntoTwoFiles();
+    filters.useCustomRange           = dlg.useCustomRange();
+    filters.fromSec                  = dlg.fromSec();
+    filters.toSec                    = dlg.toSec();
+
+    converter::SaveOptions opts;
+    opts.csv = dlg.csvOptions();
+    // Embed the preview layout so a re-opened file restores the axes.
+    if (dlg.addMetadata() && dlg.includeLayout()) {
+        opts.layoutJson = preview_->currentPlotLayout().toJsonString();
+    }
+    // Storable HTML mirrors the preview (axes / colours / assignments).
+    if (fmt == converter::FileFormat::Html) {
+        opts.htmlView = preview_->htmlExportView();
+    }
+
+    struct SaveOutcome {
+        converter::ChartSaveResult result{converter::ChartSaveResult::Failed};
+        QStringList messages;
+        QString error;
+    };
+    const QString target = sel.first();
+    const auto outcome = converter::ui::runWithBusyDialog(this, "Saving chart…",
+        [&]() -> SaveOutcome {
+            SaveOutcome o;
+            QStringList msgs;
+            QString err;
+            o.result   = converter::saveChartFromStore(
+                target, recordStore_, fmt, filters, opts, &msgs, &err);
+            o.messages = std::move(msgs);
+            o.error    = std::move(err);
+            return o;
+        });
+    switch (outcome.result) {
+        case converter::ChartSaveResult::NothingMatchedFilters:
+            QMessageBox::warning(this, "Nothing to save",
+                "No channels matched the current filters / time range.");
+            return;
+        case converter::ChartSaveResult::Failed:
+            QMessageBox::critical(this, "Save failed", outcome.error);
+            return;
+        case converter::ChartSaveResult::Ok:
+            statusLabel_->setText("Saved: " + outcome.messages.join("; "));
+            QMessageBox::information(this, "Saved", outcome.messages.join("\n"));
+            return;
+    }
 }
 
 void RecorderWidget::onSaveLayout() {

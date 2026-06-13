@@ -1,5 +1,6 @@
 #include "LivePreviewPlot.h"
 
+#include "scope/converter/HtmlExport.h"
 #include "scope/plot/ScopePlot.h"
 #include "scope/plot/PlotLayout.h"
 #include "scope/style/StyleKit.h"
@@ -20,6 +21,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <limits>
 
 namespace scope::recorder::ui {
@@ -32,7 +34,7 @@ constexpr int kTickIntervalMs = 50;
 LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* parent)
     : QWidget(parent), store_(store) {
     scope_ = new scope::plot::ScopePlot(this);
-    scope_->plot()->xAxis->setLabel("seconds before now");
+    scope_->plot()->xAxis->setLabel("t [s]");
     scope_->setPauseSupported(true);
 
     table_ = new QTableWidget(0, ColCount, this);
@@ -255,41 +257,87 @@ void LivePreviewPlot::onChannelRemoved(QString name) {
     recolorChannels();
 }
 
-void LivePreviewPlot::onTick() {
-    if (scope_->isPaused()) return;
-    if (graphs_.empty()) return;
+void LivePreviewPlot::refreshData() {
+    // Capture a stable time origin from the first samples so x = t − origin
+    // doesn't drift between ticks (which would make zoom/Fit meaningless and
+    // scroll a finished recording off-screen). t [s] counts from there.
+    if (!originSet_) {
+        auto minTs = std::numeric_limits<scope::core::TimestampNs>::max();
+        bool any = false;
+        for (auto it = graphs_.begin(); it != graphs_.end(); ++it) {
+            auto sig = store_.get(it.key());
+            if (!sig) continue;
+            const auto v = sig->snapshotForRead();
+            if (v.count == 0) continue;
+            minTs = std::min(minTs, v.timestamps[0]);
+            any = true;
+        }
+        if (any) { originNs_ = minTs; originSet_ = true; }
+    }
 
-    const auto nowNs    = scope::core::nowNs();
-    const auto windowNs = static_cast<scope::core::TimestampNs>(windowSeconds_ * 1e9);
-    const auto cutoffNs = nowNs - windowNs;
-
-    const auto active = activeChannels();
-
+    // Load the FULL signal into each graph (not just the visible window) so
+    // the user can zoom out / Fit to the whole capture.
     for (auto it = graphs_.begin(); it != graphs_.end(); ++it) {
-        const QString& name = it.key();
-        QCPGraph*      graph = it.value();
-        if (!active.contains(name)) continue;
-        auto sig = store_.get(name);
+        auto sig = store_.get(it.key());
         if (!sig) continue;
-        auto view = sig->snapshotForRead();
-        auto values = sig->readAsDouble();
-
+        const auto view   = sig->snapshotForRead();
+        const auto values = sig->readAsDouble();
         QVector<double> xs, ys;
         xs.reserve(static_cast<int>(view.count));
         ys.reserve(static_cast<int>(view.count));
         for (std::size_t i = 0; i < view.count; ++i) {
-            if (view.timestamps[i] < cutoffNs) continue;
-            xs.push_back((view.timestamps[i] - nowNs) / 1e9);
-            const double v = (i < values.size()) ? values[i] : 0.0;
-            ys.push_back(v);
+            xs.push_back((view.timestamps[i] - originNs_) / 1e9);
+            ys.push_back(i < values.size() ? values[i] : 0.0);
         }
-        graph->setData(xs, ys, /*alreadySorted=*/true);
+        it.value()->setData(xs, ys, /*alreadySorted=*/true);
     }
+}
+
+void LivePreviewPlot::onTick() {
+    if (scope_->isPaused()) return;   // paused → freeze for inspection
+    if (!recording_) return;          // stopped → leave the view to the user
+    if (graphs_.empty()) return;
+
+    refreshData();
 
     auto* plot = scope_->plot();
-    plot->xAxis->setRange(-windowSeconds_, 0.0);
-    scope_->rescaleAllYAxes();
+    // Follow the trailing window only while the X axis is still auto-fit
+    // (the user hasn't zoomed/panned). Once they take control — or Pause —
+    // stop moving the view so they can explore the whole capture.
+    if (originSet_ && scope_->xAxisIsAutoFit()) {
+        double maxX = 0.0;
+        bool any = false;
+        for (auto it = graphs_.begin(); it != graphs_.end(); ++it) {
+            auto sig = store_.get(it.key());
+            if (!sig) continue;
+            const auto v = sig->snapshotForRead();
+            if (v.count == 0) continue;
+            const double x = (v.timestamps[v.count - 1] - originNs_) / 1e9;
+            maxX = any ? std::max(maxX, x) : x;
+            any = true;
+        }
+        if (any) {
+            const double lo = std::max(0.0, maxX - windowSeconds_);
+            const double hi = std::max(maxX, lo + windowSeconds_);
+            plot->xAxis->setRange(lo, hi);
+            scope_->rescaleYAxesToWindow(lo, hi);
+        }
+    }
     plot->replot(QCustomPlot::rpQueuedReplot);
+}
+
+void LivePreviewPlot::setRecording(bool on) {
+    recording_ = on;
+    if (on) {
+        // Fresh capture: re-arm follow and recompute the origin on first data.
+        originSet_ = false;
+        scope_->fitAll();
+    } else if (!graphs_.empty()) {
+        // Stopped: draw the final samples and fit the whole recording so it
+        // stays on screen (the tick no longer touches the view).
+        refreshData();
+        scope_->fitAll();
+    }
 }
 
 QStringList LivePreviewPlot::checkedChannelNames() const {
@@ -324,6 +372,7 @@ scope::plot::PlotLayout LivePreviewPlot::currentPlotLayout() const {
 }
 
 void LivePreviewPlot::applyPlotLayout(const scope::plot::PlotLayout& layout) {
+    loadedLayout_ = layout;
     while (scope_->yAxisCount() > 1) {
         const int idx = scope_->yAxisCount() - 1;
         for (int g = 0; g < scope_->plot()->graphCount(); ++g) {
@@ -345,12 +394,19 @@ void LivePreviewPlot::applyPlotLayout(const scope::plot::PlotLayout& layout) {
         }
     }
     rebuildAxisCombos();
+    reapplyChannelAssignments();
+}
 
+void LivePreviewPlot::reapplyChannelAssignments() {
+    // For each channel the layout knows about: if its row exists now, set the
+    // row's axis combo (which drives the graph's Y axis + colour); otherwise
+    // defer it so onChannelAdded picks it up when the channel appears.
     pendingAssignments_.clear();
-    for (const auto& c : layout.channels) {
+    for (const auto& c : loadedLayout_.channels) {
         bool found = false;
         for (int r = 0; r < table_->rowCount(); ++r) {
-            if (table_->item(r, ColName)->text() == c.name) {
+            auto* item = table_->item(r, ColName);
+            if (item && item->text() == c.name) {
                 setAxisIndexForRow(r, c.axisIndex);
                 found = true;
                 break;
@@ -360,6 +416,38 @@ void LivePreviewPlot::applyPlotLayout(const scope::plot::PlotLayout& layout) {
     }
     recolorChannels();
     scope_->plot()->replot(QCustomPlot::rpQueuedReplot);
+}
+
+scope::converter::HtmlExportView LivePreviewPlot::htmlExportView() const {
+    scope::converter::HtmlChartView cv;
+    for (int i = 0; i < scope_->yAxisCount(); ++i) {
+        scope::converter::HtmlAxis ha;
+        ha.label = scope_->yAxis(i)->label();
+        ha.right = scope_->yAxis(i)->axisType() == QCPAxis::atRight;
+        ha.color = scope::plot::ScopePlot::axisBaseColorFor(false, i).name();
+        cv.axes.append(ha);
+    }
+    QHash<int, int> perAxis;
+    for (int r = 0; r < table_->rowCount(); ++r) {
+        auto* nameItem = table_->item(r, ColName);
+        if (!nameItem) continue;
+        auto sig = store_.get(nameItem->text());
+        if (!sig || sig->sampleCount() == 0) continue;
+        scope::converter::HtmlChannel hc;
+        hc.name      = nameItem->text();
+        hc.axisIndex = std::clamp(axisIndexForRow(r), 0,
+                                  static_cast<int>(cv.axes.size()) - 1);
+        auto* vis = qobject_cast<QCheckBox*>(table_->cellWidget(r, ColVis));
+        hc.visible = vis ? vis->isChecked() : true;
+        const int onAxis = perAxis[hc.axisIndex]++;
+        hc.color = scope::plot::ScopePlot::deriveChannelColorFor(
+                       false, hc.axisIndex, onAxis).name();
+        cv.channels.append(hc);
+    }
+    scope::converter::HtmlExportView v;
+    v.time        = cv;
+    v.initialView = "time";
+    return v;
 }
 
 }  // namespace scope::recorder::ui

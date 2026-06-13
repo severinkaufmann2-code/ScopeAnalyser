@@ -1,6 +1,8 @@
 #pragma once
 
+#include "scope/converter/HtmlExport.h"
 #include "scope/core/SignalStore.h"
+#include "scope/core/Types.h"
 #include "scope/plot/PlotLayout.h"
 
 #include <QHash>
@@ -32,6 +34,22 @@ public:
     scope::plot::PlotLayout currentPlotLayout() const;
     void applyPlotLayout(const scope::plot::PlotLayout& layout);
 
+    // Re-apply the last-loaded layout's channel→axis assignments to the
+    // channels present now. A layout is usually loaded before any channel
+    // exists (no recording yet), so the assignment is deferred; the Recorder
+    // calls this once recording has started and the channels appear.
+    void reapplyChannelAssignments();
+
+    // Recording lifecycle. While recording, the preview follows the latest
+    // window (newest on the right) unless the user zooms/pans or pauses; on
+    // stop it fits the whole capture. While not recording the tick leaves the
+    // view untouched so the user can inspect the finished signal.
+    void setRecording(bool on);
+
+    // Time-domain HTML export view mirroring the preview (axes / colours /
+    // channel→axis), for the Recorder's "Save chart… → HTML".
+    scope::converter::HtmlExportView htmlExportView() const;
+
 signals:
     // The sidebar Save/Load buttons only request; the Recorder performs the
     // full save/load (connection + channel table + this plot layout).
@@ -53,6 +71,8 @@ private:
     int  axisIndexForRow(int row) const;
     void setAxisIndexForRow(int row, int axisIndex);
     QSet<QString> activeChannels() const;
+    // Load the full signal of every graph into the plot (x = t − originNs_).
+    void refreshData();
 
     scope::core::SignalStore&    store_;
     scope::plot::ScopePlot*      scope_{nullptr};
@@ -60,6 +80,15 @@ private:
     double                       windowSeconds_{5.0};
     QHash<QString, QCPGraph*>    graphs_;
     QHash<QString, int>          pendingAssignments_;
+
+    // Live-capture state. originNs_ is a fixed time reference captured from
+    // the first samples so x doesn't drift between ticks; recording_ gates
+    // the follow/refresh in onTick. loadedLayout_ is the last layout applied,
+    // re-applied to channels once they appear (reapplyChannelAssignments).
+    bool                         recording_{false};
+    bool                         originSet_{false};
+    scope::core::TimestampNs     originNs_{0};
+    scope::plot::PlotLayout      loadedLayout_;
 };
 
 }  // namespace scope::recorder::ui

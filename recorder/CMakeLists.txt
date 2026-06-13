@@ -34,6 +34,7 @@ scope_add_library(scope_recorder
         Qt6::PrintSupport
         qcustomplot::qcustomplot
     PRIVATE_LIBS
+        scope::scope_converter
         scope::scope_style
         spdlog::spdlog
     FOLDER scope/recorder
