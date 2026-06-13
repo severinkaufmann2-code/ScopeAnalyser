@@ -78,6 +78,11 @@ protected:
                     const QHash<QString, QString>& renamed) {
         AnalyserPlot::remapLayoutChannelNames(l, renamed);
     }
+    // Mimic a user renaming a Y axis via the plot's context menu.
+    void renameAxis(AnalyserPlot& p, int idx, const QString& label) {
+        p.scope_->yAxis(idx)->setLabel(label);
+        emit p.scope_->yAxesChanged();
+    }
 
     // ---- display-correctness helpers (also via friendship) ----
     QCPAbstractPlottable* plottableFor(AnalyserPlot& p, const QString& name) {
@@ -310,6 +315,45 @@ TEST_F(AnalyserPlotLayoutTest, MergeHonoursRenamedCollidingChannel) {
     for (const auto& c : out.channelsByDomain.value("time"))
         if (c.name == "speed (2)") axisOfRenamed = c.axisIndex;
     EXPECT_EQ(axisOfRenamed, 1) << "renamed channel lost its axis after merge";
+}
+
+// The reported bug: rename an axis, then open a chart whose embedded layout
+// uses the axis's OLD name AND a channel whose name collides (dedup-renamed).
+// The rename must survive and the opened channel must land on its own axis.
+TEST_F(AnalyserPlotLayoutTest, RenameThenOpenChartWithOldAxisNameKeepsRename) {
+    SignalStore store;
+    scope::analyser::FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    // File 1 (no layout): channel sits on the default "Y1" axis.
+    addTimeChannel(store, "sig", "");
+
+    // User renames that axis via the plot UI.
+    renameAxis(plot, 0, "Engine Speed");
+
+    // File 2: SAME channel name (dedup-renamed to "sig (2)"); its embedded
+    // layout references the axis's OLD name "Y1".
+    addTimeChannel(store, "sig (2)", "");
+    scope::plot::PlotLayout l2;
+    l2.viewMode = "time";
+    l2.axesByDomain.insert("time", {{"Y1", "left", false, 0.0, 0.0}});
+    QList<scope::plot::PlotLayoutChannel> c2;
+    { scope::plot::PlotLayoutChannel c; c.name = "sig"; c.axisIndex = 0; c.domain = "time"; c2.append(c); }
+    l2.channelsByDomain.insert("time", c2);
+    QHash<QString, QString> renamed;
+    renamed.insert("sig", "sig (2)");
+    remapNames(l2, renamed);          // openChartDialog does this post-rename
+    applyMerge(plot, l2);
+
+    const auto out = grab(plot);
+    ASSERT_EQ(out.axesByDomain["time"].size(), 2);
+    EXPECT_EQ(out.axesByDomain["time"][0].label, "Engine Speed")
+        << "the rename was clobbered by the opened chart";
+    EXPECT_EQ(out.axesByDomain["time"][1].label, "Y1");
+    int axisOfNew = -1;
+    for (const auto& c : out.channelsByDomain.value("time"))
+        if (c.name == "sig (2)") axisOfNew = c.axisIndex;
+    EXPECT_EQ(axisOfNew, 1) << "opened channel didn't land on its own axis";
 }
 
 // The Open-chart formula-import modes, applied per channel. Mirrors Open:
