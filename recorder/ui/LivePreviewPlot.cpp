@@ -12,7 +12,6 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
-#include <QPushButton>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QTableWidget>
@@ -51,13 +50,6 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
         "them into the Analyser / Converter — nothing leaves the Recorder "
         "until you do.");
 
-    auto* saveBtn = new QPushButton("Save layout…", this);
-    auto* loadBtn = new QPushButton("Load layout…", this);
-
-    auto* layoutBtnRow = new QHBoxLayout();
-    layoutBtnRow->addWidget(saveBtn);
-    layoutBtnRow->addWidget(loadBtn);
-
     // Y axes are managed in the plot toolbar (Y+ / Y−) and per-axis via
     // right-click on the axis itself.
     auto* sidePanel = new QWidget(this);
@@ -67,7 +59,6 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
     sidebar->setSpacing(6);
     sidebar->addWidget(scope::style::sectionLabel("Live channels", this));
     sidebar->addWidget(table_, /*stretch=*/1);
-    sidebar->addLayout(layoutBtnRow);
 
     auto* split = new QSplitter(Qt::Horizontal, this);
     split->addWidget(sidePanel);
@@ -91,9 +82,6 @@ LivePreviewPlot::LivePreviewPlot(scope::core::SignalStore& store, QWidget* paren
     });
     connect(scope_, &scope::plot::ScopePlot::themePaletteChanged,
             this, [this]{ recolorChannels(); });
-
-    connect(saveBtn, &QPushButton::clicked, this, &LivePreviewPlot::saveLayoutRequested);
-    connect(loadBtn, &QPushButton::clicked, this, &LivePreviewPlot::loadLayoutRequested);
 
     auto* tick = new QTimer(this);
     connect(tick, &QTimer::timeout, this, &LivePreviewPlot::onTick);

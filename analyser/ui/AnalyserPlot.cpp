@@ -83,11 +83,11 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         return b;
     };
     auto* openChartBtn = barBtn(style::Glyph::FolderOpen, "Open chart…",
-        "Open .h5 / .mf4 / .csv / .txt — the channels land in the shared "
-        "signal store. An embedded plot layout is restored automatically.");
+        "Open .h5 / .mf4 / .csv / .txt / .json — the channels land in the "
+        "shared signal store. An embedded plot layout is restored automatically.");
     auto* saveChartBtn = barBtn(style::Glyph::Save, "Save chart…",
-        "Export channels to HDF5 / MDF4 / CSV with per-domain filters and "
-        "time range; the current plot layout is embedded.");
+        "Export channels to HDF5 / MDF4 / CSV / JSON with per-domain filters "
+        "and time range; the current plot layout is embedded.");
     auto* exportHtmlBtn = barBtn(style::Glyph::ConvertTab, "Export HTML…",
         "Self-contained interactive chart: opens in any browser, offline "
         "(the chart library is embedded). Scroll to zoom, drag to box-zoom, "

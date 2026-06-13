@@ -163,6 +163,47 @@ void drawGlyph(QPainter& p, Glyph g, const QColor& c) {
             p.drawLine(QPointF(4.5, 20), QPointF(20, 4.5));
             break;
         }
+        case Glyph::SendToAnalyser: {
+            // Record dot (left) → arrow → analyser waveform (right).
+            p.setPen(Qt::NoPen);
+            p.setBrush(c);
+            p.drawEllipse(QPointF(4.2, 12), 2.6, 2.6);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawLine(QPointF(7.6, 12), QPointF(12.2, 12));
+            QPainterPath head;
+            head.moveTo(10.4, 9.4);
+            head.lineTo(12.8, 12);
+            head.lineTo(10.4, 14.6);
+            p.drawPath(head);
+            QPainterPath wave(QPointF(13.8, 12));
+            wave.cubicTo(15.4, 7, 16.4, 7, 17.9, 12);
+            wave.cubicTo(19.4, 17, 20.4, 17, 22, 12);
+            p.drawPath(wave);
+            break;
+        }
+        case Glyph::ConvertToAnalyser: {
+            // The Converter tab's opposing arrows, the upper one flowing right
+            // into the analyser waveform. Parallels SendToAnalyser
+            // (record-dot → wave): here it's convert-symbol → wave.
+            p.drawLine(QPointF(2.0, 9.3),  QPointF(11.0, 9.3));   // top shaft → wave
+            p.drawLine(QPointF(11.0, 14.7), QPointF(2.0, 14.7));  // bottom shaft ←
+            p.setPen(Qt::NoPen);
+            p.setBrush(c);
+            QPolygonF hr;
+            hr << QPointF(10.2, 6.9) << QPointF(12.8, 9.3) << QPointF(10.2, 11.7);
+            p.drawPolygon(hr);                                    // top head (right)
+            QPolygonF hl;
+            hl << QPointF(2.8, 12.3) << QPointF(0.2, 14.7) << QPointF(2.8, 17.1);
+            p.drawPolygon(hl);                                    // bottom head (left)
+            p.setPen(pen);                                        // restore 2.0 stroke
+            p.setBrush(Qt::NoBrush);
+            QPainterPath wave(QPointF(13.6, 11.0));               // analyser waveform
+            wave.cubicTo(15.0, 6.6, 15.9, 6.6, 17.3, 11.0);
+            wave.cubicTo(18.7, 15.4, 19.6, 15.4, 21.0, 11.0);
+            p.drawPath(wave);
+            break;
+        }
     }
 }
 

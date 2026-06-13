@@ -1,6 +1,8 @@
 #include "MappingPanel.h"
 #include "ChannelEditDialog.h"
 
+#include "scope/style/StyleKit.h"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -11,6 +13,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSize>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -184,7 +187,10 @@ MappingPanel::MappingPanel(QWidget* parent) : QWidget(parent) {
     // per-channel (in ChannelEditDialog). The data fields stay on the profile
     // struct for back-compat with older .scaconv files.
 
-    applyBtn_ = new QPushButton("Apply (import signals)", this);
+    applyBtn_ = new QPushButton(
+        scope::style::icon(scope::style::Glyph::ConvertToAnalyser), "", this);
+    applyBtn_->setIconSize(QSize(20, 20));
+    applyBtn_->setToolTip("Import the mapped signals into the store.");
     saveBtn_  = new QPushButton("Save profile…", this);
     loadBtn_  = new QPushButton("Load profile…", this);
 

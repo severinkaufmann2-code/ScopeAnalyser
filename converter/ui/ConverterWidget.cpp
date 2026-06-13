@@ -25,6 +25,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSize>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QTableView>
@@ -108,8 +109,11 @@ struct H5SelectorPanel : public QWidget {
 
         auto* allBtn   = new QPushButton("Select all", this);
         auto* noneBtn  = new QPushButton("Select none", this);
-        auto* applyBtn = new QPushButton("Apply (import selected)", this);
+        auto* applyBtn = new QPushButton(
+            scope::style::icon(scope::style::Glyph::ConvertToAnalyser, Qt::white), "", this);
         applyBtn->setProperty("accent", true);
+        applyBtn->setIconSize(QSize(20, 20));
+        applyBtn->setToolTip("Import the ticked HDF5 channels into the store.");
 
         connect(allBtn,  &QPushButton::clicked, this, [this]{ setAllChecked(true); });
         connect(noneBtn, &QPushButton::clicked, this, [this]{ setAllChecked(false); });
@@ -373,10 +377,10 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         return b;
     };
     auto* openChartBtn = barBtn(scope::style::Glyph::FolderOpen, "Open chart…",
-        "Open .h5 / .mf4 / .csv / .txt. Recordings (.h5 / .mf4) go "
-        "straight to the signal store; CSV files land in the mapping "
+        "Open .h5 / .mf4 / .csv / .txt / .json. Recordings (.h5 / .mf4) go "
+        "straight to the signal store; CSV / JSON files land in the mapping "
         "panel so you can review the column assignments before Apply. "
-        "If the CSV carries a scope metadata header the mapping panel "
+        "If the file carries a scope metadata header the mapping panel "
         "is pre-filled.");
     topBar->addSpacing(12);
     auto* saveWsBtn = barBtn(scope::style::Glyph::Save, "Save workspace…",
@@ -387,18 +391,20 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         "channel selections.");
     topBar->addSpacing(12);
     auto* saveChartBtn = barBtn(scope::style::Glyph::Save, "Save chart…",
-        "Unified save dialog: pick HDF5 / MDF4 / CSV, per-domain filters, "
-        "time range, split-files toggle, CSV options.");
+        "Unified save dialog: pick HDF5 / MDF4 / CSV / JSON / HTML, per-domain "
+        "filters, time range, split-files toggle, CSV options.");
     topBar->addStretch();
     impl_->statusLabel = new QLabel("No file open", this);
     impl_->statusLabel->setProperty("scopeRole", "dim");
     topBar->addWidget(impl_->statusLabel);
     topBar->addSpacing(10);
-    auto* applyAllBtn = new QPushButton("Apply all (import signals)", toolbar);
+    auto* applyAllBtn = new QPushButton(
+        scope::style::icon(scope::style::Glyph::ConvertToAnalyser, Qt::white), "", toolbar);
     applyAllBtn->setProperty("accent", true);
+    applyAllBtn->setIconSize(QSize(20, 20));
     applyAllBtn->setToolTip(
-        "Import every opened file into the signal store using its current "
-        "mapping / channel selection.");
+        "Apply all — import every opened file into the signal store using its "
+        "current mapping / channel selection.");
     topBar->addWidget(applyAllBtn);
 
     // ---- Left: file list + remove button -----------------------------

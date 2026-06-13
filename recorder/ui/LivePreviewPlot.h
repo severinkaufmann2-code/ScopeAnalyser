@@ -50,12 +50,6 @@ public:
     // channel→axis), for the Recorder's "Save chart… → HTML".
     scope::converter::HtmlExportView htmlExportView() const;
 
-signals:
-    // The sidebar Save/Load buttons only request; the Recorder performs the
-    // full save/load (connection + channel table + this plot layout).
-    void saveLayoutRequested();
-    void loadLayoutRequested();
-
 private slots:
     void onChannelAdded(QString name);
     void onChannelRemoved(QString name);

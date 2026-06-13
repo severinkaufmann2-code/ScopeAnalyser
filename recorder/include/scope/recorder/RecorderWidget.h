@@ -16,6 +16,7 @@ class QSpinBox;
 class QPushButton;
 class QLabel;
 class QComboBox;
+class QCheckBox;
 
 namespace scope::recorder::ui {
 class SymbolBrowserWidget;
@@ -80,9 +81,10 @@ private:
     QPushButton*     disconnectBtn_;
     QPushButton*     startBtn_;
     QPushButton*     stopBtn_;
-    QPushButton*     saveChartBtn_;     // export captures (HDF5/MDF4/CSV/HTML)
-    QPushButton*     sendAllBtn_;       // push all captures to the Analyser
-    QPushButton*     sendSelectedBtn_;  // push only the checked captures
+    QPushButton*     saveChartBtn_;     // export captures (HDF5/MDF4/CSV/JSON/HTML)
+    QPushButton*     sendAllBtn_;       // icon-only "Send to Analyser" (all, or — with
+                                        // onlySelectedCheck_ ticked — only checked)
+    QCheckBox*       onlySelectedCheck_; // gate Send to only the checked channels
     QLabel*          statusLabel_;   // live recording stats / warnings
     QLabel*          connPill_;      // connection state chip
     QString          connectedLabel_;  // pill text while connected

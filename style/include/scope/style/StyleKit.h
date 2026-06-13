@@ -28,6 +28,8 @@ enum class Glyph {
     Refresh,
     Plug,         // connect
     Unplug,       // disconnect
+    SendToAnalyser,    // record dot → waveform (Recorder "Send to Analyser")
+    ConvertToAnalyser, // opposing-arrows → waveform (Converter "Apply …")
 };
 
 QIcon icon(Glyph glyph, const QColor& color = QColor());

@@ -12,6 +12,7 @@
 #include "scope/plot/PlotLayout.h"
 #include "scope/style/StyleKit.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFile>
 #include <QFileDialog>
@@ -25,6 +26,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSize>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QVBoxLayout>
@@ -92,24 +94,23 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
         scope::style::icon(scope::style::Glyph::Save), "Save chart…", this);
     saveChartBtn_->setEnabled(false);
     saveChartBtn_->setToolTip(
-        "Save the recorded channels to HDF5 / MDF4 / CSV / HTML — the same "
-        "dialog the Analyser uses. Recordings stream to a temp file; this is "
-        "how you keep one.");
-    sendSelectedBtn_ = new QPushButton(
-        scope::style::icon(scope::style::Glyph::AnalyseTab),
-        "Send checked to Analyser", this);
-    sendSelectedBtn_->setEnabled(false);
-    sendSelectedBtn_->setToolTip(
-        "Send only the channels ticked in the live list to the Analyser "
-        "(and Converter). Nothing is sent automatically.");
+        "Save the recorded channels to HDF5 / MDF4 / CSV / JSON / HTML — the "
+        "same dialog the Analyser uses. Recordings stream to a temp file; this "
+        "is how you keep one.");
+    onlySelectedCheck_ = new QCheckBox("only selected", this);
+    onlySelectedCheck_->setEnabled(false);
+    onlySelectedCheck_->setToolTip(
+        "When ticked, “Send to Analyser” pushes only the channels checked in "
+        "the live list; otherwise it sends all recorded channels.");
     sendAllBtn_ = new QPushButton(
-        scope::style::icon(scope::style::Glyph::AnalyseTab, Qt::white),
-        "Send to Analyser", this);
+        scope::style::icon(scope::style::Glyph::SendToAnalyser, Qt::white), "", this);
     sendAllBtn_->setProperty("accent", true);
     sendAllBtn_->setEnabled(false);
+    sendAllBtn_->setIconSize(QSize(20, 20));
     sendAllBtn_->setToolTip(
-        "Send all recorded channels to the Analyser (and Converter). "
-        "Re-sending a channel replaces its previous copy.");
+        "Send recorded channels to the Analyser (and Converter). Re-sending a "
+        "channel replaces its previous copy. Tick “only selected” to send just "
+        "the checked channels.");
     statusLabel_ = new QLabel(this);
     statusLabel_->setProperty("scopeRole", "dim");
     connPill_ = scope::style::makePill(this);
@@ -134,16 +135,33 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     connRow->addStretch();
     connRow->addWidget(connPill_);
 
+    // Save / Load layout live in this top toolbar, mirroring the Analyser's
+    // action bar (grouped next to Save chart). They drive the full recorder
+    // layout (connection + channel table + preview axes).
+    auto* saveLayoutBtn = new QPushButton(
+        scope::style::icon(scope::style::Glyph::Save), "Save layout…", this);
+    saveLayoutBtn->setToolTip(
+        "Save the recorder layout (connection, channel table, and preview "
+        "axes) to a .scorec file.");
+    auto* loadLayoutBtn = new QPushButton(
+        scope::style::icon(scope::style::Glyph::FolderOpen), "Load layout…", this);
+    loadLayoutBtn->setToolTip("Restore a recorder layout from a .scorec file.");
+    connect(saveLayoutBtn, &QPushButton::clicked, this, &RecorderWidget::onSaveLayout);
+    connect(loadLayoutBtn, &QPushButton::clicked, this, &RecorderWidget::onLoadLayout);
+
     auto* captureRow = new QHBoxLayout();
     captureRow->setSpacing(6);
     captureRow->addWidget(startBtn_);
     captureRow->addWidget(stopBtn_);
     captureRow->addSpacing(8);
     captureRow->addWidget(saveChartBtn_);
+    captureRow->addSpacing(12);
+    captureRow->addWidget(saveLayoutBtn);
+    captureRow->addWidget(loadLayoutBtn);
     captureRow->addSpacing(10);
     captureRow->addWidget(statusLabel_);
     captureRow->addStretch();
-    captureRow->addWidget(sendSelectedBtn_);
+    captureRow->addWidget(onlySelectedCheck_);
     captureRow->addWidget(sendAllBtn_);
 
     auto* header = new QWidget(this);
@@ -196,16 +214,12 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     connect(symbols_, &ui::SymbolBrowserWidget::refreshRequested,    this, &RecorderWidget::onRefreshSymbols);
     connect(symbols_, &ui::SymbolBrowserWidget::addSelectedRequested, this, &RecorderWidget::onAddSelectedSymbols);
 
-    connect(sendAllBtn_,      &QPushButton::clicked, this, &RecorderWidget::onSendAll);
-    connect(sendSelectedBtn_, &QPushButton::clicked, this, &RecorderWidget::onSendSelected);
-    connect(saveChartBtn_,    &QPushButton::clicked, this, &RecorderWidget::onSaveChart);
-
-    // The preview's sidebar buttons only request — the full recorder layout
-    // (connection + channel table + plot) is saved/loaded here.
-    connect(preview_, &ui::LivePreviewPlot::saveLayoutRequested,
-            this, &RecorderWidget::onSaveLayout);
-    connect(preview_, &ui::LivePreviewPlot::loadLayoutRequested,
-            this, &RecorderWidget::onLoadLayout);
+    // One Send button; the "only selected" checkbox decides all vs checked.
+    connect(sendAllBtn_, &QPushButton::clicked, this, [this]{
+        if (onlySelectedCheck_->isChecked()) onSendSelected();
+        else                                 onSendAll();
+    });
+    connect(saveChartBtn_, &QPushButton::clicked, this, &RecorderWidget::onSaveChart);
 
     // Send / Save chart are available once there's something captured.
     connect(&recordStore_, &scope::core::SignalStore::channelAdded,
@@ -349,7 +363,7 @@ void RecorderWidget::onStats(RecordingSession::Stats s) {
 void RecorderWidget::updateActionButtons() {
     const bool any = recordStore_.size() > 0;
     sendAllBtn_->setEnabled(any);
-    sendSelectedBtn_->setEnabled(any);
+    onlySelectedCheck_->setEnabled(any);
     saveChartBtn_->setEnabled(any);
 }
 
