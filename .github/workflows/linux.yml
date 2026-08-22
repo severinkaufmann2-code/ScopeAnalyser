@@ -100,8 +100,8 @@ jobs:
           # Run the deploy-tool AppImages without FUSE (unavailable on runners).
           export APPIMAGE_EXTRACT_AND_RUN=1
           # linuxdeploy reads the app icon through ImageMagick; the runner's
-          # default policy.xml can refuse to read/convert images. Drop it so
-          # `convert` works on the placeholder icon generated below.
+          # default policy.xml can refuse to read images. Drop it so the
+          # committed PNG can be read.
           sudo rm -f /etc/ImageMagick-6/policy.xml /etc/ImageMagick-7/policy.xml || true
 
           ld=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
@@ -116,17 +116,15 @@ jobs:
           rm -rf AppDir
           mkdir -p AppDir/usr/share/applications \
                    AppDir/usr/share/icons/hicolor/256x256/apps
-          printf '%s\n' \
-            '[Desktop Entry]' 'Version=1.0' 'Type=Application' \
-            'Name=ScopeAnalyser' \
-            'Comment=Signal recording, analysis, and data conversion' \
-            'Exec=ScopeAnalyser' 'Icon=ScopeAnalyser' 'Terminal=false' \
-            'Categories=Science;Utility;' \
-            > AppDir/usr/share/applications/ScopeAnalyser.desktop
-          # 256x256 solid-colour placeholder icon, generated with the same
-          # ImageMagick that linuxdeploy later uses to read it.
-          convert -size 256x256 xc:'#1e5fbf' \
-            AppDir/usr/share/icons/hicolor/256x256/apps/ScopeAnalyser.png
+          # Both come from resources/ now rather than being generated here:
+          # the .desktop carries StartupWMClass (without it GNOME/Wayland can't
+          # match the running window to this entry, so the dock falls back to a
+          # generic icon), and the PNG is the real ScopeAnalyser logo instead of
+          # the flat blue square this step used to synthesise.
+          cp resources/ScopeAnalyser.desktop \
+             AppDir/usr/share/applications/ScopeAnalyser.desktop
+          cp resources/ScopeAnalyser.png \
+             AppDir/usr/share/icons/hicolor/256x256/apps/ScopeAnalyser.png
 
           ./linuxdeploy --appdir AppDir \
             --executable build/bin/ScopeAnalyser \

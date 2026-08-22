@@ -257,6 +257,26 @@ QIcon icon(Glyph glyph, const QColor& color) {
     });
 }
 
+QIcon appIcon() {
+    // True pixel sizes rather than the logical-size + dpr pairs paintIcon()
+    // emits: a window-manager, dock or .ico asks for a concrete raster.
+    QIcon out;
+    for (int size : {16, 20, 24, 32, 48, 64, 128, 256}) {
+        QPixmap pm(size, size);
+        pm.fill(Qt::transparent);
+        {
+            QPainter p(&pm);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.scale(size / 24.0, size / 24.0);
+            // AppLogo paints its own accent fill and white waveform, so the
+            // colour argument is ignored for this glyph.
+            drawGlyph(p, Glyph::AppLogo, kAccentIcon);
+        }
+        out.addPixmap(pm);
+    }
+    return out;
+}
+
 QIcon colorSwatch(const QColor& color) {
     return paintIcon([color](QPainter& p, const QRectF& r) {
         p.setPen(Qt::NoPen);

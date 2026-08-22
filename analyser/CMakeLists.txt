@@ -37,7 +37,7 @@ scope_add_library(scope_analyser
 )
 
 if(SCOPE_BUILD_STANDALONE_EXES)
-    add_executable(scope_analyser_app ui/standalone_main.cpp)
+    add_executable(scope_analyser_app ui/standalone_main.cpp ${SCOPE_APP_ICON_RC})
     target_link_libraries(scope_analyser_app PRIVATE scope::scope_analyser scope::scope_style Qt6::Widgets)
     set_target_properties(scope_analyser_app PROPERTIES
         OUTPUT_NAME ScopeAnalyserStandalone

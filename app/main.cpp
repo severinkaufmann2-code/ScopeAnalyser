@@ -1,6 +1,7 @@
 #include "ShellWindow.h"
 
 #include "scope/converter/HtmlExport.h"
+#include "scope/style/StyleKit.h"
 #include "scope/style/Theme.h"
 
 #include <QApplication>
@@ -46,6 +47,14 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("ScopeAnalyser");
     QApplication::setOrganizationName("ScopeAnalyser");
+
+    // Application-wide, so every top-level window gets it — a parentless one
+    // falls back to QApplication::windowIcon(), not to the shell window's.
+    QApplication::setWindowIcon(scope::style::appIcon());
+    // GNOME/Wayland matches a window to its .desktop entry by app_id rather
+    // than by _NET_WM_ICON, so the dock icon needs this too. Must equal the
+    // basename of resources/ScopeAnalyser.desktop.
+    QGuiApplication::setDesktopFileName("ScopeAnalyser");
 
     scope::style::applySavedTheme();
 

@@ -33,7 +33,7 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
                   style::icon(style::Glyph::ConvertTab), "Converter");
     setCentralWidget(tabs_);
     setWindowTitle("ScopeAnalyser");
-    setWindowIcon(style::icon(style::Glyph::AppLogo));
+    setWindowIcon(style::appIcon());   // large sizes too, for the taskbar
 
     buildMenus();
 

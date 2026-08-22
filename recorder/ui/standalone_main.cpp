@@ -1,5 +1,6 @@
 #include "scope/recorder/RecorderWidget.h"
 #include "scope/core/SignalStore.h"
+#include "scope/style/StyleKit.h"
 #include "scope/style/Theme.h"
 
 #include <QApplication>
@@ -11,6 +12,11 @@ int main(int argc, char** argv) {
     QApplication::setOrganizationName("ScopeAnalyser");
 
     scope::style::applySavedTheme();
+
+    QApplication::setWindowIcon(scope::style::appIcon());
+
+    QGuiApplication::setDesktopFileName("ScopeAnalyser");
+
 
     scope::core::SignalStore store;
     auto* widget = new scope::recorder::RecorderWidget(store);

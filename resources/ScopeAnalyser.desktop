@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ScopeAnalyser
+Comment=Signal recording, analysis, and data conversion for TwinCAT ADS
+Exec=ScopeAnalyser
+Icon=ScopeAnalyser
+Terminal=false
+Categories=Science;Utility;
+# GNOME/Wayland matches a running window to this entry by app_id rather than
+# by _NET_WM_ICON, so without this the dock shows a generic placeholder even
+# though the window icon is set. Must match QGuiApplication::setDesktopFileName.
+StartupWMClass=ScopeAnalyser

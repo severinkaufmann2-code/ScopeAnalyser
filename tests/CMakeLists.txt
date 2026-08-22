@@ -13,6 +13,7 @@ add_executable(scope_tests
     test_mock_pipeline.cpp
     test_scope_plot.cpp
     test_analyser_layout.cpp
+    test_app_icon.cpp
     test_save_chart_dialog.cpp
     test_undo_stack.cpp
 )
@@ -22,6 +23,10 @@ add_executable(scope_tests
 target_include_directories(scope_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/analyser/ui)
 
+# test_app_icon.cpp reads the committed resources/ScopeAnalyser.ico.
+target_compile_definitions(scope_tests PRIVATE
+    SCOPE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
 target_link_libraries(scope_tests PRIVATE
     scope::scope_core
     scope::scope_ads
@@ -29,6 +34,7 @@ target_link_libraries(scope_tests PRIVATE
     scope::scope_recorder
     scope::scope_analyser
     scope::scope_converter
+    scope::scope_style
     Qt6::Test
     Qt6::Core
     Qt6::Widgets

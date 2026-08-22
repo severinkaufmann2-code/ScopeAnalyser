@@ -2,6 +2,7 @@ add_executable(ScopeAnalyser
     main.cpp
     ShellWindow.cpp
     ShellWindow.h
+    ${SCOPE_APP_ICON_RC}
 )
 
 target_link_libraries(ScopeAnalyser PRIVATE

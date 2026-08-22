@@ -154,6 +154,21 @@ FetchContent_MakeAvailable(mdflib)
 
 include(cmake/scope_helpers.cmake)
 
+# Application icon. The window/taskbar icon is set in code (StyleKit
+# appIcon()), but the icon Explorer shows for the .exe FILE can only come from
+# a linked Win32 resource. That needs the RC language enabled explicitly:
+# every preset and both CI workflows use the Ninja generator, which — unlike
+# the Visual Studio generator — does not turn RC on implicitly. Enabled here,
+# before the subdirectories, so the standalone Recorder / Analyser / Converter
+# executables can carry it as well. Non-Windows builds get an empty string,
+# which add_executable() ignores.
+if(WIN32)
+    enable_language(RC)
+    set(SCOPE_APP_ICON_RC "${CMAKE_CURRENT_SOURCE_DIR}/resources/ScopeAnalyser.rc")
+else()
+    set(SCOPE_APP_ICON_RC "")
+endif()
+
 add_subdirectory(core)
 add_subdirectory(style)
 add_subdirectory(plot)

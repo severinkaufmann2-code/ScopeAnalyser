@@ -36,6 +36,12 @@ enum class Glyph {
 
 QIcon icon(Glyph glyph, const QColor& color = QColor());
 
+// The application icon: the AppLogo glyph rendered at every size a title
+// bar, taskbar, dock or .ico entry may ask for. icon(Glyph::AppLogo) stops
+// at 48 px — fine for toolbars, too small to feed a 256 px app icon, and
+// QIcon never upscales.
+QIcon appIcon();
+
 // A solid rounded colour square (channel ↔ trace colour swatches).
 QIcon colorSwatch(const QColor& color);
 // Outline-only variant for channels that are currently hidden.

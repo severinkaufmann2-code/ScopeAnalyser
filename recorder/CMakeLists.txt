@@ -41,7 +41,7 @@ scope_add_library(scope_recorder
 )
 
 if(SCOPE_BUILD_STANDALONE_EXES)
-    add_executable(scope_recorder_app ui/standalone_main.cpp)
+    add_executable(scope_recorder_app ui/standalone_main.cpp ${SCOPE_APP_ICON_RC})
     target_link_libraries(scope_recorder_app PRIVATE scope::scope_recorder scope::scope_style Qt6::Widgets)
     set_target_properties(scope_recorder_app PROPERTIES
         OUTPUT_NAME ScopeRecorder

@@ -1,0 +1,9 @@
+// Windows resource script: gives every ScopeAnalyser .exe its own icon in
+// Explorer, the taskbar and Alt-Tab. The FIRST icon in the lowest-numbered
+// resource is what the shell uses for the file, so IDI_ICON1 must stay first.
+// The .ico carries 16/24/32/48/64/128/256 px, all PNG-compressed.
+//
+// The window icon is set separately in code (StyleKit appIcon() ->
+// QApplication::setWindowIcon); this one is for the executable file itself,
+// which Qt cannot influence.
+IDI_ICON1 ICON "ScopeAnalyser.ico"

@@ -56,7 +56,7 @@ scope_add_library(scope_converter
 )
 
 if(SCOPE_BUILD_STANDALONE_EXES)
-    add_executable(scope_converter_app ui/standalone_main.cpp)
+    add_executable(scope_converter_app ui/standalone_main.cpp ${SCOPE_APP_ICON_RC})
     target_link_libraries(scope_converter_app PRIVATE scope::scope_converter scope::scope_style Qt6::Widgets)
     set_target_properties(scope_converter_app PROPERTIES
         OUTPUT_NAME ScopeConverter
