@@ -75,11 +75,15 @@ FetchContent_Declare(HighFive
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(HighFive)
 
-# exprtk — single-header expression parser
+# exprtk — single-header expression parser.
+# Pinned to a commit, not master: upstream rewrites history on that branch, so
+# a shallow clone that already exists diverges and FetchContent's update step
+# dies mid-rebase ("You will have to resolve the conflicts manually"). No
+# GIT_SHALLOW — a shallow fetch of a bare commit hash isn't universally
+# supported.
 FetchContent_Declare(exprtk
     GIT_REPOSITORY https://github.com/ArashPartow/exprtk.git
-    GIT_TAG        master
-    GIT_SHALLOW    TRUE)
+    GIT_TAG        1e4a80b5ec9b4832ed59c6faa65f625a01b18ef0)
 FetchContent_MakeAvailable(exprtk)
 add_library(exprtk INTERFACE)
 target_include_directories(exprtk INTERFACE ${exprtk_SOURCE_DIR})
@@ -113,8 +117,13 @@ add_library(qcustomplot::qcustomplot ALIAS qcustomplot)
 set(BUILD_SHARED_LIBS OFF)
 FetchContent_Declare(beckhoff_ads
     GIT_REPOSITORY https://github.com/Beckhoff/ADS.git
-    GIT_TAG        master
-    GIT_SHALLOW    TRUE
+    # Pinned, not master: upstream's newer CMakeLists reads
+    # ${CMAKE_SOURCE_DIR}/debian/changelog to derive its version, and under
+    # FetchContent that resolves to OUR project root, so configure aborts with
+    # "Unable to extract AdsLib version". Same failure mode as the mdflib pin
+    # below. This commit is the one v0.3.0 shipped against. Re-evaluate when
+    # upstream derives its version without reaching into the parent project.
+    GIT_TAG        67886519fcec58546be316b3846b1edcb2c829f5
     # ADS unconditionally adds AdsTool / AdsLibTest / example subdirs we don't
     # use; on Windows their executables fail to link (cannot find ads.lib).
     # EXCLUDE_FROM_ALL builds only the `ads` library our code links.
