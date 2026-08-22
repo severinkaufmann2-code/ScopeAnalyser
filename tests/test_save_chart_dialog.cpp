@@ -35,13 +35,20 @@ using namespace scope::converter;
 namespace {
 
 // One QApplication for the whole process (offscreen).
+//
+// Deliberately leaked. Held in a function-static it would instead be
+// destroyed during static destruction, by which point parts of Qt have
+// already torn themselves down — under the offscreen platform that crashes
+// after the test has already passed (the same teardown quirk linux.yml
+// excludes AnalyserPlotLayoutTest for). The process is exiting anyway, so
+// never destroying it is both safe and the point.
 QApplication* ensureApp() {
     if (!QCoreApplication::instance()) {
         qputenv("QT_QPA_PLATFORM", "offscreen");
         static int argc = 1;
         static char a0[] = {'t', '\0'};
         static char* argv[] = {a0, nullptr};
-        static QApplication app(argc, argv);
+        new QApplication(argc, argv);   // NOLINT — intentionally not deleted
     }
     return static_cast<QApplication*>(QCoreApplication::instance());
 }
@@ -341,14 +348,18 @@ QPushButton* okButton(QWidget* dlg) {
         if (auto* ok = b->button(QDialogButtonBox::Ok)) return ok;
     return nullptr;
 }
+// Leaked for the same reason as the QApplication above: SignalStore is a
+// QObject, and destroying one during static destruction is exactly the
+// ordering that crashes.
 SignalStore& threeChannelStore() {
-    static SignalStore store;
-    if (store.size() == 0) {
-        store.add(makeSig("speed",    {0, 1'000'000LL}, {1, 2}));
-        store.add(makeSig("pressure", {0, 1'000'000LL}, {3, 4}));
-        store.add(makeSig("torque",   {0, 1'000'000LL}, {5, 6}));
+    static SignalStore* store = nullptr;
+    if (!store) {
+        store = new SignalStore();
+        store->add(makeSig("speed",    {0, 1'000'000LL}, {1, 2}));
+        store->add(makeSig("pressure", {0, 1'000'000LL}, {3, 4}));
+        store->add(makeSig("torque",   {0, 1'000'000LL}, {5, 6}));
     }
-    return store;
+    return *store;
 }
 
 }  // namespace
