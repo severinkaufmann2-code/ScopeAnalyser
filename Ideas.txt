@@ -49,13 +49,65 @@ derivative you could use a signal going from 0 to 1 in 1second with polynom 5. i
 
 shift function chart is not clear because the time axis is shifted between input and output...
 
-done
-________________________________________________________
-new
-
 Can you please wirte test which test that all function of the analyser work 100% correctly.
 Also please write test that the displaying of signals on chart are always 100% correct. (that you make the right conversions e.g. when importing or using the converter,...)
 
 Because this is a egeneering tool all the data the user gets from it needs to be 100% correct!
 
 If you find any bug or misleading data, infos please let me know. Make a paln to fix them (but dont execute without my permision!)
+
+
+for now, somhow the Recoder and the analyser chart and channel view are linked togehter. I dont want that. I want to have a button in the recorder which will then apply the signal in the anaylser (same style as for the converter)
+
+Please make deep research and a plan and dont do anything bevor i tell you!
+
+
+Please add the possebility to save the data in json. Of course also add the possebility to reopen the json file.
+Also ad the possebility to edit/convert a json file in the converter (the same way as we do with the csv)
+
+
+
+Can you please place the save/load layout button of the recorder at the same place as for the analyser.
+
+also for the send to analyser button in the recorder and the apply all (import signals), apply (import signals) buttons from the analyser, replace them with a a clear symbol instead of text.
+(e.g. for the recorder: recording symbol -> analyser symbol)
+
+please do not touch any "executing" code. only the ui!
+Please make a deep analysis and give me your exact plan on how you want to do this. Please do not do anythin bevor i say so
+
+
+some how data export in to html does not work sometimes. As i can see it is when there are e.g. multible value for the same time stamp,...
+remove html export button. html should be only avaible torgh the "save" buton like all the other formats
+Let me choose which channels to save when saving (exporting).
+
+done
+________________________________________________________
+new
+
+
+
+
+
+
+
+
+add the analyser Symbol on the exe, task bar, when programm started top left corner next to the app name,...
+
+In the html file zooming and scrolling does not behave the same way as in the analyser. Please make it so that in the html it does behave the same way as it does in the analyser!
+
+
+
+
+i cant rename channels if there are not a math channel in the analyser
+
+
+in the analyser: in a fomula i cant use a name like "test_1" the _ caracter creates a bug... Please let me use spezial caracter in a name of a channel
+
+
+the scope is not able to see arrays or structures in ads... please fix it.
+
+
+
+
+
+

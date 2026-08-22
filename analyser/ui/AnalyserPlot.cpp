@@ -1,6 +1,7 @@
 #include "AnalyserPlot.h"
 
 #include "AddChannelDialog.h"
+#include "scope/converter/CsvWriter.h"
 #include "scope/converter/SaveChartDialog.h"
 
 #include "scope/analyser/FormulaEngine.h"
@@ -88,13 +89,10 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         "Open .h5 / .mf4 / .csv / .txt / .json — the channels land in the "
         "shared signal store. An embedded plot layout is restored automatically.");
     auto* saveChartBtn = barBtn(style::Glyph::Save, "Save chart…",
-        "Export channels to HDF5 / MDF4 / CSV / JSON with per-domain filters "
-        "and time range; the current plot layout is embedded.");
-    auto* exportHtmlBtn = barBtn(style::Glyph::ConvertTab, "Export HTML…",
-        "Self-contained interactive chart: opens in any browser, offline "
-        "(the chart library is embedded). Scroll to zoom, drag to box-zoom, "
-        "double-click to reset, click legend entries to show/hide channels. "
-        "Exports every channel in the store (Time and Frequency charts).");
+        "Export channels to HDF5 / MDF4 / CSV / JSON / HTML with per-domain "
+        "filters and time range; the current plot layout is embedded. HTML "
+        "writes a self-contained interactive chart that opens in any browser "
+        "offline and re-opens here.");
     ab->addSpacing(12);
     auto* saveLayoutBtn = barBtn(style::Glyph::Save, "Save layout…",
         "Save Y axes, channel→axis assignments, and view mode to a "
@@ -206,39 +204,6 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     connect(editChBtn,     &QToolButton::clicked, this, &AnalyserPlot::editChannelDialog);
     connect(saveChartBtn,  &QToolButton::clicked, this, &AnalyserPlot::saveChartDialog);
     connect(openChartBtn,  &QToolButton::clicked, this, &AnalyserPlot::openChartDialog);
-    connect(exportHtmlBtn, &QToolButton::clicked, this, [this]{
-        if (store_.size() == 0) {
-            QMessageBox::information(this, "Nothing to export",
-                "The store is empty — add channels first.");
-            return;
-        }
-        QFileDialog dlg(this, "Export interactive HTML chart");
-        dlg.setAcceptMode(QFileDialog::AcceptSave);
-        dlg.setNameFilters({"Interactive HTML chart (*.html)", "All files (*)"});
-        dlg.setDefaultSuffix("html");
-        if (dlg.exec() != QDialog::Accepted) return;
-        const auto sel = dlg.selectedFiles();
-        if (sel.isEmpty()) return;
-        QString path = sel.first();
-        if (!path.endsWith(".html", Qt::CaseInsensitive)) path += ".html";
-
-        struct Outcome { bool ok{false}; QString err; };
-        const auto view = htmlExportView();
-        const auto outcome = converter::ui::runWithBusyDialog(
-            this, tr("Exporting HTML…"), [&]() -> Outcome {
-                Outcome o;
-                o.ok = converter::exportInteractiveHtml(path, store_, view,
-                                                        &o.err);
-                return o;
-            });
-        if (!outcome.ok) {
-            QMessageBox::critical(this, "Export failed", outcome.err);
-        } else {
-            QMessageBox::information(this, "Exported",
-                QString("Interactive chart written to\n%1\n\nOpen it in any "
-                        "browser — it works offline.").arg(path));
-        }
-    });
     connect(viewCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int idx){
         const auto oldDomain = activeDomain();
@@ -1333,6 +1298,8 @@ void AnalyserPlot::saveChartDialog() {
     }
     const auto xr = scope_->plot()->xAxis->range();
     converter::ui::SaveChartDialog dlg(xr.lower, xr.upper, this);
+    dlg.setChannels(store_);
+    dlg.setRepeatedTimestamps(converter::scanRepeatedTimestamps(store_));
     if (dlg.exec() != QDialog::Accepted) return;
 
     const auto fmtChoice = dlg.format();
@@ -1359,6 +1326,7 @@ void AnalyserPlot::saveChartDialog() {
     // OR chose "No data for math channels" (formula-only — recomputed on open).
     filters.includeDerived            = dlg.includeDerivedChannels()
                                         && !dlg.noDataForMathChannels();
+    filters.selectedChannels          = dlg.selectedChannels();
     filters.splitDomainsIntoTwoFiles  = dlg.splitDomainsIntoTwoFiles();
     filters.useCustomRange            = dlg.useCustomRange();
     filters.fromSec                   = dlg.fromSec();
@@ -1390,6 +1358,7 @@ void AnalyserPlot::saveChartDialog() {
     // HTML writer so re-opening restores axes / view like the other formats.
     if (fmt == converter::FileFormat::Html) {
         opts.htmlView = htmlExportView();
+        opts.htmlViewOnly = dlg.htmlViewOnly();
     }
 
     // Run the (potentially slow) write off the GUI thread behind a busy

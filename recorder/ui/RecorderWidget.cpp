@@ -7,6 +7,7 @@
 #include "scope/ads/MockAdsClient.h"
 #include "scope/converter/BusyRunner.h"
 #include "scope/converter/HtmlExport.h"
+#include "scope/converter/CsvWriter.h"
 #include "scope/converter/SaveChartDialog.h"
 #include "scope/converter/SignalIO.h"
 #include "scope/plot/PlotLayout.h"
@@ -464,6 +465,8 @@ void RecorderWidget::onSaveChart() {
     // "Channels to include" group and show only the Layout metadata choice.
     dlg.setChannelFiltersVisible(false);
     dlg.setMetadataLayoutOnly(true);
+    dlg.setChannels(recordStore_);
+    dlg.setRepeatedTimestamps(converter::scanRepeatedTimestamps(recordStore_));
     if (dlg.exec() != QDialog::Accepted) return;
 
     const auto fmtChoice = dlg.format();
@@ -487,6 +490,7 @@ void RecorderWidget::onSaveChart() {
     filters.includeTime              = dlg.includeTimeDomain();
     filters.includeFrequency         = dlg.includeFrequencyDomain();
     filters.includeDerived           = dlg.includeDerivedChannels();
+    filters.selectedChannels         = dlg.selectedChannels();
     filters.splitDomainsIntoTwoFiles = dlg.splitDomainsIntoTwoFiles();
     filters.useCustomRange           = dlg.useCustomRange();
     filters.fromSec                  = dlg.fromSec();
@@ -494,6 +498,7 @@ void RecorderWidget::onSaveChart() {
 
     converter::SaveOptions opts;
     opts.csv = dlg.csvOptions();
+    opts.htmlViewOnly = dlg.htmlViewOnly();
     // Embed only the Analyser-relevant plot layout (axes + channel→axis) so a
     // re-opened file restores the view. No recorder-specific data is written.
     if (dlg.includeLayout()) {

@@ -87,7 +87,9 @@ bool exportInteractiveHtml(const QString& path,
 //
 // The original exportInteractiveHtml() above is kept untouched as the
 // visualisation-only "Export HTML…" path; its output has no data island and
-// is NOT re-loadable.
+// is NOT re-loadable. Note it is not the *small* option — its data is
+// plaintext, so past a few thousand samples it is markedly LARGER than the
+// compressed island below.
 bool exportStorableHtml(const QString& path,
                         const scope::core::SignalStore& store,
                         QString* errorOut = nullptr);
@@ -95,6 +97,33 @@ bool exportStorableHtml(const QString& path,
                         const scope::core::SignalStore& store,
                         const HtmlExportView& view,
                         QString* errorOut = nullptr);
+
+// ---------- Chart-only HTML (smaller, one-way) -------------------------
+//
+// The same compressed page as exportStorableHtml(), written for looking at
+// rather than for keeping: sample values are rounded to `digits` significant
+// figures and the re-import marker is left out, so loadStorableHtml()
+// refuses the file.
+//
+// Rounding is where the size actually goes. Full-precision doubles from real
+// (noisy) measurements are near-incompressible; at 6 significant figures —
+// far more than a chart can resolve — a 200k-sample channel lands at roughly
+// 60% of the re-openable file. Dropping the island alone saves only a few
+// percent, which is why this mode trades precision instead.
+//
+// Because the values written are display-quality, this is NOT a backup of
+// the data. Use exportStorableHtml() (or .h5 / .mf4 / .json) to keep it.
+constexpr int kChartOnlyDefaultDigits = 6;
+
+bool exportChartOnlyHtml(const QString& path,
+                         const scope::core::SignalStore& store,
+                         int digits = kChartOnlyDefaultDigits,
+                         QString* errorOut = nullptr);
+bool exportChartOnlyHtml(const QString& path,
+                         const scope::core::SignalStore& store,
+                         const HtmlExportView& view,
+                         int digits = kChartOnlyDefaultDigits,
+                         QString* errorOut = nullptr);
 
 // Re-import a storable HTML's embedded "scope-data" island. Rebuilds one
 // Signal per channel (name / unit / domain / values / timestamps restored)

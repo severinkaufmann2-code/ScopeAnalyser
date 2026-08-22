@@ -1,5 +1,10 @@
 #include "scope/converter/SaveChartDialog.h"
 
+#include "scope/core/Signal.h"
+#include "scope/core/SignalStore.h"
+
+#include "scope/style/StyleKit.h"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -9,9 +14,12 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
+#include <QPushButton>
 #include <QRadioButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <array>
 
 namespace scope::converter::ui {
@@ -32,6 +40,8 @@ const std::array<SepOption, 3> kRowSepOptions = {{
     {"Custom…",       ""},
 }};
 constexpr int kCustomColIdx = 4;
+// Beyond this the channel list scrolls instead of growing.
+constexpr int kMaxVisibleChannelRows = 6;
 constexpr int kCustomRowIdx = 2;
 
 }  // namespace
@@ -52,12 +62,33 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     jsonRadio_ = new QRadioButton(
         "JSON (.json) — per-signal arrays, bit-exact re-open in ScopeAnalyser", this);
     h5Radio_->setChecked(true);
+    // Nested under the HTML radio. What actually costs bytes is precision:
+    // full-precision doubles off real instrumentation barely compress. This
+    // rounds them to chart resolution, which also means the file is no
+    // longer a faithful copy — hence one-way.
+    htmlViewOnlyCheck_ = new QCheckBox(
+        "Smaller file — chart only, can't be re-opened here", this);
+    htmlViewOnlyCheck_->setChecked(false);
+    htmlViewOnlyCheck_->setToolTip(
+        "Leave off to keep the samples exactly, so the file re-opens in\n"
+        "ScopeAnalyser like .h5 / .mf4 / .csv / .json do.\n\n"
+        "Turn on to round values to 6 significant figures — more than a\n"
+        "chart can resolve, and typically a little over half the size on\n"
+        "real measurement data. The page still opens in any browser offline\n"
+        "with zoom, Δ Measure and channel toggles, but the values are now\n"
+        "display-quality, so ScopeAnalyser refuses to load it back. Don't\n"
+        "use it as your only copy of the data.");
     auto* formatBox = new QGroupBox("Format", this);
     auto* formatLayout = new QVBoxLayout(formatBox);
     formatLayout->addWidget(h5Radio_);
     formatLayout->addWidget(mf4Radio_);
     formatLayout->addWidget(csvRadio_);
     formatLayout->addWidget(htmlRadio_);
+    auto* htmlOptRow = new QHBoxLayout();
+    htmlOptRow->addSpacing(20);
+    htmlOptRow->addWidget(htmlViewOnlyCheck_);
+    htmlOptRow->addStretch();
+    formatLayout->addLayout(htmlOptRow);
     formatLayout->addWidget(jsonRadio_);
 
     // ---- Time range --------------------------------------------------
@@ -113,6 +144,19 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     timeModeCombo_ = new QComboBox(csvGroup_);
     timeModeCombo_->addItem("Shared time column (interpolated)");
     timeModeCombo_->addItem("Per-signal time columns (exact)");
+    timeModeCombo_->setToolTip(
+        "How the time column(s) are written.\n"
+        "Shared: one t column, signals interpolated onto the union of all\n"
+        "timestamps — spreadsheet-friendly, but one row per distinct\n"
+        "timestamp, so samples that repeat a timestamp don't fit.\n"
+        "Per-signal: each signal keeps its own exact (t, value) pairs —\n"
+        "every sample is written, at the cost of a wider file.");
+
+    // Only shown once a scan says this data actually repeats timestamps and
+    // Shared is selected — see setRepeatedTimestamps().
+    repeatWarning_ = scope::style::makePill(csvGroup_);
+    repeatWarning_->setWordWrap(true);
+    repeatWarning_->setVisible(false);
 
     timeAxisCombo_ = new QComboBox(csvGroup_);
     timeAxisCombo_->addItem("Epoch nanoseconds (exact)");
@@ -150,6 +194,7 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     csvForm->addRow("Row separator:", rowSepWrap);
     csvForm->addRow("Decimal separator:", decimalEdit_);
     csvForm->addRow("Time mode:", timeModeCombo_);
+    csvForm->addRow(QString(), repeatWarning_);
     csvForm->addRow("Time column:", timeAxisCombo_);
 
     // ---- Channel filters ---------------------------------------------
@@ -170,11 +215,54 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
         "domains are written into one file. For CSV with the Shared\n"
         "Time mode, a mixed-domain single file gets one shared 't [s]'\n"
         "column plus one shared 'f [Hz]' column written side-by-side.");
+    // Per-channel picker. Stays hidden until a host calls setChannels(), so
+    // the group keeps its old shape for callers that don't offer one.
+    channelList_ = new QListWidget(filtersBox);
+    channelList_->setSelectionMode(QAbstractItemView::NoSelection);
+    channelList_->setUniformItemSizes(true);
+    channelList_->setVisible(false);
+    channelList_->setToolTip(
+        "Tick the channels to write. A channel also has to pass the "
+        "domain / derived filters above — rows those exclude are greyed out.");
+
+    auto* allBtn  = new QPushButton("All", filtersBox);
+    auto* noneBtn = new QPushButton("None", filtersBox);
+    for (auto* b : {allBtn, noneBtn}) b->setAutoDefault(false);
+    channelCount_ = new QLabel(filtersBox);
+    channelCount_->setProperty("scopeRole", "dim");
+
+    auto* chanBtnRow = new QWidget(filtersBox);
+    auto* chanBtnLayout = new QHBoxLayout(chanBtnRow);
+    chanBtnLayout->setContentsMargins(0, 0, 0, 0);
+    chanBtnLayout->addWidget(allBtn);
+    chanBtnLayout->addWidget(noneBtn);
+    chanBtnLayout->addWidget(channelCount_);
+    chanBtnLayout->addStretch();
+    chanBtnRow->setVisible(false);
+    channelButtons_ = chanBtnRow;
+
+    auto setAllChecked = [this](bool on) {
+        for (int i = 0; i < channelList_->count(); ++i) {
+            auto* it = channelList_->item(i);
+            // Skip what the domain / derived filters already exclude —
+            // "All" means "all the ones that can actually be written".
+            if (it->flags() & Qt::ItemIsEnabled)
+                it->setCheckState(on ? Qt::Checked : Qt::Unchecked);
+        }
+        onChannelFiltersChanged();
+    };
+    connect(allBtn,  &QPushButton::clicked, this, [setAllChecked]{ setAllChecked(true); });
+    connect(noneBtn, &QPushButton::clicked, this, [setAllChecked]{ setAllChecked(false); });
+    connect(channelList_, &QListWidget::itemChanged, this,
+            [this](QListWidgetItem*){ onChannelFiltersChanged(); });
+
     auto* filtersLayout = new QVBoxLayout(filtersBox);
     filtersLayout->addWidget(includeTimeCheck_);
     filtersLayout->addWidget(includeFreqCheck_);
     filtersLayout->addWidget(includeDerivedCheck_);
     filtersLayout->addWidget(splitFilesCheck_);
+    filtersLayout->addWidget(channelList_);
+    filtersLayout->addWidget(chanBtnRow);
 
     // ---- Metadata (Analyser only) ------------------------------------
     // What gets embedded in the saved file so it can be re-opened: the math
@@ -218,8 +306,9 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     indent(layoutCheck_, 20);
     metadataGroup_->setVisible(offerMetadata);
 
-    auto* buttons = new QDialogButtonBox(
+    buttons_ = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    auto* buttons = buttons_;
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
@@ -240,10 +329,17 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     connect(allRangeRadio_,    &QRadioButton::toggled, this, [this](bool){ onRangeModeChanged(); });
     connect(customRangeRadio_, &QRadioButton::toggled, this, [this](bool){ onRangeModeChanged(); });
 
+    connect(timeModeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int){ onCsvTimeModeChanged(); });
+
     connect(colSepCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int i){ colSepCustom_->setVisible(i == kCustomColIdx); });
     connect(rowSepCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int i){ rowSepCustom_->setVisible(i == kCustomRowIdx); });
+
+    for (auto* cb : {includeTimeCheck_, includeFreqCheck_, includeDerivedCheck_})
+        connect(cb, &QCheckBox::toggled, this,
+                [this](bool){ onChannelFiltersChanged(); });
 
     connect(addMetadataCheck_, &QCheckBox::toggled, this, [this](bool){ onMetadataChanged(); });
     connect(mathFormulaCheck_, &QCheckBox::toggled, this, [this](bool){ onMetadataChanged(); });
@@ -251,6 +347,7 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     onFormatChanged();
     onRangeModeChanged();
     onMetadataChanged();
+    onCsvTimeModeChanged();
 }
 
 void SaveChartDialog::onMetadataChanged() {
@@ -295,6 +392,135 @@ void SaveChartDialog::onFormatChanged() {
     const bool html = htmlRadio_->isChecked();
     splitFilesCheck_->setEnabled(!html);
     if (html) splitFilesCheck_->setChecked(false);
+    htmlViewOnlyCheck_->setEnabled(html);
+    if (repeatWarning_) onCsvTimeModeChanged();
+}
+
+// The Shared time column has one row per distinct timestamp, so a channel
+// with several samples at one instant loses all but the first — silently, in
+// the file. Say so while that combination is selected, and point at the mode
+// that keeps them.
+void SaveChartDialog::onCsvTimeModeChanged() {
+    const bool shared = timeModeCombo_->currentIndex() == 0;
+    const bool show   = csvRadio_->isChecked() && shared && repeatScan_.any();
+    repeatWarning_->setVisible(show);
+    if (!show) return;
+
+    const QString who = repeatScan_.channels == 1
+        ? QString("\u201c%1\u201d repeats timestamps").arg(repeatScan_.worstChannel)
+        : QString("%1 channels repeat timestamps").arg(repeatScan_.channels);
+    const QString what = repeatScan_.droppedSamples == 1
+        ? QString("1 sample would be dropped")
+        : QString("%1 samples would be dropped").arg(repeatScan_.droppedSamples);
+    scope::style::setPill(repeatWarning_, scope::style::PillTone::Warn,
+                          QString("%1 — %2").arg(who, what));
+    repeatWarning_->setToolTip(
+        QString("A shared time column has one row per distinct timestamp, so\n"
+                "where a channel holds several samples at the same instant only\n"
+                "the first one fits — %1 across %2 would not be written.\n\n"
+                "Choose \u201cPer-signal time columns (exact)\u201d to keep every\n"
+                "sample, or save as HDF5 / MDF4 / HTML / JSON, which are all\n"
+                "unaffected.")
+            .arg(repeatScan_.droppedSamples == 1
+                     ? QString("1 sample")
+                     : QString("%1 samples").arg(repeatScan_.droppedSamples),
+                 repeatScan_.channels == 1
+                     ? QString("1 channel")
+                     : QString("%1 channels").arg(repeatScan_.channels)));
+}
+
+void SaveChartDialog::setChannels(const scope::core::SignalStore& store) {
+    channelList_->clear();
+
+    // Show the domain suffix only when it disambiguates: a time-only store
+    // (the common case) would just repeat "time" on every row.
+    bool haveTime = false, haveFreq = false;
+    QStringList names = store.channelNames();
+    std::sort(names.begin(), names.end());
+    for (const auto& n : names) {
+        auto s = store.get(n);
+        if (!s) continue;
+        (s->meta().domain == scope::core::Signal::Domain::Frequency ? haveFreq
+                                                                    : haveTime) = true;
+    }
+
+    const QSignalBlocker block(channelList_);   // one refresh at the end
+    for (const auto& n : names) {
+        auto s = store.get(n);
+        if (!s) continue;
+        const auto& meta = s->meta();
+        const bool freq = meta.domain == scope::core::Signal::Domain::Frequency;
+        QString label = meta.name;
+        if (!meta.unit.isEmpty()) label += QString(" [%1]").arg(meta.unit);
+        if (haveTime && haveFreq)
+            label += freq ? QString("  · frequency") : QString("  · time");
+        auto* item = new QListWidgetItem(label, channelList_);
+        item->setData(Qt::UserRole, meta.name);
+        item->setData(Qt::UserRole + 1, freq);
+        item->setCheckState(Qt::Checked);   // saving everything stays the default
+    }
+
+    // Show every row up to a handful, then scroll — a long store must not
+    // push OK off the bottom of the screen.
+    if (channelList_->count() > 0) {
+        const int rows = std::min(channelList_->count(), kMaxVisibleChannelRows);
+        const int frame = 2 * channelList_->frameWidth();
+        // Fixed, not maximum: a QListWidget's own size hint is tiny, so a
+        // maximum alone still leaves it collapsed to a scrolling stub.
+        channelList_->setFixedHeight(
+            rows * channelList_->sizeHintForRow(0) + frame + 2);
+    }
+
+    const bool any = channelList_->count() > 0;
+    channelList_->setVisible(any);
+    channelButtons_->setVisible(any);
+    onChannelFiltersChanged();
+}
+
+// A channel is writable only if its row is ticked AND the domain / derived
+// toggles admit it. Rather than let those disagree silently, disable the
+// rows the toggles rule out so the list always shows what will be written.
+void SaveChartDialog::onChannelFiltersChanged() {
+    if (!channelList_ || channelList_->count() == 0) return;
+
+    int writable = 0;
+    const QSignalBlocker block(channelList_);
+    for (int i = 0; i < channelList_->count(); ++i) {
+        auto* it = channelList_->item(i);
+        const bool freq = it->data(Qt::UserRole + 1).toBool();
+        const bool admitted = freq ? includeFreqCheck_->isChecked()
+                                   : includeTimeCheck_->isChecked();
+        auto flags = it->flags();
+        it->setFlags(admitted ? (flags |  Qt::ItemIsEnabled)
+                              : (flags & ~Qt::ItemIsEnabled));
+        if (admitted && it->checkState() == Qt::Checked) ++writable;
+    }
+    channelCount_->setText(QString("%1 of %2 selected")
+                               .arg(writable).arg(channelList_->count()));
+
+    // An empty selection reaches ChartSaveFilters as "no restriction", i.e.
+    // save everything — the opposite of what unticking every row means. Block
+    // OK instead of writing the wrong file. Only when a picker exists, so
+    // hosts without one keep their previous behaviour.
+    if (buttons_)
+        buttons_->button(QDialogButtonBox::Ok)->setEnabled(writable > 0);
+}
+
+QStringList SaveChartDialog::selectedChannels() const {
+    QStringList out;
+    if (!channelList_) return out;
+    for (int i = 0; i < channelList_->count(); ++i) {
+        const auto* it = channelList_->item(i);
+        if (it->checkState() == Qt::Checked)
+            out << it->data(Qt::UserRole).toString();
+    }
+    return out;
+}
+
+void SaveChartDialog::setRepeatedTimestamps(
+    const scope::converter::RepeatedTimestampScan& scan) {
+    repeatScan_ = scan;
+    onCsvTimeModeChanged();
 }
 
 void SaveChartDialog::onRangeModeChanged() {
@@ -309,6 +535,12 @@ SaveChartDialog::Format SaveChartDialog::format() const {
     if (htmlRadio_->isChecked()) return Format::Html;
     if (jsonRadio_->isChecked()) return Format::Json;
     return Format::Hdf5;
+}
+
+// Guarded on the format so a stale tick can't strip the data island from a
+// non-HTML save (where the flag is meaningless anyway).
+bool SaveChartDialog::htmlViewOnly() const {
+    return htmlRadio_->isChecked() && htmlViewOnlyCheck_->isChecked();
 }
 
 bool   SaveChartDialog::useCustomRange() const { return customRangeRadio_->isChecked(); }

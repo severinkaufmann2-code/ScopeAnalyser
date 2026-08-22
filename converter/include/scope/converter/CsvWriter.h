@@ -4,9 +4,12 @@
 
 #include <QString>
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <vector>
+
+namespace scope::core { class SignalStore; }
 
 namespace scope::converter {
 
@@ -61,5 +64,25 @@ bool writeCsv(const std::filesystem::path& path,
               const std::vector<std::shared_ptr<scope::core::Signal>>& channels,
               const CsvExportOptions& opts,
               QString* errorOut = nullptr);
+
+// What a TimeMode::Shared write would silently lose.
+//
+// Shared keys its rows by *distinct* timestamp, so a channel holding several
+// samples at one instant only ever gets its first one into the file — one
+// row simply has no room for the rest. That is inherent to a single shared X
+// column, not a fault of the writer, but it is invisible in the result, so
+// the save dialog scans for it up front and says so. TimeMode::PerSignal
+// writes raw samples and is unaffected.
+struct RepeatedTimestampScan {
+    int           channels{0};        // channels that repeat at least one timestamp
+    std::int64_t  droppedSamples{0};  // samples a Shared write would omit
+    QString       worstChannel;       // the one losing the most, for the message
+
+    bool any() const { return channels > 0; }
+};
+
+RepeatedTimestampScan scanRepeatedTimestamps(
+    const std::vector<std::shared_ptr<scope::core::Signal>>& channels);
+RepeatedTimestampScan scanRepeatedTimestamps(const scope::core::SignalStore& store);
 
 }  // namespace scope::converter

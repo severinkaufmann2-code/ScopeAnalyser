@@ -1,5 +1,7 @@
 #include "scope/converter/CsvWriter.h"
 
+#include "scope/core/SignalStore.h"
+
 #include <nlohmann/json.hpp>
 
 #include <QFile>
@@ -7,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <set>
 
@@ -317,6 +320,32 @@ bool writeCsv(const std::filesystem::path& path,
     }
 
     return true;
+}
+
+RepeatedTimestampScan scanRepeatedTimestamps(
+    const std::vector<std::shared_ptr<Signal>>& channels) {
+    RepeatedTimestampScan scan;
+    std::int64_t worst = 0;
+    for (const auto& s : channels) {
+        if (!s) continue;
+        const auto view = s->snapshotForRead();
+        // A Shared write emits one row per distinct timestamp, so whatever a
+        // channel holds beyond the first sample of each repeat is dropped.
+        std::int64_t dropped = 0;
+        for (std::size_t i = 1; i < view.count; ++i)
+            if (view.timestamps[i] == view.timestamps[i - 1]) ++dropped;
+        if (dropped == 0) continue;
+        ++scan.channels;
+        scan.droppedSamples += dropped;
+        if (dropped > worst) { worst = dropped; scan.worstChannel = s->meta().name; }
+    }
+    return scan;
+}
+
+RepeatedTimestampScan scanRepeatedTimestamps(const scope::core::SignalStore& store) {
+    std::vector<std::shared_ptr<Signal>> channels;
+    for (const auto& name : store.channelNames()) channels.push_back(store.get(name));
+    return scanRepeatedTimestamps(channels);
 }
 
 }  // namespace scope::converter

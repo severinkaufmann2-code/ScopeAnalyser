@@ -13,6 +13,7 @@ add_executable(scope_tests
     test_mock_pipeline.cpp
     test_scope_plot.cpp
     test_analyser_layout.cpp
+    test_save_chart_dialog.cpp
     test_undo_stack.cpp
 )
 
@@ -37,3 +38,16 @@ target_link_libraries(scope_tests PRIVATE
 
 include(GoogleTest)
 gtest_discover_tests(scope_tests)
+
+# The exported HTML chart's zoom / pan has to match the Analyser's ScopePlot.
+# That logic lives in scope_page.js, so it's checked by running the page
+# script under node against a DOM/uPlot stub. Skipped where node isn't
+# installed — it's the only part of the suite that needs it.
+find_program(SCOPE_NODE_EXECUTABLE NAMES node nodejs)
+if(SCOPE_NODE_EXECUTABLE)
+    add_test(NAME scope_page_js
+             COMMAND ${SCOPE_NODE_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/js/scope_page_interaction.test.js)
+else()
+    message(STATUS "node not found — skipping the scope_page.js interaction test")
+endif()

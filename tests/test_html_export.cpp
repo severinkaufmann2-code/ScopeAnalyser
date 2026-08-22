@@ -40,6 +40,22 @@ std::shared_ptr<Signal> makeSig(const QString& name, const QString& unit,
     return s;
 }
 
+// Same, but with the timestamps given explicitly — so a test can hand the
+// export repeated or out-of-order timestamps.
+std::shared_ptr<Signal> makeSigTs(const QString& name, const QString& unit,
+                                  Signal::Domain domain,
+                                  const std::vector<TimestampNs>& ts,
+                                  const std::vector<double>& vs) {
+    Signal::Meta m;
+    m.name = name;
+    m.unit = unit;
+    m.dataType = DataType::Float64;
+    m.domain = domain;
+    auto s = std::make_shared<Signal>(m);
+    s->append(ts.data(), reinterpret_cast<const std::byte*>(vs.data()), vs.size());
+    return s;
+}
+
 QString exportToString(const SignalStore& store, bool* okOut = nullptr,
                        QString* errOut = nullptr) {
     const auto path = std::filesystem::temp_directory_path() / "scope_html_export_test.html";
@@ -110,6 +126,63 @@ TEST(HtmlExport, UnionGridFillsMissingSamplesWithNull) {
     ASSERT_TRUE(ok);
     EXPECT_TRUE(html.contains("[10,null,20,null,30]"))
         << "slow channel must be null where it has no sample";
+}
+
+// Several samples may share one timestamp (two notifications inside a tick,
+// a time column that lost resolution). The union grid must then carry that
+// timestamp more than once — collapsing it to a single slot used to leave
+// the repeating channel's cursor one behind and blank the rest of its column.
+TEST(HtmlExport, RepeatedTimestampsKeepEverySample) {
+    SignalStore store;
+    store.add(makeSigTs("dup", "", Signal::Domain::Time,
+                        {0, 100'000'000LL, 100'000'000LL, 200'000'000LL},
+                        {1, 2, 3, 4}));
+    bool ok = false;
+    QString err;
+    const QString html = exportToString(store, &ok, &err);
+    ASSERT_TRUE(ok) << err.toStdString();
+    EXPECT_TRUE(html.contains("[0,0.1,0.1,0.2],[1,2,3,4]"))
+        << "the repeated timestamp needs its own grid slot, and no sample "
+           "after it may be dropped";
+    EXPECT_FALSE(html.contains("[1,2,null,null]"));
+}
+
+// …and the channels that do NOT repeat stay aligned: they get a null in the
+// extra slot and keep every later value.
+TEST(HtmlExport, RepeatedTimestampsKeepOtherChannelsAligned) {
+    SignalStore store;
+    store.add(makeSigTs("dup", "", Signal::Domain::Time,
+                        {0, 100'000'000LL, 100'000'000LL, 200'000'000LL},
+                        {1, 2, 3, 4}));
+    store.add(makeSigTs("plain", "", Signal::Domain::Time,
+                        {0, 100'000'000LL, 200'000'000LL},
+                        {10, 20, 30}));
+    bool ok = false;
+    QString err;
+    const QString html = exportToString(store, &ok, &err);
+    ASSERT_TRUE(ok) << err.toStdString();
+    // Column order follows the store's channel order, so assert per column.
+    EXPECT_TRUE(html.contains("data:[[0,0.1,0.1,0.2],"))
+        << "the shared grid must carry the repeated timestamp twice";
+    EXPECT_TRUE(html.contains("[1,2,3,4]"))
+        << "the repeating channel keeps every sample";
+    EXPECT_TRUE(html.contains("[10,20,null,30]"))
+        << "non-repeating channels must be padded, not truncated";
+}
+
+// The merge walks each channel with a forward cursor, so out-of-order
+// timestamps would desynchronise it exactly like a repeat does.
+TEST(HtmlExport, UnsortedTimestampsAreOrderedNotDropped) {
+    SignalStore store;
+    store.add(makeSigTs("jumbled", "", Signal::Domain::Time,
+                        {200'000'000LL, 0, 100'000'000LL},
+                        {30, 10, 20}));
+    bool ok = false;
+    QString err;
+    const QString html = exportToString(store, &ok, &err);
+    ASSERT_TRUE(ok) << err.toStdString();
+    EXPECT_TRUE(html.contains("[10,20,30]"))
+        << "samples must be emitted in timestamp order, none turned to null";
 }
 
 TEST(HtmlExport, NanBecomesNullNeverAFabricatedNumber) {
@@ -315,6 +388,39 @@ TEST(StorableHtml, CompressesIslandStaysOfflineAndStillRoundTrips) {
     auto vs = chans[0]->readAsDouble();
     ASSERT_EQ(vs.size(), 3u);
     EXPECT_DOUBLE_EQ(vs[1], 22.5);
+}
+
+// HTML is a save format alongside .h5 / .mf4 / .csv, so repeated timestamps
+// have to survive the write/read cycle intact — no sample may be lost.
+TEST(StorableHtml, RoundTripsRepeatedTimestamps) {
+    SignalStore store;
+    store.add(makeSigTs("dup", "V", Signal::Domain::Time,
+                        {0, 100'000'000LL, 100'000'000LL, 200'000'000LL},
+                        {1.5, 2.5, 3.5, 4.5}));
+    bool ok = false;
+    QString err;
+    const QString p = writeStorable(store, nullptr, "dupts", &ok, &err);
+    ASSERT_TRUE(ok) << err.toStdString();
+
+    std::vector<std::shared_ptr<Signal>> chans;
+    QString lerr;
+    ASSERT_TRUE(loadStorableHtml(p, &chans, nullptr, &lerr)) << lerr.toStdString();
+    std::error_code ec; std::filesystem::remove(p.toStdString(), ec);
+
+    ASSERT_EQ(chans.size(), 1u);
+    auto dup = chans[0];
+    ASSERT_EQ(dup->sampleCount(), 4u) << "a repeated timestamp lost samples";
+    auto rv = dup->snapshotForRead();
+    EXPECT_EQ(rv.timestamps[0], 0LL);
+    EXPECT_EQ(rv.timestamps[1], 100'000'000LL);
+    EXPECT_EQ(rv.timestamps[2], 100'000'000LL);
+    EXPECT_EQ(rv.timestamps[3], 200'000'000LL);
+    auto vs = dup->readAsDouble();
+    ASSERT_EQ(vs.size(), 4u);
+    EXPECT_DOUBLE_EQ(vs[0], 1.5);
+    EXPECT_DOUBLE_EQ(vs[1], 2.5);
+    EXPECT_DOUBLE_EQ(vs[2], 3.5);
+    EXPECT_DOUBLE_EQ(vs[3], 4.5);
 }
 
 TEST(StorableHtml, EmbedsAndRestoresLayoutJson) {

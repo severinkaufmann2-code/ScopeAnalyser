@@ -76,7 +76,7 @@ function makeApp(app) {
     "Click two points to mark Δx / Δy / 1/|Δx|. Right-click clears.",
     () => { measure.on = !measure.on; measure.p1 = measure.p2 = null;
             mBtn.classList.toggle("on", measure.on);
-            u.over.style.cursor = measure.on ? "crosshair" : "default";
+            u.over.style.cursor = measure.on ? "crosshair" : "grab";
             u.redraw(); });
   const modeSel = document.createElement("select"); modeSel.className = "tbtn";
   ["Line", "Points", "Line + points"].forEach((t, i) => {
@@ -184,7 +184,9 @@ function makeApp(app) {
       else {
         const a = prev[k], b = next[k];
         if (a >= 0 && b >= 0) {
-          y = (a === b) ? yv[a]
+          // t[a] === t[b] with a !== b happens when several samples share one
+          // timestamp: no span to interpolate across, so take the neighbour.
+          y = (a === b || t[a] === t[b]) ? yv[a]
               : yv[a] + (t[k] - t[a]) / (t[b] - t[a]) * (yv[b] - yv[a]);
         }
       }
@@ -309,10 +311,11 @@ function makeApp(app) {
       scales, axes,
       series: [{}].concat(sList),
       legend: { show: false },
-      cursor: { drag: { x: true, y: true, uni: 30, setScale: false } },
+      // No selection rect: the app has no box zoom — left-drag pans there,
+      // and onReady() wires the same here.
+      cursor: { drag: { x: false, y: false, setScale: false } },
       hooks: {
         setCursor: [updateValues],
-        setSelect: [onSelect],
         ready: [onReady],
         draw: [drawMeasure],
       },
@@ -348,20 +351,65 @@ function makeApp(app) {
     autoY.fill(true);
     u.setScale("x", { min: u.scales.x.min, max: u.scales.x.max });   // re-range Y
   }
+  // Scale one range about a centre — QCPAxis::scaleRange, which is what the
+  // app's zoomAt() calls.
+  const scaleAbout = (min, max, c, f) => [c - (c - min) * f, c + (max - c) * f];
+
+  // Stage a Y axis's new range. Y is only ever re-read through the scale's
+  // range callback, so staging into manual[] and then re-setting X is how a
+  // Y change gets applied — hence applyPending() below.
+  function stageY(k, min, max) {
+    autoY[k] = false;
+    manual[k] = [min, max];
+  }
+  // One setScale call flushes both: X directly, staged Y via its range cb.
+  function applyPending(xr) {
+    const s = u.scales.x;
+    u.setScale("x", xr || { min: s.min, max: s.max });
+  }
+
   function zoomX(f, atVal) {
     const s = u.scales.x;
     const c = atVal != null ? atVal : (s.min + s.max) / 2;
-    u.setScale("x", { min: c - (c - s.min) * f, max: c + (s.max - c) * f });
+    const [min, max] = scaleAbout(s.min, s.max, c, f);
+    applyPending({ min, max });
   }
   function zoomYAll(f, atPosTop) {
+    zoomY(f, atPosTop, -1);
+  }
+  // axisIndex < 0 → every Y axis together, as the app's zoomAt(-1) does.
+  function zoomY(f, atPosTop, axisIndex) {
     activeSpec().axes.forEach((ax, k) => {
+      if (axisIndex >= 0 && k !== axisIndex) return;
       const s = u.scales[sKey(k)];
       const c = atPosTop != null ? u.posToVal(atPosTop, sKey(k))
                                  : (s.min + s.max) / 2;
-      autoY[k] = false;
-      manual[k] = [c - (c - s.min) * f, c + (s.max - c) * f];
+      const [min, max] = scaleAbout(s.min, s.max, c, f);
+      stageY(k, min, max);
     });
-    u.setScale("x", { min: u.scales.x.min, max: u.scales.x.max });
+    applyPending(null);
+  }
+
+  // The app's ScopePlot::zoomAt: X and/or Y scaled about the cursor, applied
+  // together so one wheel notch is a single redraw.
+  function zoomAt(fx, fy, posLeft, posTop, axisIndex) {
+    let xr = null;
+    if (fx) {
+      const s = u.scales.x;
+      const c = u.posToVal(posLeft, "x");
+      const [min, max] = scaleAbout(s.min, s.max, c, fx);
+      xr = { min, max };
+    }
+    if (fy) {
+      activeSpec().axes.forEach((ax, k) => {
+        if (axisIndex >= 0 && k !== axisIndex) return;
+        const s = u.scales[sKey(k)];
+        const c = u.posToVal(posTop, sKey(k));
+        const [min, max] = scaleAbout(s.min, s.max, c, fy);
+        stageY(k, min, max);
+      });
+    }
+    applyPending(xr);
   }
 
   const fmt = v => Number(v.toPrecision(6)).toString();
@@ -376,24 +424,6 @@ function makeApp(app) {
       // The app's XY view has no per-channel cursor read-out either.
       rows.forEach(r => { r.valEl.textContent = ""; });
     }
-  }
-
-  function onSelect(uu) {
-    const sel = uu.select;
-    if (sel.width > 8) {
-      const x0 = uu.posToVal(sel.left, "x");
-      const x1 = uu.posToVal(sel.left + sel.width, "x");
-      if (sel.height > 8) {
-        activeSpec().axes.forEach((ax, k) => {
-          const yTop = uu.posToVal(sel.top, sKey(k));
-          const yBot = uu.posToVal(sel.top + sel.height, sKey(k));
-          autoY[k] = false;
-          manual[k] = [Math.min(yTop, yBot), Math.max(yTop, yBot)];
-        });
-      }
-      uu.setScale("x", { min: Math.min(x0, x1), max: Math.max(x0, x1) });
-    }
-    uu.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
   }
 
   // ---------- measure tool ----------
@@ -434,13 +464,125 @@ function makeApp(app) {
   }
 
   // ---------- mouse wiring ----------
+  // Deliberately the same model as the app's ScopePlot::eventFilter, so the
+  // exported page and the Analyser feel identical:
+  //   wheel, no modifier, over the plot   → zoom X and Y about the cursor
+  //   Ctrl + wheel                        → X only
+  //   Shift / Alt + wheel                 → all Y (or one, over a Y gutter)
+  //   wheel over a Y axis                 → that axis only
+  //   wheel over the X axis               → X only
+  //   left-drag                           → pan (the app has no box zoom)
+
+  // The app steps 0.85 per wheel notch and reads partial notches from
+  // high-resolution devices, so the factor is continuous rather than a fixed
+  // step. Browsers report the delta in px / lines / pages — normalise to px
+  // first, then to notches at the ~100px per notch browsers use.
+  const ZOOM_STEP = 0.85;
+  function wheelFactor(e) {
+    let dy = e.deltaY || e.deltaX;
+    if (e.deltaMode === 1) dy *= 16;        // lines  → px
+    else if (e.deltaMode === 2) dy *= 400;  // pages  → px
+    if (!dy) return 0;
+    return Math.pow(ZOOM_STEP, -dy / 100);
+  }
+
+  // Where the pointer is relative to the plot rect, in the same terms the
+  // app uses against its axis rect.
+  function hit(uu, e) {
+    const r = uu.over.getBoundingClientRect();
+    return {
+      left: e.clientX - r.left,
+      top:  e.clientY - r.top,
+      overY: e.clientX < r.left || e.clientX > r.right,
+      overX: e.clientY < r.top  || e.clientY > r.bottom,
+    };
+  }
+
+  // Mirror of ScopePlot::closestYAxisToPos: which Y axis owns the gutter the
+  // pointer is in. uPlot stacks each axis outward from the plot edge in a
+  // band of its own width, so walk out from that edge; anything unexpected
+  // falls back to the axis nearest the edge on that side.
+  function yAxisAt(uu, clientX) {
+    const r = uu.over.getBoundingClientRect();
+    const onLeft = clientX < r.left;
+    let edge = onLeft ? r.left : r.right;
+    let fallback = null;
+    for (let k = 0; k < activeSpec().axes.length; k++) {
+      const ax = uu.axes[k + 1];                    // index 0 is the X axis
+      if (!ax) continue;
+      if (onLeft ? ax.side !== 3 : ax.side !== 1) continue;
+      if (fallback === null) fallback = k;
+      const size = ax._size || 40;
+      const lo = onLeft ? edge - size : edge;
+      const hi = onLeft ? edge : edge + size;
+      if (clientX >= lo && clientX <= hi) return k;
+      edge = onLeft ? lo : hi;
+    }
+    return fallback === null ? 0 : fallback;
+  }
+
+  function onWheel(uu, e) {
+    e.preventDefault();
+    const f = wheelFactor(e);
+    if (!f) return;
+    const h = hit(uu, e);
+
+    // Same routing ladder as the app, first match wins.
+    if (e.ctrlKey || e.metaKey) {
+      zoomAt(f, 0, h.left, h.top, -1);
+    } else if (e.shiftKey || e.altKey) {
+      zoomAt(0, f, h.left, h.top, h.overY ? yAxisAt(uu, e.clientX) : -1);
+    } else if (h.overY) {
+      zoomAt(0, f, h.left, h.top, yAxisAt(uu, e.clientX));
+    } else if (h.overX) {
+      zoomAt(f, 0, h.left, h.top, -1);
+    } else {
+      zoomAt(f, f, h.left, h.top, -1);
+    }
+  }
+
+  // Left-drag pans, as QCustomPlot's iRangeDrag does in the app. Listening on
+  // the document means a drag that leaves the plot keeps tracking, and still
+  // ends on mouseup.
+  function startPan(uu, e) {
+    if (e.button !== 0 || measure.on) return;   // measure mode owns left-click
+    e.preventDefault();
+    const rect = uu.over.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+
+    const x0 = { min: uu.scales.x.min, max: uu.scales.x.max };
+    const y0 = activeSpec().axes.map((ax, k) => {
+      const sc = uu.scales[sKey(k)];
+      return { min: sc.min, max: sc.max };
+    });
+    const startX = e.clientX, startY = e.clientY;
+    const prevCursor = uu.over.style.cursor;
+    uu.over.style.cursor = "grabbing";
+
+    const move = ev => {
+      // Content follows the pointer: dragging right shows earlier X.
+      const dx = (ev.clientX - startX) / rect.width  * (x0.max - x0.min);
+      const dy = (ev.clientY - startY) / rect.height;
+      y0.forEach((s, k) => {
+        const shift = dy * (s.max - s.min);
+        stageY(k, s.min + shift, s.max + shift);
+      });
+      applyPending({ min: x0.min - dx, max: x0.max - dx });
+    };
+    const up = () => {
+      uu.over.style.cursor = prevCursor;
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  }
+
   function onReady(uu) {
-    uu.over.addEventListener("wheel", e => {
-      e.preventDefault();
-      const f = e.deltaY < 0 ? 0.85 : 1 / 0.85;
-      if (e.shiftKey) zoomYAll(f, uu.cursor.top);
-      else            zoomX(f, uu.posToVal(uu.cursor.left, "x"));
-    }, { passive: false });
+    // On the root, not the plot area, so the axis gutters route too.
+    uu.root.addEventListener("wheel", e => onWheel(uu, e), { passive: false });
+    uu.over.addEventListener("mousedown", e => startPan(uu, e));
+    if (!measure.on) uu.over.style.cursor = "grab";
     uu.over.addEventListener("dblclick", fitAll);
     uu.over.addEventListener("click", e => {
       if (!measure.on) return;

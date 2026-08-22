@@ -68,6 +68,13 @@ struct SaveOptions {
     // default view (one axis per domain, palette colours), which is what the
     // Converter — having no plot — uses.
     std::optional<HtmlExportView> htmlView;
+
+    // Consulted only for FileFormat::Html. Normally the page carries a
+    // compressed copy of the samples so ScopeAnalyser can re-open it, which
+    // is most of the file size. Set this to write the chart alone: the page
+    // still zooms, measures and toggles channels offline, but there is no
+    // data island, so it cannot be loaded back in.
+    bool htmlViewOnly{false};
 };
 
 struct LoadResult {
@@ -122,6 +129,11 @@ struct ChartSaveFilters {
     bool   includeTime{true};
     bool   includeFrequency{true};
     bool   includeDerived{true};
+    // Explicit per-channel selection, by store channel name. EMPTY means "no
+    // per-channel restriction" — every channel the flags above admit — so
+    // callers that don't offer a picker are unaffected. When non-empty it is
+    // ANDed with those flags: a channel must be named here AND pass them.
+    QStringList selectedChannels;
     // When true, write <base>_time.<ext> and <base>_frequency.<ext> as
     // separate files. Only honoured when both domains have data after
     // filtering — a single-domain export goes to <base> regardless.

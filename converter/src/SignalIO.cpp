@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include <QFile>
+#include <QSet>
 #include <QStringList>
 #include <QTextStream>
 
@@ -801,15 +802,23 @@ bool saveFile(const std::filesystem::path& path,
             // channels into a scratch store so exportStorableHtml can read
             // them; mirror the live plot layout when the caller supplied one
             // (Analyser), else fall back to a default view (Converter).
+            //
+            // htmlViewOnly instead rounds the values for display and drops
+            // the re-import marker: a much smaller, one-way page.
             scope::core::SignalStore tmp;
             for (const auto& s : channels) if (s) tmp.add(s);
             const QString out = QString::fromStdString(path.string());
+            const int digits = kChartOnlyDefaultDigits;
             if (opts.htmlView) {
                 HtmlExportView view = *opts.htmlView;
                 if (!opts.layoutJson.isEmpty()) view.layoutJson = opts.layoutJson;
-                return exportStorableHtml(out, tmp, view, errorOut);
+                return opts.htmlViewOnly
+                    ? exportChartOnlyHtml(out, tmp, view, digits, errorOut)
+                    : exportStorableHtml(out, tmp, view, errorOut);
             }
-            return exportStorableHtml(out, tmp, errorOut);
+            return opts.htmlViewOnly
+                ? exportChartOnlyHtml(out, tmp, digits, errorOut)
+                : exportStorableHtml(out, tmp, errorOut);
         }
         case FileFormat::Json: return writeJson(path, channels, opts.layoutJson, errorOut);
         case FileFormat::Auto:
@@ -853,12 +862,23 @@ ChartSaveResult saveChartFromStore(
     // Resolve it against that same origin: recordings carry absolute epoch
     // timestamps, where treating the seconds as absolute would silently
     // select nothing.
+    //
+    // An empty selectedChannels means "everything the flags admit"; anything
+    // else restricts to exactly those names. Resolved once here so the range
+    // origin and the channel gather below can't disagree about what is in.
+    const QSet<QString> picked(filters.selectedChannels.begin(),
+                               filters.selectedChannels.end());
+    const auto isPicked = [&](const QString& name) {
+        return picked.isEmpty() || picked.contains(name);
+    };
+
     TimestampNs originNs = 0;
     if (filters.useCustomRange && filters.includeTime) {
         bool haveOrigin = false;
         for (const auto& n : store.channelNames()) {
             auto src = store.get(n);
             if (!src) continue;
+            if (!isPicked(n)) continue;
             if (src->meta().domain == Signal::Domain::Frequency) continue;
             if (!filters.includeDerived && isDerivedChannel(src)) continue;
             auto view = src->snapshotForRead();
@@ -880,6 +900,7 @@ ChartSaveResult saveChartFromStore(
     for (const auto& n : store.channelNames()) {
         auto src = store.get(n);
         if (!src) continue;
+        if (!isPicked(n)) continue;
         const bool freq = (src->meta().domain == Signal::Domain::Frequency);
         if (freq && !filters.includeFrequency) continue;
         if (!freq && !filters.includeTime)      continue;

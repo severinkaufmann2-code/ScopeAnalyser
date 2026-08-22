@@ -44,13 +44,22 @@ QString readResource(const char* path, QString* errorOut) {
 
 // Shortest exact-round-trip double for the embedded JSON (std::to_chars:
 // "0.1" stays "0.1", full precision preserved); NaN/inf become null (a gap).
-void appendJsNumber(QString& out, double v) {
+//
+// digits > 0 caps the significant figures instead. Only the chart-only
+// export uses that: full-precision doubles off real instrumentation are
+// essentially random in their low bits and so barely compress, while a
+// chart cannot resolve anything like that many figures — rounding is what
+// makes that file small.
+void appendJsNumber(QString& out, double v, int digits = 0) {
     if (std::isnan(v) || std::isinf(v)) {
         out += QLatin1String("null");
         return;
     }
-    char buf[32];
-    const auto res = std::to_chars(buf, buf + sizeof(buf), v);
+    char buf[40];
+    const auto res = (digits > 0)
+        ? std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::general,
+                        digits)
+        : std::to_chars(buf, buf + sizeof(buf), v);
     out += QLatin1String(buf, static_cast<int>(res.ptr - buf));
 }
 
@@ -96,6 +105,131 @@ struct ChartJs {
     int     seriesCount{0};
 };
 
+// One source channel prepared for the union-grid merge: its samples in
+// timestamp order (duplicates kept) plus the cursor the emit loops walk.
+struct MergeSrc {
+    std::shared_ptr<Signal> sig;
+    const HtmlChannel*      ch{nullptr};
+    const TimestampNs*      ts{nullptr};   // -> rv.timestamps, or tsOwned
+    std::size_t             count{0};
+    std::vector<double>     vals;
+    std::size_t             cursor{0};
+
+    Signal::ReadView         rv{};        // sig keeps the pointed-at buffer alive
+    std::vector<TimestampNs> tsOwned;     // only used when the channel was unsorted
+};
+
+struct MergedGrid {
+    std::vector<MergeSrc>    srcs;
+    std::vector<TimestampNs> grid;
+    TimestampNs              origin{0};
+};
+
+// Collect the view's plottable channels and build the union timestamp grid
+// every channel is emitted against.
+//
+// A timestamp appears in the grid as many times as the channel that repeats
+// it most. Scope data legitimately carries several samples at one instant
+// (two ADS notifications inside a tick, a CSV whose time column lost
+// resolution), and giving every repeat its own grid slot is what keeps the
+// per-channel cursors in the emit loops in step. Collapsing repeats into a
+// single slot — what a plain std::unique does — leaves the repeating
+// channel's cursor one behind the grid for good, so every later timestamp
+// compare fails and the whole rest of that column is written as null.
+MergedGrid buildMergedGrid(const SignalStore& store, const HtmlChartView& view,
+                           bool frequencyDomain) {
+    MergedGrid out;
+    out.srcs.reserve(view.channels.size());
+
+    bool haveOrigin = false;
+    for (const auto& ch : view.channels) {
+        auto s = store.get(ch.name);
+        if (!s || s->sampleCount() == 0) continue;
+        MergeSrc src;
+        src.sig   = s;
+        src.ch    = &ch;
+        src.rv    = s->snapshotForRead();
+        src.vals  = s->readAsDouble();
+        src.count = std::min(src.rv.count, src.vals.size());
+        src.ts    = src.rv.timestamps;
+
+        // Timestamps are expected non-decreasing, but an imported column can
+        // still arrive out of order — which desynchronises the merge exactly
+        // like a duplicate does. Sort a local copy (stable, so samples
+        // sharing a timestamp keep their acquisition order); the Signal
+        // itself is left untouched.
+        if (!std::is_sorted(src.ts, src.ts + src.count)) {
+            std::vector<std::size_t> idx(src.count);
+            for (std::size_t i = 0; i < src.count; ++i) idx[i] = i;
+            std::stable_sort(idx.begin(), idx.end(),
+                             [&](std::size_t a, std::size_t b) {
+                                 return src.rv.timestamps[a] < src.rv.timestamps[b];
+                             });
+            std::vector<double> sortedVals(src.count);
+            src.tsOwned.resize(src.count);
+            for (std::size_t i = 0; i < src.count; ++i) {
+                src.tsOwned[i] = src.rv.timestamps[idx[i]];
+                sortedVals[i]  = src.vals[idx[i]];
+            }
+            src.vals = std::move(sortedVals);
+            src.ts   = src.tsOwned.data();   // survives the move into srcs
+        }
+
+        if (!frequencyDomain) {
+            // Same origin rule as the app's time axis (Slice/Gate outputs
+            // anchor at their source's start).
+            const TimestampNs o = s->displayOriginNs();
+            if (!haveOrigin || o < out.origin) { out.origin = o; haveOrigin = true; }
+        }
+        out.srcs.push_back(std::move(src));
+    }
+    if (out.srcs.empty()) return out;
+
+    std::size_t total = 0;
+    bool anyDuplicate = false;
+    for (const auto& s : out.srcs) {
+        total += s.count;
+        for (std::size_t i = 1; !anyDuplicate && i < s.count; ++i)
+            if (s.ts[i] == s.ts[i - 1]) anyDuplicate = true;
+    }
+
+    // Common case — no channel repeats a timestamp — is the plain distinct
+    // union, byte-for-byte what this always produced.
+    if (!anyDuplicate) {
+        out.grid.reserve(total);
+        for (const auto& s : out.srcs)
+            out.grid.insert(out.grid.end(), s.ts, s.ts + s.count);
+        std::sort(out.grid.begin(), out.grid.end());
+        out.grid.erase(std::unique(out.grid.begin(), out.grid.end()),
+                       out.grid.end());
+        return out;
+    }
+
+    // Repeats present: reduce each channel to (timestamp, run length) and
+    // merge by max, so the grid has room for the longest run at each instant.
+    std::vector<std::pair<TimestampNs, std::size_t>> runs;
+    runs.reserve(total);
+    for (const auto& s : out.srcs) {
+        std::size_t i = 0;
+        while (i < s.count) {
+            std::size_t j = i + 1;
+            while (j < s.count && s.ts[j] == s.ts[i]) ++j;
+            runs.emplace_back(s.ts[i], j - i);
+            i = j;
+        }
+    }
+    std::sort(runs.begin(), runs.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (std::size_t i = 0; i < runs.size();) {
+        std::size_t j = i, n = 0;
+        while (j < runs.size() && runs[j].first == runs[i].first)
+            n = std::max(n, runs[j++].second);
+        out.grid.insert(out.grid.end(), n, runs[i].first);
+        i = j;
+    }
+    return out;
+}
+
 // Merge the view's channels onto their union timestamp grid and emit the
 // per-domain spec. Where a channel has no sample at a grid point it gets
 // null; spanGaps in the page draws through those (grid-alignment
@@ -105,40 +239,9 @@ ChartJs buildChart(const SignalStore& store, const HtmlChartView& view,
                    bool frequencyDomain, const QString& xLabel) {
     ChartJs out;
 
-    struct Src {
-        std::shared_ptr<Signal> sig;
-        const HtmlChannel*      ch;
-        Signal::ReadView        view;
-        std::vector<double>     vals;
-        std::size_t             cursor{0};
-    };
-    std::vector<Src> srcs;
-    srcs.reserve(view.channels.size());
-
-    std::vector<TimestampNs> grid;
-    TimestampNs origin = 0;
-    bool haveOrigin = false;
-    for (const auto& ch : view.channels) {
-        auto s = store.get(ch.name);
-        if (!s || s->sampleCount() == 0) continue;
-        Src src;
-        src.sig = s;
-        src.ch = &ch;
-        src.view = s->snapshotForRead();
-        src.vals = s->readAsDouble();
-        grid.insert(grid.end(), src.view.timestamps,
-                    src.view.timestamps + src.view.count);
-        if (!frequencyDomain) {
-            // Same origin rule as the app's time axis (Slice/Gate outputs
-            // anchor at their source's start).
-            const TimestampNs o = s->displayOriginNs();
-            if (!haveOrigin || o < origin) { origin = o; haveOrigin = true; }
-        }
-        srcs.push_back(std::move(src));
-    }
-    if (srcs.empty()) return out;
-    std::sort(grid.begin(), grid.end());
-    grid.erase(std::unique(grid.begin(), grid.end()), grid.end());
+    MergedGrid merged = buildMergedGrid(store, view, frequencyDomain);
+    if (merged.srcs.empty()) return out;
+    const auto& grid = merged.grid;
 
     QStringList axesJs;
     for (const auto& ax : view.axes) {
@@ -149,18 +252,18 @@ ChartJs buildChart(const SignalStore& store, const HtmlChartView& view,
     }
 
     QString data;
-    data.reserve(static_cast<int>(grid.size() * (srcs.size() + 1) * 14 + 64));
+    data.reserve(static_cast<int>(grid.size() * (merged.srcs.size() + 1) * 14 + 64));
     data += '[';
     data += '[';
     for (std::size_t i = 0; i < grid.size(); ++i) {
         if (i) data += ',';
-        appendJsNumber(data, (grid[i] - origin) / 1e9);
+        appendJsNumber(data, (grid[i] - merged.origin) / 1e9);
     }
     data += ']';
 
     QStringList seriesJs;
     const int axisMax = static_cast<int>(view.axes.size()) - 1;
-    for (auto& src : srcs) {
+    for (auto& src : merged.srcs) {
         const auto& meta = src.sig->meta();
         const QString label = meta.unit.isEmpty()
                                   ? meta.name
@@ -175,14 +278,11 @@ ChartJs buildChart(const SignalStore& store, const HtmlChartView& view,
         data += ",[";
         for (std::size_t i = 0; i < grid.size(); ++i) {
             if (i) data += ',';
-            // The union grid contains every channel timestamp, so an exact
-            // match either sits at the cursor or the channel has no sample
-            // here.
-            if (src.cursor < src.view.count
-                && src.view.timestamps[src.cursor] == grid[i]) {
-                appendJsNumber(data, src.cursor < src.vals.size()
-                                         ? src.vals[src.cursor]
-                                         : std::nan(""));
+            // The grid carries every channel timestamp with every repeat, so
+            // an unconsumed sample either sits at the cursor or the channel
+            // has nothing here.
+            if (src.cursor < src.count && src.ts[src.cursor] == grid[i]) {
+                appendJsNumber(data, src.vals[src.cursor]);
                 ++src.cursor;
             } else {
                 data += QLatin1String("null");
@@ -195,7 +295,7 @@ ChartJs buildChart(const SignalStore& store, const HtmlChartView& view,
     out.specJs = QString("{xLabel:%1,axes:[%2],series:[%3],data:%4}")
                      .arg(jsString(xLabel), axesJs.join(','),
                           seriesJs.join(','), data);
-    out.seriesCount = static_cast<int>(srcs.size());
+    out.seriesCount = static_cast<int>(merged.srcs.size());
     return out;
 }
 
@@ -296,9 +396,10 @@ select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 </head>
 <body>
 <h1>ScopeAnalyser — interactive chart</h1>
-<p class="meta">Exported %DATE% · %NCH% channel(s) · scroll = zoom X at cursor ·
-Shift+scroll = zoom Y · drag = box zoom · double-click = fit · Δ Measure: click two
-points, right-click clears</p>
+<p class="meta">Exported %DATE% · %NCH% channel(s) · scroll = zoom X and Y at the
+cursor · Ctrl+scroll = X only · Shift+scroll = Y only · scroll over an axis = that
+axis · drag = pan · double-click = fit · Δ Measure: click two points, right-click
+clears</p>
 <div id="charts"></div>
 <script>
 %PAGEJS%
@@ -371,50 +472,20 @@ QByteArray gzipDecompress(const QByteArray& in, bool* ok) {
 }
 
 // ----- Storable HTML --------------------------------------------------
-// Parallel to buildChart() above, kept separate so the visualisation-only
-// export stays byte-for-byte unchanged. Emits ONE domain's data island
-// object: the union-grid merge (same rule as buildChart) but with exact
-// int64-ns timestamps as strings, an explicit unit per series, and a
-// per-domain display origin — everything loadStorableHtml() needs to
-// reconstruct the signals. Returns "null" (and leaves *nonEmpty false)
-// when the domain has no plottable channel.
+// Emits ONE domain's data island object: the same union-grid merge as
+// buildChart() above (shared via buildMergedGrid), but with exact int64-ns
+// timestamps as strings, an explicit unit per series, and a per-domain
+// display origin — everything loadStorableHtml() needs to reconstruct the
+// signals. Returns "null" (and leaves *nonEmpty false) when the domain has
+// no plottable channel.
 QString buildIslandDomain(const SignalStore& store, const HtmlChartView& view,
                           bool frequencyDomain, const QString& xLabel,
-                          bool* nonEmpty) {
+                          int digits, bool* nonEmpty) {
     *nonEmpty = false;
 
-    struct Src {
-        std::shared_ptr<Signal> sig;
-        const HtmlChannel*      ch;
-        Signal::ReadView        rv;
-        std::vector<double>     vals;
-        std::size_t             cursor{0};
-    };
-    std::vector<Src> srcs;
-    srcs.reserve(view.channels.size());
-
-    std::vector<TimestampNs> grid;
-    TimestampNs origin = 0;
-    bool haveOrigin = false;
-    for (const auto& ch : view.channels) {
-        auto s = store.get(ch.name);
-        if (!s || s->sampleCount() == 0) continue;
-        Src src;
-        src.sig  = s;
-        src.ch   = &ch;
-        src.rv   = s->snapshotForRead();
-        src.vals = s->readAsDouble();
-        grid.insert(grid.end(), src.rv.timestamps,
-                    src.rv.timestamps + src.rv.count);
-        if (!frequencyDomain) {
-            const TimestampNs o = s->displayOriginNs();
-            if (!haveOrigin || o < origin) { origin = o; haveOrigin = true; }
-        }
-        srcs.push_back(std::move(src));
-    }
-    if (srcs.empty()) return QStringLiteral("null");
-    std::sort(grid.begin(), grid.end());
-    grid.erase(std::unique(grid.begin(), grid.end()), grid.end());
+    MergedGrid merged = buildMergedGrid(store, view, frequencyDomain);
+    if (merged.srcs.empty()) return QStringLiteral("null");
+    const auto& grid = merged.grid;
 
     QList<HtmlAxis> axes = view.axes;
     if (axes.isEmpty()) {
@@ -442,7 +513,7 @@ QString buildIslandDomain(const SignalStore& store, const HtmlChartView& view,
     tArr += ']';
 
     QStringList seriesJs, colsJs;
-    for (auto& src : srcs) {
+    for (auto& src : merged.srcs) {
         const auto& meta = src.sig->meta();
         const QString label = meta.unit.isEmpty()
                                   ? meta.name
@@ -459,11 +530,8 @@ QString buildIslandDomain(const SignalStore& store, const HtmlChartView& view,
         col += '[';
         for (std::size_t i = 0; i < grid.size(); ++i) {
             if (i) col += ',';
-            if (src.cursor < src.rv.count
-                && src.rv.timestamps[src.cursor] == grid[i]) {
-                appendJsNumber(col, src.cursor < src.vals.size()
-                                        ? src.vals[src.cursor]
-                                        : std::nan(""));
+            if (src.cursor < src.count && src.ts[src.cursor] == grid[i]) {
+                appendJsNumber(col, src.vals[src.cursor], digits);
                 ++src.cursor;
             } else {
                 col += QLatin1String("null");
@@ -477,7 +545,7 @@ QString buildIslandDomain(const SignalStore& store, const HtmlChartView& view,
     return QString("{\"xLabel\":%1,\"origin\":\"%2\",\"axes\":[%3],"
                    "\"series\":[%4],\"t\":%5,\"cols\":[%6]}")
         .arg(jsString(xLabel),
-             QString::number(static_cast<qlonglong>(origin)),
+             QString::number(static_cast<qlonglong>(merged.origin)),
              axesJs.join(','), seriesJs.join(','), tArr, colsJs.join(','));
 }
 
@@ -492,8 +560,20 @@ bool exportStorableHtml(const QString& path, const SignalStore& store,
     return exportStorableHtml(path, store, view, errorOut);
 }
 
-bool exportStorableHtml(const QString& path, const SignalStore& store,
-                        const HtmlExportView& view, QString* errorOut) {
+namespace {
+
+// The id the page's data block carries. loadStorableHtml() keys on
+// "scope-data", so a chart-only file gets a different one and is refused on
+// re-open — the honest outcome, since its values are rounded for display.
+constexpr char kStorableIslandId[] = "scope-data";
+constexpr char kChartOnlyIslandId[] = "scope-chart";
+
+// Shared body of exportStorableHtml() / exportChartOnlyHtml(): identical
+// page, differing only in how precisely the values are written and whether
+// the block is marked as re-importable.
+bool writeIslandHtml(const QString& path, const SignalStore& store,
+                     const HtmlExportView& view, bool chartOnly, int digits,
+                     QString* errorOut) {
     initUplotResource();   // static-lib resources need an explicit pull-in
 
     QString err;
@@ -509,10 +589,10 @@ bool exportStorableHtml(const QString& path, const SignalStore& store,
     bool haveTime = false, haveFreq = false;
     const QString timeDom = buildIslandDomain(store, view.time,
                                               /*frequencyDomain=*/false,
-                                              "t [s]", &haveTime);
+                                              "t [s]", digits, &haveTime);
     const QString freqDom = buildIslandDomain(store, view.frequency,
                                               /*frequencyDomain=*/true,
-                                              "f [Hz]", &haveFreq);
+                                              "f [Hz]", digits, &haveFreq);
     if (!haveTime && !haveFreq) {
         if (errorOut) *errorOut = "The signal store is empty — nothing to export.";
         return false;
@@ -531,8 +611,10 @@ bool exportStorableHtml(const QString& path, const SignalStore& store,
     QStringList domainParts;
     if (haveTime) domainParts << QString("\"time\":%1").arg(timeDom);
     if (haveFreq) domainParts << QString("\"frequency\":%1").arg(freqDom);
-    const QString layoutPart =
-        view.layoutJson.isEmpty() ? QStringLiteral("null") : view.layoutJson;
+    // The embedded layout exists purely so a re-open restores axes / view;
+    // a chart-only page can never be re-opened, so it just costs bytes.
+    const QString layoutPart = (chartOnly || view.layoutJson.isEmpty())
+        ? QStringLiteral("null") : view.layoutJson;
 
     const QString islandJson =
         QString("{\"version\":1,\"view\":%1,\"xyChannel\":%2,\"layout\":%3,"
@@ -594,11 +676,12 @@ select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 </head>
 <body>
 <h1>ScopeAnalyser — interactive chart</h1>
-<p class="meta">Exported %DATE% · %NCH% channel(s) · re-openable in ScopeAnalyser ·
-scroll = zoom X at cursor · Shift+scroll = zoom Y · drag = box zoom ·
-double-click = fit · Δ Measure: click two points, right-click clears</p>
+<p class="meta">Exported %DATE% · %NCH% channel(s) · %KIND% ·
+scroll = zoom X and Y at the cursor · Ctrl+scroll = X only · Shift+scroll = Y only ·
+scroll over an axis = that axis · drag = pan · double-click = fit · Δ Measure: click
+two points, right-click clears</p>
 <div id="charts"></div>
-<script id="scope-data" type="application/octet-stream" data-encoding="gzip+base64">%ISLAND%</script>
+<script id="%ISLANDID%" type="application/octet-stream" data-encoding="gzip+base64">%ISLAND%</script>
 <script>%FFLATE%</script>
 <script>
 %PAGEJS%
@@ -607,7 +690,7 @@ double-click = fit · Δ Measure: click two points, right-click clears</p>
   // the embedded fflate, then adapt to the shape makeApp() consumes
   // (display-seconds X grid + aligned value columns); ScopeAnalyser
   // re-imports the same island via loadStorableHtml().
-  var b64 = document.getElementById("scope-data").textContent.trim();
+  var b64 = document.getElementById("%ISLANDID%").textContent.trim();
   var bin = atob(b64);
   var bytes = new Uint8Array(bin.length);
   for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -633,6 +716,12 @@ double-click = fit · Δ Measure: click two points, right-click clears</p>
     html.replace("%PAGEJS%", pageJs);
     html.replace("%DATE%", QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm"));
     html.replace("%NCH%", QString::number(totalChannels));
+    html.replace("%KIND%", chartOnly
+        ? QString("chart only, values rounded to %1 significant figures")
+              .arg(digits)
+        : QString("re-openable in ScopeAnalyser"));
+    html.replace("%ISLANDID%",
+                 chartOnly ? kChartOnlyIslandId : kStorableIslandId);
     html.replace("%ISLAND%", island);
 
     QFile out(path);
@@ -643,6 +732,31 @@ double-click = fit · Δ Measure: click two points, right-click clears</p>
     }
     out.write(html.toUtf8());
     return true;
+}
+
+}  // namespace
+
+bool exportStorableHtml(const QString& path, const SignalStore& store,
+                        const HtmlExportView& view, QString* errorOut) {
+    return writeIslandHtml(path, store, view, /*chartOnly=*/false,
+                           /*digits=*/0, errorOut);
+}
+
+bool exportChartOnlyHtml(const QString& path, const SignalStore& store,
+                         const HtmlExportView& view, int digits,
+                         QString* errorOut) {
+    return writeIslandHtml(path, store, view, /*chartOnly=*/true,
+                           digits > 0 ? digits : kChartOnlyDefaultDigits,
+                           errorOut);
+}
+
+bool exportChartOnlyHtml(const QString& path, const SignalStore& store,
+                         int digits, QString* errorOut) {
+    HtmlExportView view;
+    view.time      = defaultChartView(store, Signal::Domain::Time);
+    view.frequency = defaultChartView(store, Signal::Domain::Frequency);
+    view.initialView = view.time.channels.isEmpty() ? "frequency" : "time";
+    return exportChartOnlyHtml(path, store, view, digits, errorOut);
 }
 
 bool loadStorableHtml(const QString& path,

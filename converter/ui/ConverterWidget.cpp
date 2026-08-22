@@ -1442,6 +1442,8 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         // disabled unless the user picks "Custom range" anyway. The Converter
         // embeds no layout/formula metadata, so hide that group.
         converter::ui::SaveChartDialog dlg(0.0, 0.0, this, /*offerMetadata=*/false);
+        dlg.setChannels(store_);
+        dlg.setRepeatedTimestamps(converter::scanRepeatedTimestamps(store_));
         if (dlg.exec() != QDialog::Accepted) return;
 
         const auto fmtChoice = dlg.format();
@@ -1465,6 +1467,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         filters.includeTime              = dlg.includeTimeDomain();
         filters.includeFrequency         = dlg.includeFrequencyDomain();
         filters.includeDerived           = dlg.includeDerivedChannels();
+        filters.selectedChannels         = dlg.selectedChannels();
         filters.splitDomainsIntoTwoFiles = dlg.splitDomainsIntoTwoFiles();
         filters.useCustomRange           = dlg.useCustomRange();
         filters.fromSec                  = dlg.fromSec();
@@ -1472,6 +1475,7 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
 
         converter::SaveOptions opts;
         opts.csv = dlg.csvOptions();
+        opts.htmlViewOnly = dlg.htmlViewOnly();
 
         // Write off the GUI thread behind a busy dialog (shared with the
         // Analyser); saveChartFromStore reads the store via its
