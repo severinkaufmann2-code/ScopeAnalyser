@@ -181,6 +181,11 @@ if(SCOPE_BUILD_APP)
     add_subdirectory(app)
 endif()
 
+# Read-only diagnostic tools (ads_dt_probe). Tiny, and shipping them in the
+# CI artifact is what makes it possible to capture PLC ground truth from a
+# machine with no toolchain.
+add_subdirectory(tools)
+
 if(SCOPE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
