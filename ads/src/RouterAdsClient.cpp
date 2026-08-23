@@ -39,11 +39,15 @@ namespace {
 
 // AMS command ids and state flags.
 constexpr std::uint16_t kRead = 2, kReadState = 4, kAddNote = 6, kDelNote = 7,
-                        kDeviceNote = 8;
+                        kDeviceNote = 8, kReadWrite = 9;
 constexpr std::uint16_t kStateReq = 0x0004;  // request + ADS command
 constexpr std::uint16_t kTcpData = 0x0000, kTcpPortConnect = 0x1000;
 
 constexpr std::uint32_t kAdsigrpSymUploadInfo2 = 0xF00F;
+// Ask the PLC for one symbol by name. The reply is an AdsSymbolEntry header
+// followed by the name / type / comment strings — the same record the upload
+// uses, so it needs no extra wire knowledge.
+constexpr std::uint32_t kAdsigrpSymInfoByNameEx = 0xF009;
 constexpr std::uint32_t kAdsigrpSymUpload = 0xF00B;
 
 // AMS notification timestamps are Windows FILETIMEs (100 ns ticks since 1601).
@@ -474,6 +478,75 @@ std::vector<AdsSymbol> RouterAdsClient::listSymbols(QString* errorOut) {
         p += h.entryLength;
     }
     return outv;
+}
+
+std::optional<AdsSymbol> RouterAdsClient::resolveSymbol(const QString& name,
+                                                        QString* errorOut) {
+    auto fail = [&](const QString& m) -> std::optional<AdsSymbol> {
+        if (errorOut) *errorOut = m;
+        return std::nullopt;
+    };
+    if (!impl_->connected) return fail("Not connected.");
+
+    const QString trimmed = name.trimmed();
+    if (trimmed.isEmpty()) return fail("Enter a symbol name.");
+
+    // ADS ReadWrite: write the null-terminated name, read back the entry.
+    const QByteArray nameUtf8 = trimmed.toUtf8();
+    constexpr std::uint32_t kReplyCap = 2048;   // header + three strings
+    std::vector<std::uint8_t> d;
+    put32(d, kAdsigrpSymInfoByNameEx);
+    put32(d, 0);
+    put32(d, kReplyCap);
+    put32(d, static_cast<std::uint32_t>(nameUtf8.size() + 1));
+    d.insert(d.end(), nameUtf8.begin(), nameUtf8.end());
+    d.push_back(0);
+
+    std::vector<std::uint8_t> r;
+    const std::uint32_t ams = impl_->request(kReadWrite, d, r);
+    if (ams != 0 || r.size() < 8)
+        return fail(QString("Couldn't look up '%1' (ADS error %2).")
+                        .arg(trimmed).arg(ams));
+    const std::uint32_t adsErr = g32(r.data());
+    if (adsErr != 0)
+        return fail(QString("The PLC doesn't know a symbol called '%1' "
+                            "(ADS error %2). Check the spelling and the full "
+                            "path, e.g. MAIN.stAxis.fActPos.")
+                        .arg(trimmed).arg(adsErr));
+
+    const std::uint32_t n = g32(r.data() + 4);
+    if (r.size() < 8 + n || n < sizeof(SymbolEntryHeader))
+        return fail(QString("The PLC's reply for '%1' was too short.").arg(trimmed));
+
+    SymbolEntryHeader h{};
+    std::memcpy(&h, r.data() + 8, sizeof(h));
+    const char* base = reinterpret_cast<const char*>(r.data() + 8 + sizeof(h));
+    const std::size_t strBytes =
+        static_cast<std::size_t>(h.nameLen) + 1 + h.typeLen + 1 + h.commentLen + 1;
+    if (sizeof(h) + strBytes > n)
+        return fail(QString("The PLC's reply for '%1' was truncated.").arg(trimmed));
+
+    AdsSymbol s;
+    // Prefer the name the PLC echoes back (canonical casing), falling back to
+    // what the user typed.
+    s.name = h.nameLen ? QString::fromUtf8(base, h.nameLen) : trimmed;
+    s.typeName    = QString::fromUtf8(base + h.nameLen + 1, h.typeLen);
+    s.comment     = QString::fromUtf8(base + h.nameLen + 1 + h.typeLen + 1, h.commentLen);
+    s.indexGroup  = h.indexGroup;
+    s.indexOffset = h.indexOffset;
+    s.size        = h.size;
+    s.adsDataType = h.dataType;
+    const auto mapped = mapAdsDataTypeOpt(h.dataType);
+    s.unsupported = !mapped.has_value();
+    s.dataType    = mapped.value_or(DataType::Float64);
+    s.arrayLen    = 1;
+
+    if (s.unsupported)
+        return fail(QString("'%1' is a %2, which has no single numeric value. "
+                            "Name one of its members instead, e.g. %1.<member>.")
+                        .arg(s.name, s.typeName.isEmpty() ? QString("structure")
+                                                          : s.typeName));
+    return s;
 }
 
 std::vector<AdsTaskInfo> RouterAdsClient::listTasks(QString* errorOut) {

@@ -28,6 +28,8 @@ public:
     bool isConnected() const override;
 
     std::vector<scope::core::AdsSymbol> listSymbols(QString* errorOut) override;
+    std::optional<scope::core::AdsSymbol> resolveSymbol(
+        const QString& name, QString* errorOut) override;
     std::vector<scope::core::AdsTaskInfo> listTasks(QString* errorOut) override;
     std::uint32_t taskCycleForSymbol(const scope::core::AdsSymbol& symbol) override;
 

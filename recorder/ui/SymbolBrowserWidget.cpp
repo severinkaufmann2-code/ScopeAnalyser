@@ -39,6 +39,29 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
         "Connect to a source to browse its symbols.\n\n"
         "Filter, select, then “Add selected”.");
 
+    byName_ = new QLineEdit(this);
+    byName_->setPlaceholderText("Structure member by name, e.g. MAIN.stAxis.fActPos");
+    byName_->setClearButtonEnabled(true);
+    byName_->setToolTip(
+        "Structure members don't appear in the list above: the PLC's symbol\n"
+        "upload has one entry per declared variable, so a structure is a\n"
+        "single opaque entry and its members are not enumerated.\n\n"
+        "Type the full path and the PLC is asked about it directly — it\n"
+        "reports the member's own address, size and type. Nested members and\n"
+        "elements of an array of structures work too:\n"
+        "  MAIN.stAxis.fActPos\n"
+        "  MAIN.aAxes[2].fVelo");
+    byNameBtn_ = new QPushButton(
+        scope::style::icon(scope::style::Glyph::Plus), "Add by name", this);
+    byNameBtn_->setToolTip("Ask the PLC about this symbol and add it.");
+
+    auto emitByName = [this] {
+        const QString n = byName_->text().trimmed();
+        if (!n.isEmpty()) emit addByNameRequested(n);
+    };
+    connect(byNameBtn_, &QPushButton::clicked, this, emitByName);
+    connect(byName_, &QLineEdit::returnPressed, this, emitByName);
+
     connect(filter_, &QLineEdit::textChanged, proxy_,
             [this](const QString& s){ proxy_->setFilterFixedString(s); });
     connect(refreshBtn_, &QPushButton::clicked, this, &SymbolBrowserWidget::refreshRequested);
@@ -56,6 +79,11 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
     layout->addWidget(scope::style::sectionLabel("PLC symbols", this));
     layout->addLayout(top);
     layout->addWidget(tree_);
+
+    auto* byNameRow = new QHBoxLayout();
+    byNameRow->addWidget(byName_, /*stretch=*/1);
+    byNameRow->addWidget(byNameBtn_);
+    layout->addLayout(byNameRow);
 }
 
 void SymbolBrowserWidget::setSymbols(std::vector<scope::core::AdsSymbol> symbols) {

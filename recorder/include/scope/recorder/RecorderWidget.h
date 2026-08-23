@@ -42,6 +42,7 @@ private slots:
     void onDisconnectClicked();
     void onRefreshSymbols();
     void onAddSelectedSymbols();
+    void onAddSymbolByName(const QString& name);
     void onStartClicked();
     void onStopClicked();
     void onChannelOverrun(QString name, std::uint64_t total);

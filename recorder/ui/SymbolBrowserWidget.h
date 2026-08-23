@@ -24,12 +24,18 @@ public:
 signals:
     void refreshRequested();
     void addSelectedRequested();
+    // A fully qualified name typed by the user, e.g. "MAIN.stAxis.fActPos".
+    // Structure members are reachable only this way: the symbol upload lists
+    // one entry per declared variable, so members appear in no list.
+    void addByNameRequested(QString name);
 
 private:
     QLineEdit* filter_;
     QTreeView* tree_;
     QPushButton* refreshBtn_;
     QPushButton* addBtn_;
+    QLineEdit*   byName_;
+    QPushButton* byNameBtn_;
     QStandardItemModel* model_;
     QSortFilterProxyModel* proxy_;
     std::vector<scope::core::AdsSymbol> symbols_;

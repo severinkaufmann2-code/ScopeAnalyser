@@ -4,6 +4,8 @@
 
 #include <QString>
 
+#include <optional>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -101,6 +103,25 @@ public:
 
     // Upload the PLC's symbol table. Returns empty vector on error.
     virtual std::vector<AdsSymbol> listSymbols(QString* errorOut = nullptr) = 0;
+
+    // Ask the PLC about ONE symbol by its fully qualified name, e.g.
+    // "MAIN.stAxis.fActPos" or "MAIN.aAxes[2].fVelo".
+    //
+    // This is how structure members are reached. The symbol upload lists one
+    // entry per DECLARED variable, so a struct appears as a single opaque
+    // symbol and its members appear nowhere — their names and byte offsets
+    // live only in the ADS data-type table. Resolving by name sidesteps that
+    // entirely: the PLC answers with the member's own index group, offset,
+    // size and type, which is all a recording needs.
+    //
+    // Returns nullopt with *errorOut set when the name doesn't exist or the
+    // type isn't one we can record.
+    virtual std::optional<AdsSymbol> resolveSymbol(const QString& name,
+                                                   QString* errorOut = nullptr) {
+        if (errorOut)
+            *errorOut = "This connection can't look symbols up by name.";
+        return std::nullopt;
+    }
 
     // Read all tasks of the PLC (System Service, port 10000).
     virtual std::vector<AdsTaskInfo> listTasks(QString* errorOut = nullptr) = 0;

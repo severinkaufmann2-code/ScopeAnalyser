@@ -163,7 +163,99 @@ std::vector<AdsSymbol> MockAdsClient::listSymbols(QString* /*errorOut*/) {
         sym.comment     = QString("synthetic, %1 µs cycle").arg(s.taskCycleUs);
         out.push_back(std::move(sym));
     }
+    // A structure, listed but opaque — exactly how a real PLC reports one.
+    // Its members appear nowhere here; they resolve only by name.
+    AdsSymbol st;
+    st.name        = "Mock.stAxis";
+    st.typeName    = "ST_Axis";
+    st.adsDataType = 65;          // ADST_BIGTYPE
+    st.unsupported = true;
+    st.indexGroup  = kMockGroup;
+    st.indexOffset = 0x40;
+    st.size        = 0x18;
+    st.comment     = "synthetic structure — resolve members by name";
+    out.push_back(std::move(st));
     return out;
+}
+
+// PLC spelling of a scalar type, for the synthetic members below.
+const char* plcTypeNameFor(DataType t) {
+    switch (t) {
+        case DataType::Bool:    return "BOOL";
+        case DataType::Int8:    return "SINT";
+        case DataType::Uint8:   return "USINT";
+        case DataType::Int16:   return "INT";
+        case DataType::Uint16:  return "UINT";
+        case DataType::Int32:   return "DINT";
+        case DataType::Uint32:  return "UDINT";
+        case DataType::Int64:   return "LINT";
+        case DataType::Uint64:  return "ULINT";
+        case DataType::Float32: return "REAL";
+        case DataType::Float64: return "LREAL";
+    }
+    return "LREAL";
+}
+
+// Members of the synthetic structure below. They are deliberately NOT in
+// mockCatalog(), mirroring a real PLC: the symbol upload lists one entry per
+// declared variable, so a struct is opaque and its members are reachable only
+// by name.
+struct MockMember { const char* name; DataType type; std::uint32_t offset; };
+const std::vector<MockMember>& mockStructMembers() {
+    static const std::vector<MockMember> kMembers = {
+        {"Mock.stAxis.fActPos",  DataType::Float64, 0x40},
+        {"Mock.stAxis.fActVelo", DataType::Float64, 0x48},
+        {"Mock.stAxis.nState",   DataType::Int32,   0x50},
+        {"Mock.stAxis.bEnabled", DataType::Bool,    0x54},
+    };
+    return kMembers;
+}
+
+std::optional<AdsSymbol> MockAdsClient::resolveSymbol(const QString& name,
+                                                      QString* errorOut) {
+    const QString n = name.trimmed();
+    if (!isConnected()) {
+        if (errorOut) *errorOut = "Not connected.";
+        return std::nullopt;
+    }
+    // A member of the synthetic struct.
+    for (const auto& m : mockStructMembers()) {
+        if (n != QLatin1String(m.name)) continue;
+        AdsSymbol s;
+        s.name        = n;
+        s.dataType    = m.type;
+        s.typeName    = plcTypeNameFor(m.type);
+        s.indexGroup  = kMockGroup;
+        s.indexOffset = m.offset;
+        s.size        = static_cast<std::uint32_t>(sizeOf(m.type));
+        s.arrayLen    = 1;
+        s.comment     = "synthetic struct member";
+        return s;
+    }
+    // A plain catalogue symbol.
+    for (const auto& c : mockCatalog()) {
+        if (n != c.name) continue;
+        AdsSymbol s;
+        s.name        = c.name;
+        s.typeName    = c.typeName;
+        s.dataType    = c.dataType;
+        s.indexGroup  = kMockGroup;
+        s.indexOffset = c.indexOffset;
+        s.size        = static_cast<std::uint32_t>(sizeOf(c.dataType));
+        s.arrayLen    = 1;
+        return s;
+    }
+    // The struct itself: listed, but not one number.
+    if (n == QLatin1String("Mock.stAxis")) {
+        if (errorOut)
+            *errorOut = "'Mock.stAxis' is a ST_Axis, which has no single "
+                        "numeric value. Name one of its members instead, "
+                        "e.g. Mock.stAxis.fActPos.";
+        return std::nullopt;
+    }
+    if (errorOut)
+        *errorOut = QString("The PLC doesn't know a symbol called '%1'.").arg(n);
+    return std::nullopt;
 }
 
 std::vector<AdsTaskInfo> MockAdsClient::listTasks(QString*) {

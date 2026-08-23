@@ -190,3 +190,91 @@ TEST(ArrayExpansion, LeavesNonArraysAloneSilently) {
     EXPECT_TRUE(expandArraySymbol(st, 4096, &warn).empty());
     EXPECT_TRUE(warn.isEmpty()) << "a struct isn't an array; nothing to say here";
 }
+
+// ---------------------------------------------------------------------------
+// Resolving a symbol by name (ADSIGRP_SYM_INFOBYNAMEEX).
+//
+// The route to structure members. A struct is ONE entry in the symbol upload —
+// its member names and byte offsets appear only in the ADS data-type table,
+// whose wire layout the vendored Beckhoff headers don't describe. Asking the
+// PLC about "MAIN.stAxis.fActPos" sidesteps that entirely: it answers with an
+// AdsSymbolEntry, a struct that IS fully defined in those headers.
+//
+// Driven here through MockAdsClient, which models the same asymmetry: the
+// struct is listed but opaque, and its members exist only by name.
+// ---------------------------------------------------------------------------
+
+#include "scope/ads/MockAdsClient.h"
+
+TEST(ResolveByName, StructMembersResolveThoughTheyAreInNoList) {
+    scope::ads::MockAdsClient client;
+    ASSERT_TRUE(client.connect({}, nullptr));
+
+    // The member is genuinely absent from the listing…
+    const auto listed = client.listSymbols(nullptr);
+    for (const auto& s : listed)
+        EXPECT_NE(s.name.toStdString(), "Mock.stAxis.fActPos")
+            << "the upload must not enumerate members — that's the whole problem";
+
+    // …yet resolves by name, with its own address and type.
+    QString err;
+    const auto m = client.resolveSymbol("Mock.stAxis.fActPos", &err);
+    ASSERT_TRUE(m.has_value()) << err.toStdString();
+    EXPECT_EQ(m->name.toStdString(), "Mock.stAxis.fActPos");
+    EXPECT_EQ(m->typeName.toStdString(), "LREAL");
+    EXPECT_EQ(static_cast<int>(m->dataType), static_cast<int>(DataType::Float64));
+    EXPECT_EQ(m->size, 8u);
+    EXPECT_FALSE(m->unsupported) << "a member IS recordable";
+}
+
+TEST(ResolveByName, TheStructItselfIsRefusedWithAUsefulMessage) {
+    scope::ads::MockAdsClient client;
+    ASSERT_TRUE(client.connect({}, nullptr));
+
+    // It IS listed — the user can see it — but it is not one number.
+    const auto listed = client.listSymbols(nullptr);
+    bool sawStruct = false;
+    for (const auto& s : listed)
+        if (s.name == "Mock.stAxis") { sawStruct = true; EXPECT_TRUE(s.unsupported); }
+    EXPECT_TRUE(sawStruct) << "an opaque struct should still be visible";
+
+    QString err;
+    EXPECT_FALSE(client.resolveSymbol("Mock.stAxis", &err).has_value());
+    EXPECT_TRUE(err.contains("member")) << err.toStdString();
+    EXPECT_TRUE(err.contains("Mock.stAxis.fActPos"))
+        << "the message should show the way forward, got: " << err.toStdString();
+}
+
+TEST(ResolveByName, DifferentMemberTypesAndOffsetsComeBackDistinct) {
+    scope::ads::MockAdsClient client;
+    ASSERT_TRUE(client.connect({}, nullptr));
+
+    const auto pos   = client.resolveSymbol("Mock.stAxis.fActPos", nullptr);
+    const auto state = client.resolveSymbol("Mock.stAxis.nState", nullptr);
+    const auto en    = client.resolveSymbol("Mock.stAxis.bEnabled", nullptr);
+    ASSERT_TRUE(pos && state && en);
+
+    EXPECT_EQ(static_cast<int>(state->dataType), static_cast<int>(DataType::Int32));
+    EXPECT_EQ(state->size, 4u);
+    EXPECT_EQ(static_cast<int>(en->dataType), static_cast<int>(DataType::Bool));
+    EXPECT_EQ(en->size, 1u);
+    // Each member has its own address — that is what makes it recordable.
+    EXPECT_NE(pos->indexOffset, state->indexOffset);
+    EXPECT_NE(state->indexOffset, en->indexOffset);
+}
+
+TEST(ResolveByName, UnknownNamesFailWithAMessageRatherThanASilentEmpty) {
+    scope::ads::MockAdsClient client;
+    ASSERT_TRUE(client.connect({}, nullptr));
+    QString err;
+    EXPECT_FALSE(client.resolveSymbol("MAIN.nope.nope", &err).has_value());
+    EXPECT_FALSE(err.isEmpty());
+    EXPECT_TRUE(err.contains("MAIN.nope.nope")) << err.toStdString();
+}
+
+TEST(ResolveByName, RefusesWhenNotConnected) {
+    scope::ads::MockAdsClient client;
+    QString err;
+    EXPECT_FALSE(client.resolveSymbol("Mock.stAxis.fActPos", &err).has_value());
+    EXPECT_FALSE(err.isEmpty());
+}

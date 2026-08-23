@@ -231,6 +231,8 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
     connect(stopBtn_,       &QPushButton::clicked, this, &RecorderWidget::onStopClicked);
     connect(symbols_, &ui::SymbolBrowserWidget::refreshRequested,    this, &RecorderWidget::onRefreshSymbols);
     connect(symbols_, &ui::SymbolBrowserWidget::addSelectedRequested, this, &RecorderWidget::onAddSelectedSymbols);
+    connect(symbols_, &ui::SymbolBrowserWidget::addByNameRequested,
+            this, &RecorderWidget::onAddSymbolByName);
 
     // One Send button; the "only selected" checkbox decides all vs checked.
     connect(sendAllBtn_, &QPushButton::clicked, this, [this]{
@@ -364,6 +366,26 @@ void RecorderWidget::onAddSelectedSymbols() {
                     "appear as their own symbols once the PLC publishes them.")
                 .arg(rejected.join("\n")));
     }
+}
+
+void RecorderWidget::onAddSymbolByName(const QString& name) {
+    if (!client_ || !client_->isConnected()) {
+        QMessageBox::information(this, "Not connected",
+            "Connect to a source before looking a symbol up.");
+        return;
+    }
+    // Ask the PLC directly. This is the only route to a structure member: the
+    // symbol upload has one entry per declared variable, so members are in no
+    // list we could search.
+    QString err;
+    const auto sym = client_->resolveSymbol(name, &err);
+    if (!sym) {
+        QMessageBox::information(this, "Symbol not added",
+            err.isEmpty() ? QString("Couldn't resolve '%1'.").arg(name) : err);
+        return;
+    }
+    const auto cycleUs = client_->taskCycleForSymbol(*sym);
+    channels_->addChannelFromSymbol(*sym, cycleUs);
 }
 
 void RecorderWidget::onStartClicked() {
