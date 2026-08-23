@@ -154,27 +154,38 @@ jobs:
               & $windeployqt --release --no-translations --no-compiler-runtime $_.FullName
             }
 
-      # Drop the linker's leftovers and the test runner before packaging. .ilk is incremental-link
-      # scratch, meaningless outside the build tree that produced it; .pdb are
-      # debug symbols only useful alongside a matching local build. On v0.5.0
-      # they were 297 MB and 361 MB of a 764 MB artifact — 86% of it — for
-      # something nobody downloading a release can use.
+      # Reduce build/bin to what a user actually downloads, before packaging.
+      #
+      # Two things come out. The linker's leftovers: .ilk is incremental-link
+      # scratch, meaningless outside the build tree that produced it, and .pdb
+      # are debug symbols only useful alongside a matching local build — on
+      # v0.5.0 those were 297 MB and 361 MB of a 764 MB artifact, 86% of it.
+      # And every executable except the application itself: the test runner has
+      # already done its job in the Test step, the standalone tools are the
+      # same widgets the app hosts as tabs, and ads_dt_probe is a PLC
+      # diagnostic rather than something to hand a user.
+      #
+      # Everything is still built and tested here — this only decides what gets
+      # published. Add a name to $ship below to include another executable.
       #
       # If a released build ever needs symbolising, re-run this workflow and
-      # take the .pdb from build/bin before this step, or publish them as a
-      # separate artifact; don't put them back in the user-facing one.
-      - name: Strip build leftovers
+      # take the .pdb from build/bin before this step, or publish them as their
+      # own artifact; don't put them back in the user-facing one.
+      - name: Trim to the shipped application
         shell: pwsh
         run: |
           $before = (Get-ChildItem build\bin -Recurse -File |
                      Measure-Object Length -Sum).Sum
           Get-ChildItem build\bin -Recurse -Include *.ilk,*.pdb |
             Remove-Item -Force
-          # The test runner has already done its job in the Test step above.
-          # Same *test* rule the windeployqt step uses, so the two agree about
-          # what is and isn't a shipped executable.
-          Get-ChildItem build\bin -File |
-            Where-Object { $_.Name -like "*test*" } |
+          # Ship the application only. The test runner has already done its
+          # job in the Test step; the three standalone executables are the same
+          # widgets the app hosts as tabs; ads_dt_probe is a PLC diagnostic.
+          # All four are still built and tested here — they are just not put in
+          # front of someone downloading the app. Add a name to ship it.
+          $ship = @("ScopeAnalyser.exe")
+          Get-ChildItem build\bin -File -Filter *.exe |
+            Where-Object { $ship -notcontains $_.Name } |
             Remove-Item -Force
           $after = (Get-ChildItem build\bin -Recurse -File |
                     Measure-Object Length -Sum).Sum
