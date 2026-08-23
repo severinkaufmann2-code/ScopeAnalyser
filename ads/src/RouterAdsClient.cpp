@@ -1,6 +1,8 @@
 #include <optional>
 #include "scope/ads/RouterAdsClient.h"
 
+#include "scope/ads/AdsTypeNames.h"
+
 #include <spdlog/spdlog.h>
 
 #ifdef _WIN32
@@ -460,7 +462,15 @@ std::vector<AdsSymbol> RouterAdsClient::listSymbols(QString* errorOut) {
         // arrayLen used to be size/sizeOf(dataType), which for a struct was
         // structBytes/8 — a meaningless number that nothing read anyway.
         s.arrayLen = 1;
+
+        // An array's declaration ("ARRAY [0..99] OF LREAL") is right here in
+        // the upload, so its elements can be listed without the ADS data-type
+        // table: same indexGroup, indexOffset + i*elemSize, scalar element
+        // type. expandArraySymbol refuses rather than guesses if the
+        // declaration and the declared size disagree.
+        auto elements = scope::ads::expandArraySymbol(s);
         outv.push_back(std::move(s));
+        for (auto& e : elements) outv.push_back(std::move(e));
         p += h.entryLength;
     }
     return outv;
