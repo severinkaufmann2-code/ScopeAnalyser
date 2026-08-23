@@ -154,6 +154,26 @@ jobs:
               & $windeployqt --release --no-translations --no-compiler-runtime $_.FullName
             }
 
+      # Drop the linker's leftovers before packaging. .ilk is incremental-link
+      # scratch, meaningless outside the build tree that produced it; .pdb are
+      # debug symbols only useful alongside a matching local build. On v0.5.0
+      # they were 297 MB and 361 MB of a 764 MB artifact — 86% of it — for
+      # something nobody downloading a release can use.
+      #
+      # If a released build ever needs symbolising, re-run this workflow and
+      # take the .pdb from build/bin before this step, or publish them as a
+      # separate artifact; don't put them back in the user-facing one.
+      - name: Strip build leftovers
+        shell: pwsh
+        run: |
+          $before = (Get-ChildItem build\bin -Recurse -File |
+                     Measure-Object Length -Sum).Sum
+          Get-ChildItem build\bin -Recurse -Include *.ilk,*.pdb |
+            Remove-Item -Force
+          $after = (Get-ChildItem build\bin -Recurse -File |
+                    Measure-Object Length -Sum).Sum
+          Write-Host ("payload {0:N0} MB -> {1:N0} MB" -f ($before/1MB), ($after/1MB))
+
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
