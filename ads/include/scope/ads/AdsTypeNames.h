@@ -5,6 +5,7 @@
 
 #include <QString>
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -14,6 +15,11 @@ namespace scope::ads {
 // Case-insensitive. Returns nullopt for aggregates, strings and anything we
 // don't know — never a guess.
 std::optional<scope::core::DataType> dataTypeFromPlcTypeName(const QString& typeName);
+
+// Map a raw TwinCAT ADST_* code to a recordable scalar. 65 (ADST_BIGTYPE) —
+// every struct, function block and most arrays — and the string types return
+// nullopt: they are not one number.
+std::optional<scope::core::DataType> mapAdsDataTypeOptShared(std::uint32_t adst);
 
 // One dimension of an IEC array declaration.
 struct ArrayDim {

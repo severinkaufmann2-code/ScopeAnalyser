@@ -1,5 +1,6 @@
 set(ADS_HEADERS
     include/scope/ads/AdsTypeNames.h
+    include/scope/ads/AdsTypeTable.h
     include/scope/ads/BeckhoffOpenAdsClient.h
     include/scope/ads/RouterAdsClient.h
     include/scope/ads/MockAdsClient.h
@@ -7,6 +8,7 @@ set(ADS_HEADERS
 
 set(ADS_SOURCES
     src/AdsTypeNames.cpp
+    src/AdsTypeTable.cpp
     src/BeckhoffOpenAdsClient.cpp
     src/RouterAdsClient.cpp
     src/MockAdsClient.cpp

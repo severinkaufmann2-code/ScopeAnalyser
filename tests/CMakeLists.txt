@@ -14,6 +14,7 @@ add_executable(scope_tests
     test_scope_plot.cpp
     test_analyser_layout.cpp
     test_ads_array_expansion.cpp
+    test_ads_type_table.cpp
     test_ads_symbol_types.cpp
     test_app_icon.cpp
     test_save_chart_dialog.cpp

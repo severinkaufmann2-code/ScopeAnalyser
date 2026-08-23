@@ -2,6 +2,7 @@
 #include "scope/ads/RouterAdsClient.h"
 
 #include "scope/ads/AdsTypeNames.h"
+#include "scope/ads/AdsTypeTable.h"
 
 #include <spdlog/spdlog.h>
 
@@ -48,6 +49,10 @@ constexpr std::uint32_t kAdsigrpSymUploadInfo2 = 0xF00F;
 // followed by the name / type / comment strings — the same record the upload
 // uses, so it needs no extra wire knowledge.
 constexpr std::uint32_t kAdsigrpSymInfoByNameEx = 0xF009;
+// The data-type table: member names, offsets and array bounds. Structures are
+// one opaque entry in the symbol upload, so this is the only way to enumerate
+// what is inside them.
+constexpr std::uint32_t kAdsigrpSymDtUpload = 0xF00E;
 constexpr std::uint32_t kAdsigrpSymUpload = 0xF00B;
 
 // AMS notification timestamps are Windows FILETIMEs (100 ns ticks since 1601).
@@ -422,11 +427,28 @@ std::vector<AdsSymbol> RouterAdsClient::listSymbols(QString* errorOut) {
     if (!impl_->connected) { if (errorOut) *errorOut = "Not connected"; return {}; }
     // SYM_UPLOADINFO2 returns a 24-byte struct; ask for all of it (some servers
     // reject a short read). We only need the first two u32s.
-    struct { std::uint32_t nSymbols, nSymSize; } info{};
+    struct { std::uint32_t nSymbols, nSymSize, nDatatypes, nDatatypeSize; } info{};
     std::byte infoBuf[24];
     if (!read(kAdsigrpSymUploadInfo2, 0, std::span<std::byte>(infoBuf, 24), errorOut)) return {};
-    std::memcpy(&info, infoBuf, 8);
+    std::memcpy(&info, infoBuf, 16);   // the datatype sizes were being discarded
     if (info.nSymSize == 0) return {};
+
+    // The data-type table, so structures can be expanded into their members.
+    // Best-effort: a target that won't serve it still gets its scalar symbols,
+    // and plain arrays of scalars are still expanded from their type name.
+    scope::ads::AdsTypeTable typeTable;
+    if (info.nDatatypeSize > 0) {
+        std::vector<std::byte> dt(info.nDatatypeSize);
+        QString dtErr;
+        if (read(kAdsigrpSymDtUpload, 0, std::span<std::byte>(dt), &dtErr)) {
+            typeTable = scope::ads::parseAdsTypeTable(dt);
+            spdlog::info("ADS data-type table: {} of {} types parsed",
+                         typeTable.size(), info.nDatatypes);
+        } else {
+            spdlog::warn("ADS data-type table unavailable ({}); structure "
+                         "members won't be listed", dtErr.toStdString());
+        }
+    }
 
     std::vector<std::uint8_t> blob(info.nSymSize);
     {
@@ -467,14 +489,17 @@ std::vector<AdsSymbol> RouterAdsClient::listSymbols(QString* errorOut) {
         // structBytes/8 — a meaningless number that nothing read anyway.
         s.arrayLen = 1;
 
-        // An array's declaration ("ARRAY [0..99] OF LREAL") is right here in
-        // the upload, so its elements can be listed without the ADS data-type
-        // table: same indexGroup, indexOffset + i*elemSize, scalar element
-        // type. expandArraySymbol refuses rather than guesses if the
-        // declaration and the declared size disagree.
-        auto elements = scope::ads::expandArraySymbol(s);
+        // Expand aggregates into recordable leaves. The type table (read
+        // above) resolves structures and arrays of structures; where it has
+        // nothing to say, the array declaration carried in the type NAME
+        // still covers a plain array of scalars.
+        std::vector<AdsSymbol> leaves;
+        if (s.unsupported && !typeTable.isEmpty())
+            leaves = scope::ads::expandWithTypeTable(s, typeTable);
+        if (leaves.empty())
+            leaves = scope::ads::expandArraySymbol(s);
         outv.push_back(std::move(s));
-        for (auto& e : elements) outv.push_back(std::move(e));
+        for (auto& e : leaves) outv.push_back(std::move(e));
         p += h.entryLength;
     }
     return outv;

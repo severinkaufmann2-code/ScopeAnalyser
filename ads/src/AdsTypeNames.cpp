@@ -8,6 +8,23 @@ namespace scope::ads {
 using scope::core::AdsSymbol;
 using scope::core::DataType;
 
+std::optional<DataType> mapAdsDataTypeOptShared(std::uint32_t adst) {
+    switch (adst) {
+        case 33: return DataType::Bool;
+        case 16: return DataType::Int8;
+        case 17: return DataType::Uint8;
+        case 2:  return DataType::Int16;
+        case 18: return DataType::Uint16;
+        case 3:  return DataType::Int32;
+        case 19: return DataType::Uint32;
+        case 20: return DataType::Int64;
+        case 21: return DataType::Uint64;
+        case 4:  return DataType::Float32;
+        case 5:  return DataType::Float64;
+        default: return std::nullopt;   // BIGTYPE (65), STRING (30/31), VOID …
+    }
+}
+
 std::optional<DataType> dataTypeFromPlcTypeName(const QString& typeName) {
     const QString t = typeName.trimmed().toUpper();
     // IEC 61131-3 elementary types, plus the TwinCAT bit-string aliases.
