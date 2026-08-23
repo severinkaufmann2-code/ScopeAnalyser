@@ -79,6 +79,18 @@ Please make a deep analysis and give me your exact plan on how you want to do th
 some how data export in to html does not work sometimes. As i can see it is when there are e.g. multible value for the same time stamp,...
 remove html export button. html should be only avaible torgh the "save" buton like all the other formats
 Let me choose which channels to save when saving (exporting).
+In the html file zooming and scrolling does not behave the same way as in the analyser. Please make it so that in the html it does behave the same way as it does in the analyser!
+
+can you fix the following bugs:
+
+
+1) add the analyser Symbol on the exe, task bar, when programm started top left corner next to the app name,...
+
+2) i cant rename channels if there are not a math channel in the analyser
+
+3) in the analyser: in a fomula i cant use a name like "test_1" the _ caracter creates a bug... Please let me use spezial caracter in a name of a channel
+
+4) the scope is not able to see arrays or structures in ads... please fix it.
 
 done
 ________________________________________________________
@@ -89,22 +101,6 @@ new
 
 
 
-
-
-add the analyser Symbol on the exe, task bar, when programm started top left corner next to the app name,...
-
-In the html file zooming and scrolling does not behave the same way as in the analyser. Please make it so that in the html it does behave the same way as it does in the analyser!
-
-
-
-
-i cant rename channels if there are not a math channel in the analyser
-
-
-in the analyser: in a fomula i cant use a name like "test_1" the _ caracter creates a bug... Please let me use spezial caracter in a name of a channel
-
-
-the scope is not able to see arrays or structures in ads... please fix it.
 
 
 

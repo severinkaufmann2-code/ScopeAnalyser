@@ -17,6 +17,8 @@
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QComboBox>
 #include <QLabel>
 #include <QListWidget>
@@ -573,4 +575,85 @@ TEST(SaveChartChannelPicker, UnknownNamesMatchNothingAndAreReported) {
                                  FileFormat::Json, filters, {}, &msgs, &err),
               ChartSaveResult::NothingMatchedFilters);
     std::error_code ec; std::filesystem::remove(path, ec);
+}
+
+// ---------------------------------------------------------------------------
+// The dialog must fit on the screen it opens on.
+//
+// Laid out directly, its MINIMUM height was ~970 px empty and ~1110 px once a
+// channel list was populated. Qt refuses to shrink a window below its layout
+// minimum, so on a 1080p screen it could not fit: OK and Cancel sat below the
+// bottom edge with no way to reach them, and the dialog could not be resized
+// smaller to bring them into view. The option groups scroll now; the buttons
+// don't.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+QDialogButtonBox* buttonBoxOf(QWidget* dlg) {
+    return dlg->findChild<QDialogButtonBox*>();
+}
+
+}  // namespace
+
+TEST(SaveChartDialogSizing, CanShrinkFarBelowItsContentHeight) {
+    ensureApp();
+    scope::converter::ui::SaveChartDialog dlg(0.0, 1.0);
+    dlg.setChannels(threeChannelStore());
+    dlg.show();
+
+    // Roomy enough for a 768-tall laptop screen with chrome, which the old
+    // ~1110 px minimum ruled out entirely.
+    EXPECT_LT(dlg.minimumSizeHint().height(), 400)
+        << "the dialog must be shrinkable, or it can't fit a small screen";
+    EXPECT_LT(dlg.minimumSizeHint().width(), 700);
+}
+
+TEST(SaveChartDialogSizing, ButtonsStayInsideWhenTheDialogIsSmall) {
+    ensureApp();
+    scope::converter::ui::SaveChartDialog dlg(0.0, 1.0);
+    dlg.setChannels(threeChannelStore());
+    dlg.show();
+    dlg.resize(560, 420);                 // far smaller than the content
+    qApp->processEvents();
+
+    auto* box = buttonBoxOf(&dlg);
+    ASSERT_NE(box, nullptr);
+    for (auto which : {QDialogButtonBox::Ok, QDialogButtonBox::Cancel}) {
+        auto* b = box->button(which);
+        ASSERT_NE(b, nullptr);
+        const QPoint bottomRight = b->mapTo(&dlg, QPoint(b->width(), b->height()));
+        EXPECT_TRUE(b->isVisible());
+        EXPECT_LE(bottomRight.y(), dlg.height())
+            << "a button fell off the bottom — exactly the bug this guards";
+        EXPECT_LE(bottomRight.x(), dlg.width());
+    }
+}
+
+TEST(SaveChartDialogSizing, OpensNoTallerThanTheScreenItIsOn) {
+    ensureApp();
+    scope::converter::ui::SaveChartDialog dlg(0.0, 1.0);
+    dlg.setChannels(threeChannelStore());
+    dlg.show();
+    const QRect avail = dlg.screen()
+        ? dlg.screen()->availableGeometry()
+        : QGuiApplication::primaryScreen()->availableGeometry();
+    EXPECT_LE(dlg.height(), avail.height());
+    EXPECT_LE(dlg.width(), avail.width());
+}
+
+// The channel list keeps its own fixed height inside the scroll area; that
+// must not push the dialog's minimum back up.
+TEST(SaveChartDialogSizing, ALongChannelListDoesNotRaiseTheMinimum) {
+    ensureApp();
+    SignalStore many;
+    for (int i = 0; i < 60; ++i)
+        many.add(makeSig(QString("MAIN.axis.member_%1").arg(i),
+                         {0, 1'000'000LL}, {1, 2}));
+
+    scope::converter::ui::SaveChartDialog dlg(0.0, 1.0);
+    dlg.setChannels(many);
+    dlg.show();
+    EXPECT_LT(dlg.minimumSizeHint().height(), 400)
+        << "60 channels must not make the dialog unshrinkable again";
 }

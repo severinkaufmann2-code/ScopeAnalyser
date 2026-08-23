@@ -17,6 +17,9 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QScrollArea>
+#include <QScreen>
+#include <QGuiApplication>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -50,7 +53,7 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
                                  QWidget* parent, bool offerMetadata)
     : QDialog(parent) {
     setWindowTitle("Save chart");
-    resize(420, 480);
+    setSizeGripEnabled(true);
 
     // ---- Format ------------------------------------------------------
     h5Radio_  = new QRadioButton("HDF5 (.h5) — lossless recording format", this);
@@ -312,13 +315,32 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
+    // The option groups scroll; OK / Cancel do not.
+    //
+    // Laid out directly, this dialog's MINIMUM height was ~970 px empty and
+    // ~1110 px with a channel list — and Qt refuses to shrink a window below
+    // its layout minimum, so on a 1080p screen it could not fit and the
+    // buttons fell off the bottom with no way to reach them. Putting the
+    // groups in a scroll area makes the minimum small, so the dialog resizes
+    // freely and the buttons stay put whatever the screen.
+    auto* content = new QWidget(this);
+    auto* contentLayout = new QVBoxLayout(content);
+    contentLayout->setContentsMargins(0, 0, 0, 0);
+    contentLayout->addWidget(formatBox);
+    contentLayout->addWidget(rangeBox);
+    contentLayout->addWidget(filtersBox);
+    contentLayout->addWidget(metadataGroup_);
+    contentLayout->addWidget(csvGroup_);
+    contentLayout->addStretch();
+
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidget(content);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
     auto* root = new QVBoxLayout(this);
-    root->addWidget(formatBox);
-    root->addWidget(rangeBox);
-    root->addWidget(filtersBox);
-    root->addWidget(metadataGroup_);
-    root->addWidget(csvGroup_);
-    root->addStretch();
+    root->addWidget(scroll, /*stretch=*/1);
     root->addWidget(buttons);
 
     connect(h5Radio_,   &QRadioButton::toggled, this, [this](bool){ onFormatChanged(); });
@@ -348,6 +370,15 @@ SaveChartDialog::SaveChartDialog(double currentXMinSec, double currentXMaxSec,
     onRangeModeChanged();
     onMetadataChanged();
     onCsvTimeModeChanged();
+
+    // Open showing as much as fits: the content's natural size, capped to the
+    // available screen so the dialog is never taller than the desktop it opens
+    // on. Anything beyond that scrolls.
+    const QRect avail = screen() ? screen()->availableGeometry()
+                                 : QGuiApplication::primaryScreen()->availableGeometry();
+    const QSize want = content->sizeHint() + QSize(28, buttons->sizeHint().height() + 28);
+    resize(std::min(want.width(),  static_cast<int>(avail.width()  * 0.9)),
+           std::min(want.height(), static_cast<int>(avail.height() * 0.9)));
 }
 
 void SaveChartDialog::onMetadataChanged() {
