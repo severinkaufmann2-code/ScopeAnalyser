@@ -2,6 +2,7 @@
 
 #include "scope/core/IAdsClient.h"
 
+#include <QStringList>
 #include <QWidget>
 #include <QStandardItemModel>
 #include <QSortFilterProxyModel>
@@ -20,6 +21,12 @@ public:
 
     void setSymbols(std::vector<scope::core::AdsSymbol> symbols);
     std::vector<scope::core::AdsSymbol> selectedSymbols() const;
+
+    // Names of the selected rows that stand for a whole group — a structure,
+    // an array, or a grouping node like "MAIN". Non-empty means the user
+    // clicked one row and is about to get everything under it, which is worth
+    // confirming before it lands in the channel table.
+    QStringList selectedGroupNames() const;
 
 signals:
     void refreshRequested();

@@ -346,6 +346,24 @@ void RecorderWidget::onRefreshSymbols() {
 void RecorderWidget::onAddSelectedSymbols() {
     if (!client_ || !client_->isConnected()) return;
     auto selected = symbols_->selectedSymbols();
+
+    // Selecting a structure or array takes everything inside it, which can be
+    // hundreds of channels from one click (an AXIS_REF is ~390). Confirm first
+    // — the user may well have wanted only a few of them.
+    const QStringList groups = symbols_->selectedGroupNames();
+    if (!groups.isEmpty() && selected.size() > 1) {
+        const QString what = groups.size() == 1
+            ? QString("“%1”").arg(groups.first())
+            : QString("%1 selected groups").arg(groups.size());
+        const auto answer = QMessageBox::question(this, "Add all of these?",
+            QString("%1 contains %2 recordable channels.\n\nAdd all of them?\n\n"
+                    "To take only some, expand it in the list and select the "
+                    "ones you want.")
+                .arg(what).arg(selected.size()),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Yes) return;
+    }
+
     QStringList rejected;
     for (const auto& sym : selected) {
         // A struct, function block, array or STRING has no single numeric

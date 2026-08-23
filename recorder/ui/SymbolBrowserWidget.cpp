@@ -11,7 +11,9 @@
 #include <QHash>
 #include <QSet>
 
+#include <algorithm>
 #include <functional>
+#include <optional>
 
 namespace scope::recorder::ui {
 
@@ -127,6 +129,53 @@ QStringList symbolPath(const QString& name) {
     return out;
 }
 
+// The index tuple of an "[3]" / "[1,2]" node, or nullopt if it isn't one.
+std::optional<QList<long long>> arrayIndexOf(const QString& label) {
+    if (label.size() < 3 || !label.startsWith('[') || !label.endsWith(']'))
+        return std::nullopt;
+    QList<long long> out;
+    for (const QString& part : label.mid(1, label.size() - 2).split(',')) {
+        bool ok = false;
+        const long long v = part.trimmed().toLongLong(&ok);
+        if (!ok) return std::nullopt;
+        out << v;
+    }
+    return out.isEmpty() ? std::nullopt : std::optional<QList<long long>>(out);
+}
+
+// Put array elements in index order: [0] [1] … [9] [10], not the [0] [1] [10]
+// [2] a text sort gives. The PLC lists its symbols alphabetically, so element
+// symbols it publishes itself arrive in exactly that wrong order.
+//
+// Only applied where EVERY child is an index — struct members keep the
+// declaration order the type table gave them, which mirrors the PLC's memory
+// layout and is more useful than alphabetical.
+void sortArrayChildren(QStandardItem* node) {
+    for (int r = 0; r < node->rowCount(); ++r)
+        if (auto* c = node->child(r, 0)) sortArrayChildren(c);
+
+    if (node->rowCount() < 2) return;
+    QList<QList<long long>> keys;
+    for (int r = 0; r < node->rowCount(); ++r) {
+        auto* c = node->child(r, 0);
+        const auto k = c ? arrayIndexOf(c->text()) : std::nullopt;
+        if (!k) return;                       // not a pure array node
+        keys << *k;
+    }
+
+    QList<int> order;
+    for (int r = 0; r < node->rowCount(); ++r) order << r;
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        return std::lexicographical_compare(keys[a].begin(), keys[a].end(),
+                                            keys[b].begin(), keys[b].end());
+    });
+
+    QList<QList<QStandardItem*>> rows;
+    rows.reserve(node->rowCount());
+    while (node->rowCount() > 0) rows << node->takeRow(0);
+    for (int i : order) node->appendRow(rows[i]);
+}
+
 }  // namespace
 
 void SymbolBrowserWidget::setSymbols(std::vector<scope::core::AdsSymbol> symbols) {
@@ -213,6 +262,7 @@ void SymbolBrowserWidget::setSymbols(std::vector<scope::core::AdsSymbol> symbols
             }
         }
     }
+    sortArrayChildren(model_->invisibleRootItem());
     tree_->collapseAll();
 }
 
@@ -236,6 +286,24 @@ std::vector<scope::core::AdsSymbol> SymbolBrowserWidget::selectedSymbols() const
 
     for (const auto& idx : tree_->selectionModel()->selectedRows(0))
         collect(proxy_->mapToSource(idx));
+    return out;
+}
+
+QStringList SymbolBrowserWidget::selectedGroupNames() const {
+    QStringList out;
+    for (const auto& idx : tree_->selectionModel()->selectedRows(0)) {
+        const auto src = proxy_->mapToSource(idx);
+        if (model_->rowCount(src) == 0) continue;      // a leaf stands for itself
+        // Full dotted path, so the prompt names what the user actually clicked.
+        QStringList parts;
+        for (QModelIndex i = src; i.isValid(); i = i.parent()) {
+            const QString t = i.data().toString();
+            parts.prepend(t.startsWith('[') ? t : (parts.isEmpty() ? t : t + "."));
+        }
+        QString full;
+        for (const auto& p : parts) full += p;
+        out << (full.isEmpty() ? src.data().toString() : full);
+    }
     return out;
 }
 

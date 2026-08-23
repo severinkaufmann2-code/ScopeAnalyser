@@ -178,3 +178,93 @@ TEST(SymbolBrowserTree, AStructureListedBeforeItsMembersIsNotDuplicated) {
     EXPECT_EQ(tv->model()->index(axis.row(), 1, main).data().toString().toStdString(),
               "AXIS_REF");
 }
+
+// The PLC lists its symbols alphabetically, so element symbols it publishes
+// itself arrive as [0] [1] [10] [11] [2] … Reading an array in that order is
+// useless, so the tree orders index nodes numerically whatever came in.
+TEST(SymbolBrowserTree, ArrayElementsReadInIndexOrderNotTextOrder) {
+    ensureGuiApp();
+    std::vector<AdsSymbol> syms{aggregate("MAIN.aData", "ARRAY [0..11] OF LREAL")};
+    // Deliberately alphabetical, the order a PLC would hand them over in.
+    for (const char* i : {"0","1","10","11","2","3","4","5","6","7","8","9"})
+        syms.push_back(leaf(qPrintable(QString("MAIN.aData[%1]").arg(i)),
+                            "LREAL", 0));
+
+    scope::recorder::ui::SymbolBrowserWidget w;
+    w.setSymbols(syms);
+    auto* tv = treeOf(w);
+    const auto arr = find(tv, {"MAIN", "aData"});
+    ASSERT_TRUE(arr.isValid());
+    ASSERT_EQ(tv->model()->rowCount(arr), 12);
+
+    QStringList got;
+    for (int r = 0; r < tv->model()->rowCount(arr); ++r)
+        got << tv->model()->index(r, 0, arr).data().toString();
+    EXPECT_EQ(got, QStringList({"[0]","[1]","[2]","[3]","[4]","[5]",
+                               "[6]","[7]","[8]","[9]","[10]","[11]"}));
+}
+
+TEST(SymbolBrowserTree, MultiDimensionalIndicesOrderComponentWise) {
+    ensureGuiApp();
+    std::vector<AdsSymbol> syms{aggregate("MAIN.m", "ARRAY [0..1, 0..10] OF INT")};
+    for (const char* i : {"1,10", "0,2", "1,2", "0,10"})
+        syms.push_back(leaf(qPrintable(QString("MAIN.m[%1]").arg(i)), "INT", 0));
+
+    scope::recorder::ui::SymbolBrowserWidget w;
+    w.setSymbols(syms);
+    auto* tv = treeOf(w);
+    const auto arr = find(tv, {"MAIN", "m"});
+    ASSERT_TRUE(arr.isValid());
+    QStringList got;
+    for (int r = 0; r < tv->model()->rowCount(arr); ++r)
+        got << tv->model()->index(r, 0, arr).data().toString();
+    EXPECT_EQ(got, QStringList({"[0,2]", "[0,10]", "[1,2]", "[1,10]"}));
+}
+
+// Struct members must NOT be reordered — the type table gives them in
+// declaration order, which mirrors the PLC's memory layout.
+TEST(SymbolBrowserTree, StructureMembersKeepDeclarationOrder) {
+    ensureGuiApp();
+    scope::recorder::ui::SymbolBrowserWidget w;
+    w.setSymbols({
+        aggregate("MAIN.st", "ST_Thing"),
+        leaf("MAIN.st.zebra", "LREAL", 0x00),
+        leaf("MAIN.st.apple", "LREAL", 0x08),
+        leaf("MAIN.st.mango", "LREAL", 0x10),
+    });
+    auto* tv = treeOf(w);
+    const auto st = find(tv, {"MAIN", "st"});
+    ASSERT_TRUE(st.isValid());
+    QStringList got;
+    for (int r = 0; r < tv->model()->rowCount(st); ++r)
+        got << tv->model()->index(r, 0, st).data().toString();
+    EXPECT_EQ(got, QStringList({"zebra", "apple", "mango"}))
+        << "declaration order, not alphabetical";
+}
+
+// What the Recorder consults before showing the "add all of these?" prompt.
+TEST(SymbolBrowserTree, SelectingAGroupIsReportedSoItCanBeConfirmed) {
+    ensureGuiApp();
+    scope::recorder::ui::SymbolBrowserWidget w;
+    w.setSymbols({
+        aggregate("MAIN.axis", "AXIS_REF"),
+        leaf("MAIN.axis.PlcToNc.Override", "UDINT", 0x100),
+        leaf("MAIN.axis.PlcToNc.ExtSetPos", "LREAL", 0x104),
+        leaf("MAIN.speed", "LREAL", 0x300),
+    });
+    auto* tv = treeOf(w);
+
+    const auto axis = find(tv, {"MAIN", "axis"});
+    tv->selectionModel()->select(axis, QItemSelectionModel::ClearAndSelect |
+                                       QItemSelectionModel::Rows);
+    const auto groups = w.selectedGroupNames();
+    ASSERT_EQ(groups.size(), 1);
+    EXPECT_EQ(groups.first().toStdString(), "MAIN.axis")
+        << "the prompt names the full path the user clicked";
+
+    // A single leaf stands only for itself — no prompt.
+    const auto one = find(tv, {"MAIN", "speed"});
+    tv->selectionModel()->select(one, QItemSelectionModel::ClearAndSelect |
+                                      QItemSelectionModel::Rows);
+    EXPECT_TRUE(w.selectedGroupNames().isEmpty());
+}
