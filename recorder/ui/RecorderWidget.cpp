@@ -344,9 +344,25 @@ void RecorderWidget::onRefreshSymbols() {
 void RecorderWidget::onAddSelectedSymbols() {
     if (!client_ || !client_->isConnected()) return;
     auto selected = symbols_->selectedSymbols();
+    QStringList rejected;
     for (const auto& sym : selected) {
+        // A struct, function block, array or STRING has no single numeric
+        // value. Recording one used to sample its first 8 bytes as a double —
+        // a plausible-looking number that is not the data. Refuse instead.
+        if (sym.unsupported) {
+            rejected << QString("%1  (%2)").arg(sym.name, sym.typeName);
+            continue;
+        }
         const auto cycleUs = client_->taskCycleForSymbol(sym);
         channels_->addChannelFromSymbol(sym, cycleUs);
+    }
+    if (!rejected.isEmpty()) {
+        QMessageBox::information(this, "Can't record these directly",
+            QString("These symbols have no single numeric value, so they were "
+                    "not added:\n\n%1\n\nRecord a structure's individual "
+                    "members or an array's individual elements instead — those "
+                    "appear as their own symbols once the PLC publishes them.")
+                .arg(rejected.join("\n")));
     }
 }
 

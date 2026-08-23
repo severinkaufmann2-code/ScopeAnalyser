@@ -1,3 +1,4 @@
+#include <optional>
 #include "scope/ads/RouterAdsClient.h"
 
 #include <spdlog/spdlog.h>
@@ -63,22 +64,44 @@ struct SymbolEntryHeader {
 };
 #pragma pack(pop)
 
-DataType mapAdsDataType(std::uint32_t adst) {
+// TwinCAT ADST_* type codes. Named rather than bare numbers so the aggregate
+// case is obvious: 65 is what TwinCAT reports for every struct, function block
+// and most arrays.
+enum : std::uint32_t {
+    kAdstVoid = 0,  kAdstInt16 = 2,  kAdstInt32 = 3,  kAdstReal32 = 4,
+    kAdstReal64 = 5, kAdstInt8 = 16, kAdstUint8 = 17, kAdstUint16 = 18,
+    kAdstUint32 = 19, kAdstInt64 = 20, kAdstUint64 = 21, kAdstString = 30,
+    kAdstWString = 31, kAdstBit = 33, kAdstBigType = 65,
+};
+
+// Map an ADST_* code to a recordable scalar type. Returns nullopt when there
+// is no honest mapping.
+//
+// This used to `default: return DataType::Float64`, which is why an array or
+// struct silently recorded 8 bytes at its base offset — element [0] for an
+// ARRAY OF LREAL, four INTs crammed into a double for an ARRAY OF INT, the
+// first 8 bytes of a struct reinterpreted. It also mis-typed the plain
+// scalars missing from the list (SINT/USINT/BYTE/WORD/DWORD/LINT/ULINT),
+// which are now mapped properly rather than defaulted.
+std::optional<DataType> mapAdsDataTypeOpt(std::uint32_t adst) {
     switch (adst) {
-        case 33: return DataType::Bool;
-        case 16: return DataType::Int8;
-        case 17: return DataType::Uint8;
-        case 2:  return DataType::Int16;
-        case 18: return DataType::Uint16;
-        case 3:  return DataType::Int32;
-        case 19: return DataType::Uint32;
-        case 20: return DataType::Int64;
-        case 21: return DataType::Uint64;
-        case 4:  return DataType::Float32;
-        case 5:  return DataType::Float64;
-        default: return DataType::Float64;
+        case kAdstBit:    return DataType::Bool;
+        case kAdstInt8:   return DataType::Int8;
+        case kAdstUint8:  return DataType::Uint8;
+        case kAdstInt16:  return DataType::Int16;
+        case kAdstUint16: return DataType::Uint16;
+        case kAdstInt32:  return DataType::Int32;
+        case kAdstUint32: return DataType::Uint32;
+        case kAdstInt64:  return DataType::Int64;
+        case kAdstUint64: return DataType::Uint64;
+        case kAdstReal32: return DataType::Float32;
+        case kAdstReal64: return DataType::Float64;
+        // Deliberately unmapped: kAdstBigType (struct / FB / array — not one
+        // sample), STRING / WSTRING (not numeric), VOID and anything unknown.
+        default: return std::nullopt;
     }
 }
+
 
 void put16(std::vector<std::uint8_t>& b, std::uint16_t v) {
     b.push_back(v & 0xff); b.push_back((v >> 8) & 0xff);
@@ -427,9 +450,16 @@ std::vector<AdsSymbol> RouterAdsClient::listSymbols(QString* errorOut) {
         s.indexGroup = h.indexGroup;
         s.indexOffset = h.indexOffset;
         s.size = h.size;
-        s.dataType = mapAdsDataType(h.dataType);
-        const std::size_t elem = sizeOf(s.dataType);
-        s.arrayLen = elem > 0 ? (s.size / static_cast<std::uint32_t>(elem)) : 1;
+        s.adsDataType = h.dataType;
+        const auto mapped = mapAdsDataTypeOpt(h.dataType);
+        s.unsupported = !mapped.has_value();
+        // Float64 is a placeholder for the unsupported case so the field is
+        // never garbage; `unsupported` is what callers must consult. It is NOT
+        // a claim that the symbol holds a double.
+        s.dataType = mapped.value_or(DataType::Float64);
+        // arrayLen used to be size/sizeOf(dataType), which for a struct was
+        // structBytes/8 — a meaningless number that nothing read anyway.
+        s.arrayLen = 1;
         outv.push_back(std::move(s));
         p += h.entryLength;
     }

@@ -37,12 +37,26 @@ struct AdsRoute {
 struct AdsSymbol {
     QString name;        // fully qualified: "MAIN.fSpeed"
     QString typeName;    // "REAL", "LREAL", "ARRAY [0..99] OF INT", ...
-    DataType dataType;
-    std::uint32_t indexGroup;
-    std::uint32_t indexOffset;
-    std::uint32_t size;       // total bytes (= elemSize * arrayLen)
-    std::uint32_t arrayLen;   // 1 for scalars, N for ARRAY[0..N-1]
+    // Every scalar is default-initialised: callers build these field by field
+    // and an unset one would otherwise be read as garbage.
+    DataType dataType{DataType::Float64};
+    std::uint32_t indexGroup{0};
+    std::uint32_t indexOffset{0};
+    std::uint32_t size{0};       // total bytes
+    std::uint32_t arrayLen{1};   // 1 for scalars
     QString comment;
+
+    // Raw ADST_* code straight off the wire. Kept because the mapping to
+    // DataType is lossy: 65 (ADST_BIGTYPE) covers every struct, function
+    // block and most arrays, and those are not one scalar sample.
+    std::uint32_t adsDataType{0};
+
+    // True when the symbol has no scalar DataType we can record — a struct,
+    // a function block, an array, a STRING, or a scalar code we don't map.
+    // Such a symbol is still worth LISTING (the user wants to see it), but
+    // recording it directly would sample raw bytes at its base offset and
+    // present them as a number. See recordable().
+    bool unsupported{false};
 };
 
 // Task metadata read from the TwinCAT System Service (port 10000).

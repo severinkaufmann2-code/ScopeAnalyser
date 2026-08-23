@@ -1,3 +1,4 @@
+#include <optional>
 #include "scope/ads/BeckhoffOpenAdsClient.h"
 
 #include <spdlog/spdlog.h>
@@ -32,7 +33,11 @@ struct SymbolEntryHeader {
     std::uint32_t indexOffset;
     std::uint32_t size;
     std::uint32_t dataType;   // ADST_* code
-    std::uint16_t flags;
+    // 4 bytes, not 2 — matches Beckhoff's own AdsSymbolEntry (AdsDef.h). As
+    // uint16_t this struct was 28 bytes against a 30-byte wire record, so
+    // every name / type / comment after it was read two bytes early and the
+    // whole symbol list came back as garbage.
+    std::uint32_t flags;
     std::uint16_t nameLen;
     std::uint16_t typeLen;
     std::uint16_t commentLen;
@@ -40,21 +45,22 @@ struct SymbolEntryHeader {
 };
 #pragma pack(pop)
 
-// Map TwinCAT ADST_* codes to our DataType. Incomplete — extend as needed.
-DataType mapAdsDataType(std::uint32_t adst) {
+// Map TwinCAT ADST_* codes to our DataType. Shares the router client's rule:
+// no honest mapping means nullopt, never a silent Float64.
+std::optional<DataType> mapAdsDataTypeOpt(std::uint32_t adst) {
     switch (adst) {
-        case 33: return DataType::Bool;     // ADST_BIT
-        case 16: return DataType::Int8;     // ADST_INT8
-        case 17: return DataType::Uint8;    // ADST_UINT8
-        case 2:  return DataType::Int16;    // ADST_INT16
-        case 18: return DataType::Uint16;   // ADST_UINT16
-        case 3:  return DataType::Int32;    // ADST_INT32
-        case 19: return DataType::Uint32;   // ADST_UINT32
-        case 20: return DataType::Int64;    // ADST_INT64
-        case 21: return DataType::Uint64;   // ADST_UINT64
-        case 4:  return DataType::Float32;  // ADST_REAL32
-        case 5:  return DataType::Float64;  // ADST_REAL64
-        default: return DataType::Float64;
+        case 33: return DataType::Bool;
+        case 16: return DataType::Int8;
+        case 17: return DataType::Uint8;
+        case 2:  return DataType::Int16;
+        case 18: return DataType::Uint16;
+        case 3:  return DataType::Int32;
+        case 19: return DataType::Uint32;
+        case 20: return DataType::Int64;
+        case 21: return DataType::Uint64;
+        case 4:  return DataType::Float32;
+        case 5:  return DataType::Float64;
+        default: return std::nullopt;   // BIGTYPE (struct/FB/array), STRING, …
     }
 }
 
@@ -193,9 +199,11 @@ std::vector<AdsSymbol> BeckhoffOpenAdsClient::listSymbols(QString* errorOut) {
             s.indexGroup  = hdr.indexGroup;
             s.indexOffset = hdr.indexOffset;
             s.size        = hdr.size;
-            s.dataType    = mapAdsDataType(hdr.dataType);
-            const std::size_t elemBytes = sizeOf(s.dataType);
-            s.arrayLen    = elemBytes > 0 ? (s.size / static_cast<std::uint32_t>(elemBytes)) : 1;
+            s.adsDataType = hdr.dataType;
+            const auto mapped = mapAdsDataTypeOpt(hdr.dataType);
+            s.unsupported = !mapped.has_value();
+            s.dataType    = mapped.value_or(DataType::Float64);   // placeholder
+            s.arrayLen    = 1;
 
             out.push_back(std::move(s));
             p += hdr.entryLength;

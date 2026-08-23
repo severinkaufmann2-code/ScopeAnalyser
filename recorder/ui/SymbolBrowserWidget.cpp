@@ -68,11 +68,31 @@ void SymbolBrowserWidget::setSymbols(std::vector<scope::core::AdsSymbol> symbols
         nameItem->setEditable(false);
         auto* typeItem = new QStandardItem(s.typeName);
         typeItem->setEditable(false);
+        if (s.unsupported) {
+            // Still listed — the user asked for this symbol and wants to see
+            // it — but greyed and explained, because recording it would sample
+            // raw bytes at its base offset and present them as a number.
+            const QString why =
+                QString("%1 can't be recorded directly: it has no single "
+                        "numeric value.\n\nStructures and function blocks: "
+                        "record their individual members.\nArrays: record "
+                        "individual elements.\nStrings are not numeric.")
+                    .arg(s.typeName.isEmpty() ? QString("This symbol")
+                                              : QString("'%1'").arg(s.typeName));
+            for (auto* it : {nameItem, typeItem}) {
+                it->setEnabled(false);
+                it->setToolTip(why);
+            }
+        }
         auto* addrItem = new QStandardItem(QString::number(s.indexGroup, 16) + ":" +
                                            QString::number(s.indexOffset, 16));
         addrItem->setEditable(false);
         auto* sizeItem = new QStandardItem(QString::number(s.size));
         sizeItem->setEditable(false);
+        if (s.unsupported) {
+            addrItem->setEnabled(false);
+            sizeItem->setEnabled(false);
+        }
         model_->appendRow({nameItem, typeItem, addrItem, sizeItem});
     }
 }
