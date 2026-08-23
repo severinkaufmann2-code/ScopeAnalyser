@@ -6,7 +6,12 @@
 #include <QLabel>
 #include <QVBoxLayout>
 #include <QStandardItem>
+#include <QApplication>
 #include <QHeaderView>
+#include <QHash>
+#include <QSet>
+
+#include <functional>
 
 namespace scope::recorder::ui {
 
@@ -29,15 +34,23 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
     proxy_->setSourceModel(model_);
     proxy_->setFilterCaseSensitivity(Qt::CaseInsensitive);
     proxy_->setFilterKeyColumn(0);
+    // Keep a branch visible when something inside it matches, so filtering
+    // for "ActPos" still finds MAIN.testAxis.NcToPlc.ActPos.
+    proxy_->setRecursiveFilteringEnabled(true);
     tree_->setModel(proxy_);
     tree_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     tree_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tree_->setAlternatingRowColors(true);
-    tree_->setRootIsDecorated(false);
+    // Structures and arrays are branches, not 400 sibling rows — an AXIS_REF
+    // alone expands to ~400 leaves, which flat is unusable.
+    tree_->setRootIsDecorated(true);
+    tree_->setUniformRowHeights(true);
+    tree_->setExpandsOnDoubleClick(true);
     tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     scope::style::installEmptyHint(tree_,
         "Connect to a source to browse its symbols.\n\n"
-        "Filter, select, then “Add selected”.");
+        "Structures and arrays expand — select a branch to take everything\n"
+        "inside it. Filter, select, then “Add selected”.");
 
     byName_ = new QLineEdit(this);
     byName_->setPlaceholderText("Structure member by name, e.g. MAIN.stAxis.fActPos");
@@ -86,54 +99,143 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
     layout->addLayout(byNameRow);
 }
 
+namespace {
+
+// Split a fully qualified symbol into the path the tree nests it under:
+// "MAIN.testAxis.PlcToNc.Override" -> MAIN / testAxis / PlcToNc / Override,
+// and "MAIN.aData[3]" -> MAIN / aData / [3], so an array's elements hang off
+// the array rather than sitting beside it.
+QStringList symbolPath(const QString& name) {
+    QStringList out;
+    QString cur;
+    for (int i = 0; i < name.size(); ++i) {
+        const QChar c = name.at(i);
+        if (c == '.') {
+            if (!cur.isEmpty()) { out << cur; cur.clear(); }
+        } else if (c == '[') {
+            if (!cur.isEmpty()) { out << cur; cur.clear(); }
+            const int close = name.indexOf(']', i);
+            if (close < 0) { cur += name.mid(i); break; }
+            out << name.mid(i, close - i + 1);      // keep the brackets: "[3]"
+            i = close;
+        } else {
+            cur += c;
+        }
+    }
+    if (!cur.isEmpty()) out << cur;
+    if (out.isEmpty()) out << name;
+    return out;
+}
+
+}  // namespace
+
 void SymbolBrowserWidget::setSymbols(std::vector<scope::core::AdsSymbol> symbols) {
     symbols_ = std::move(symbols);
     model_->removeRows(0, model_->rowCount());
+
+    // Branch nodes by full path prefix, so every symbol finds or creates its
+    // parents once. A prefix that is itself a symbol (a structure) reuses the
+    // same node rather than getting a duplicate.
+    QHash<QString, QStandardItem*> branches;
+
+    auto makeRow = [this](const QString& label, int symIndex) {
+        auto* nameItem = new QStandardItem(label);
+        nameItem->setEditable(false);
+        nameItem->setData(symIndex, Qt::UserRole);
+        QList<QStandardItem*> row{nameItem};
+        for (int i = 0; i < 3; ++i) {
+            auto* it = new QStandardItem();
+            it->setEditable(false);
+            row << it;
+        }
+        return row;
+    };
+
+    // Fill in the type / address / size columns and the not-recordable styling.
+    auto describe = [](const QList<QStandardItem*>& row,
+                       const scope::core::AdsSymbol& s) {
+        row[1]->setText(s.typeName);
+        row[2]->setText(QString::number(s.indexGroup, 16) + ":" +
+                        QString::number(s.indexOffset, 16));
+        row[3]->setText(QString::number(s.size));
+        if (!s.unsupported) return;
+        const QString why =
+            QString("%1 has no single numeric value, so it can't be recorded "
+                    "on its own.\n\nExpand it and take the members or "
+                    "elements inside — or select this row to add all of them "
+                    "at once.")
+                .arg(s.typeName.isEmpty() ? QString("This symbol")
+                                          : QString("'%1'").arg(s.typeName));
+        for (auto* it : row) it->setToolTip(why);
+        // Dimmed, not disabled: a branch has to stay selectable so it can
+        // stand in for everything beneath it.
+        const QColor dim = qApp->palette().color(QPalette::Disabled,
+                                                 QPalette::WindowText);
+        for (auto* it : row) it->setForeground(dim);
+    };
+
     for (std::size_t i = 0; i < symbols_.size(); ++i) {
         const auto& s = symbols_[i];
-        auto* nameItem = new QStandardItem(s.name);
-        nameItem->setData(QVariant::fromValue<int>(static_cast<int>(i)), Qt::UserRole);
-        nameItem->setEditable(false);
-        auto* typeItem = new QStandardItem(s.typeName);
-        typeItem->setEditable(false);
-        if (s.unsupported) {
-            // Still listed — the user asked for this symbol and wants to see
-            // it — but greyed and explained, because recording it would sample
-            // raw bytes at its base offset and present them as a number.
-            const QString why =
-                QString("%1 can't be recorded directly: it has no single "
-                        "numeric value.\n\nStructures and function blocks: "
-                        "record their individual members.\nArrays: record "
-                        "individual elements.\nStrings are not numeric.")
-                    .arg(s.typeName.isEmpty() ? QString("This symbol")
-                                              : QString("'%1'").arg(s.typeName));
-            for (auto* it : {nameItem, typeItem}) {
-                it->setEnabled(false);
-                it->setToolTip(why);
+        const QStringList path = symbolPath(s.name);
+
+        QStandardItem* parent = model_->invisibleRootItem();
+        QString prefix;
+        for (int d = 0; d < path.size(); ++d) {
+            const bool leaf = (d == path.size() - 1);
+            prefix += (prefix.isEmpty() || path[d].startsWith('['))
+                          ? path[d] : "." + path[d];
+            if (leaf) {
+                // A symbol that already exists as a branch (a structure whose
+                // members were listed first) just gets its own columns filled.
+                if (auto* existing = branches.value(prefix)) {
+                    const int r = existing->row();
+                    QList<QStandardItem*> row;
+                    for (int c = 0; c < 4; ++c)
+                        row << (existing->parent() ? existing->parent()->child(r, c)
+                                                   : model_->item(r, c));
+                    existing->setData(static_cast<int>(i), Qt::UserRole);
+                    describe(row, s);
+                } else {
+                    auto row = makeRow(path[d], static_cast<int>(i));
+                    describe(row, s);
+                    parent->appendRow(row);
+                    branches.insert(prefix, row[0]);
+                }
+            } else {
+                auto* next = branches.value(prefix);
+                if (!next) {
+                    auto row = makeRow(path[d], -1);   // grouping node
+                    parent->appendRow(row);
+                    next = row[0];
+                    branches.insert(prefix, next);
+                }
+                parent = next;
             }
         }
-        auto* addrItem = new QStandardItem(QString::number(s.indexGroup, 16) + ":" +
-                                           QString::number(s.indexOffset, 16));
-        addrItem->setEditable(false);
-        auto* sizeItem = new QStandardItem(QString::number(s.size));
-        sizeItem->setEditable(false);
-        if (s.unsupported) {
-            addrItem->setEnabled(false);
-            sizeItem->setEnabled(false);
-        }
-        model_->appendRow({nameItem, typeItem, addrItem, sizeItem});
     }
+    tree_->collapseAll();
 }
 
 std::vector<scope::core::AdsSymbol> SymbolBrowserWidget::selectedSymbols() const {
     std::vector<scope::core::AdsSymbol> out;
-    for (const auto& idx : tree_->selectionModel()->selectedRows(0)) {
-        const auto srcIdx = proxy_->mapToSource(idx);
-        const int symIndex = srcIdx.data(Qt::UserRole).toInt();
-        if (symIndex >= 0 && symIndex < static_cast<int>(symbols_.size())) {
-            out.push_back(symbols_[symIndex]);
+    QSet<int> taken;
+
+    // Selecting a branch means "everything recordable inside it" — otherwise a
+    // structure would have to be opened and every member ticked by hand.
+    std::function<void(const QModelIndex&)> collect = [&](const QModelIndex& src) {
+        const int idx = src.data(Qt::UserRole).toInt();
+        if (idx >= 0 && idx < static_cast<int>(symbols_.size())) {
+            if (!symbols_[idx].unsupported && !taken.contains(idx)) {
+                taken.insert(idx);
+                out.push_back(symbols_[idx]);
+            }
         }
-    }
+        for (int r = 0; r < model_->rowCount(src); ++r)
+            collect(model_->index(r, 0, src));
+    };
+
+    for (const auto& idx : tree_->selectionModel()->selectedRows(0))
+        collect(proxy_->mapToSource(idx));
     return out;
 }
 

@@ -18,13 +18,15 @@ add_executable(scope_tests
     test_ads_symbol_types.cpp
     test_app_icon.cpp
     test_save_chart_dialog.cpp
+    test_symbol_browser.cpp
     test_undo_stack.cpp
 )
 
 # test_analyser_layout.cpp drives AnalyserPlot directly; its header lives in
 # the analyser target's private ui/ dir, so expose it to the test target.
 target_include_directories(scope_tests PRIVATE
-    ${CMAKE_SOURCE_DIR}/analyser/ui)
+    ${CMAKE_SOURCE_DIR}/analyser/ui
+    ${CMAKE_SOURCE_DIR}/recorder/ui)
 
 # test_app_icon.cpp reads the committed resources/ScopeAnalyser.ico.
 target_compile_definitions(scope_tests PRIVATE
