@@ -154,7 +154,7 @@ jobs:
               & $windeployqt --release --no-translations --no-compiler-runtime $_.FullName
             }
 
-      # Drop the linker's leftovers before packaging. .ilk is incremental-link
+      # Drop the linker's leftovers and the test runner before packaging. .ilk is incremental-link
       # scratch, meaningless outside the build tree that produced it; .pdb are
       # debug symbols only useful alongside a matching local build. On v0.5.0
       # they were 297 MB and 361 MB of a 764 MB artifact — 86% of it — for
@@ -169,6 +169,12 @@ jobs:
           $before = (Get-ChildItem build\bin -Recurse -File |
                      Measure-Object Length -Sum).Sum
           Get-ChildItem build\bin -Recurse -Include *.ilk,*.pdb |
+            Remove-Item -Force
+          # The test runner has already done its job in the Test step above.
+          # Same *test* rule the windeployqt step uses, so the two agree about
+          # what is and isn't a shipped executable.
+          Get-ChildItem build\bin -File |
+            Where-Object { $_.Name -like "*test*" } |
             Remove-Item -Force
           $after = (Get-ChildItem build\bin -Recurse -File |
                     Measure-Object Length -Sum).Sum
