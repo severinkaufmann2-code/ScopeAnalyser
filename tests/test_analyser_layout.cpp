@@ -32,13 +32,20 @@ using namespace scope::core;
 
 namespace {
 // One QApplication for the whole process (offscreen).
+//
+// Deliberately leaked. Held in a function-static it is destroyed during
+// static destruction, by which point parts of Qt have already torn down —
+// under the offscreen platform that crashes AFTER the test has passed
+// ([ OK ] then SIGSEGV/SIGBUS). That is what linux.yml excludes
+// AnalyserPlotLayoutTest and AddChannelDialogTest for. The process is exiting
+// anyway, so never destroying it is the fix, not a workaround.
 QApplication* ensureApp() {
     if (!QCoreApplication::instance()) {
         qputenv("QT_QPA_PLATFORM", "offscreen");
         static int argc = 1;
         static char a0[] = {'t', '\0'};
         static char* argv[] = {a0, nullptr};
-        static QApplication app(argc, argv);
+        new QApplication(argc, argv);   // NOLINT — intentionally not deleted
     }
     return static_cast<QApplication*>(QCoreApplication::instance());
 }

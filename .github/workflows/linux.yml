@@ -79,13 +79,13 @@ jobs:
         env:
           # No display on the runner; render Qt widgets off-screen.
           QT_QPA_PLATFORM: offscreen
-        # The two AnalyserPlotLayoutTest widget round-trips pass their
-        # assertions ([ OK ] / [ PASSED ]) but SIGBUS during process teardown
-        # under Linux + the offscreen platform — a QCustomPlot/offscreen
-        # teardown quirk. They pass with a real display locally and on the
-        # Windows runner, so exclude just those two here rather than mask
-        # failures across the suite.
-        run: ctest --test-dir build -C "$BUILD_TYPE" --output-on-failure -E 'AnalyserPlotLayoutTest|AddChannelDialogTest'
+        # These widget tests used to be excluded here: they passed their
+        # assertions and then SIGSEGV/SIGBUS'd during process teardown under
+        # the offscreen platform. The cause was the QApplication living in a
+        # function-static, destroyed during static destruction after parts of
+        # Qt had already gone; the test fixtures now leak it deliberately, so
+        # the whole suite runs on Linux again.
+        run: ctest --test-dir build -C "$BUILD_TYPE" --output-on-failure
 
       # --- Package ------------------------------------------------------------
       # linuxdeploy bundles the Qt libraries + plugins (xcb platform etc.) into
