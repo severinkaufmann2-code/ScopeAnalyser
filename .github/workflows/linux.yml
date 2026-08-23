@@ -126,11 +126,13 @@ jobs:
           cp resources/ScopeAnalyser.png \
              AppDir/usr/share/icons/hicolor/256x256/apps/ScopeAnalyser.png
 
+          # The application only, matching the Windows artifact. The three
+          # standalone executables are the same widgets ScopeAnalyser hosts as
+          # tabs, and ads_dt_probe is a PLC diagnostic — all still built and
+          # tested above, just not bundled for someone downloading the app.
+          # Add another --executable line to ship one.
           ./linuxdeploy --appdir AppDir \
             --executable build/bin/ScopeAnalyser \
-            --executable build/bin/ScopeRecorder \
-            --executable build/bin/ScopeConverter \
-            --executable build/bin/ScopeAnalyserStandalone \
             --desktop-file AppDir/usr/share/applications/ScopeAnalyser.desktop \
             --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/ScopeAnalyser.png \
             --plugin qt
