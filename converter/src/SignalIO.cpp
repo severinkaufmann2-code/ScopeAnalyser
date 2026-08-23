@@ -830,12 +830,32 @@ bool saveFile(const std::filesystem::path& path,
 
 namespace {
 
+// Split a formula line "<name> = <expr>" as FormulaEngine writes it into
+// Meta::sourceSymbol. The name may be bracketed ([Axis position] = …) now that
+// names with spaces and symbols are referenceable, so the '=' to split on is
+// the first one AFTER the closing bracket — the name itself may contain '='.
+// Returns false when the line isn't an assignment to `name`.
+bool splitFormulaLine(const QString& src, const QString& name, QString* exprOut) {
+    const QString t = src.trimmed();
+    QString lhs;
+    int eq = -1;
+    if (t.startsWith('[')) {
+        const int close = t.indexOf(']');
+        if (close < 0) return false;
+        lhs = t.mid(1, close - 1).trimmed();
+        eq  = t.indexOf('=', close + 1);
+    } else {
+        eq = t.indexOf('=');
+        if (eq > 0) lhs = t.left(eq).trimmed();
+    }
+    if (eq <= 0 || lhs != name) return false;
+    if (exprOut) *exprOut = t.mid(eq + 1).trimmed();
+    return true;
+}
+
 bool isDerivedChannel(const std::shared_ptr<Signal>& s) {
     if (!s) return false;
-    const QString src = s->meta().sourceSymbol;
-    const int eq = src.indexOf('=');
-    if (eq <= 0) return false;
-    return src.left(eq).trimmed() == s->meta().name;
+    return splitFormulaLine(s->meta().sourceSymbol, s->meta().name, nullptr);
 }
 
 QString withSuffixBeforeExt(const QString& p, const QString& suffix) {

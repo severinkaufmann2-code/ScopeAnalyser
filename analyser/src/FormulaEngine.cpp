@@ -19,13 +19,16 @@ namespace {
 
 // ---- Tokeniser ---------------------------------------------------------
 enum class Tok { End, Ident, Number, Plus, Minus, Star, Slash,
-                 LParen, RParen, Comma, Assign };
+                 LParen, RParen, Comma, Assign, Bad };
 
 struct Token {
     Tok    kind{Tok::End};
     QString text;
     double  value{0.0};
     int     pos{0};
+    // Written [like this]. A quoted name is always a channel, never a
+    // function call, so a channel may legitimately be called "Filter".
+    bool    quoted{false};
 };
 
 struct Lexer {
@@ -41,6 +44,32 @@ struct Lexer {
         if (p >= src.size()) return {Tok::End, {}, 0.0, p};
         const int start = p;
         QChar c = src[p];
+        // [Any Channel Name] — the escape hatch for names the bare identifier
+        // rule below can't express: spaces, '-', '%', '#', '()', a leading
+        // digit. The app itself produces such names ("Axis position" in the
+        // demo data, "Speed (2)" on an import collision), so without this
+        // they simply can't be referenced.
+        if (c == '[') {
+            ++p;
+            const int nameStart = p;
+            // Brackets nest, so an array element reads naturally as
+            // [MAIN.aData[3]] — which matters because that is exactly the
+            // shape the ADS symbol expansion produces. Depth-matching also
+            // keeps [a] + [b] parsing as two separate names.
+            int depth = 1;
+            while (p < src.size() && depth > 0) {
+                if (src[p] == '[') ++depth;
+                else if (src[p] == ']') --depth;
+                if (depth > 0) ++p;
+            }
+            if (depth != 0)
+                return {Tok::Bad, QStringLiteral("unterminated '['"), 0.0, start, false};
+            const QString nm = src.mid(nameStart, p - nameStart).trimmed();
+            ++p;                                    // eat the closing ']'
+            if (nm.isEmpty())
+                return {Tok::Bad, QStringLiteral("empty '[]'"), 0.0, start, false};
+            return {Tok::Ident, nm, 0.0, start, /*quoted=*/true};
+        }
         if (c.isLetter() || c == '_') {
             while (p < src.size() && (src[p].isLetterOrNumber() || src[p] == '_' || src[p] == '.'))
                 ++p;
@@ -65,7 +94,10 @@ struct Lexer {
             case ')': return {Tok::RParen, ")", 0, start};
             case ',': return {Tok::Comma,  ",", 0, start};
             case '=': return {Tok::Assign, "=", 0, start};
-            default:  return {Tok::End,    QString(c), 0, start};
+            // Anything else is an error, NOT end-of-input. Returning End here
+            // used to make `Out = my ch` parse as `my` and silently produce
+            // the wrong channel's data.
+            default:  return {Tok::Bad,    QString(c), 0, start};
         }
     }
 
@@ -344,8 +376,9 @@ struct Parser {
         if (cur.kind == Tok::Ident) {
             QString name = cur.text;
             int pos = cur.pos;
+            const bool quoted = cur.quoted;
             cur = lex.next();
-            if (cur.kind == Tok::LParen) {
+            if (!quoted && cur.kind == Tok::LParen) {
                 cur = lex.next();
 
                 // ---- filtfilt(FilterName, signal, params...) : zero-phase ----
@@ -444,12 +477,25 @@ struct Parser {
             // bare identifier: channel ref
             auto sig = ctx.store.get(name);
             if (!sig) {
-                setErr(ctx, QString("unknown channel '%1' at position %2").arg(name).arg(pos));
+                // A name that only failed because it needs brackets is by far
+                // the likeliest mistake, so name the channel we think was meant.
+                QString hint;
+                for (const auto& n : ctx.store.channelNames()) {
+                    if (n != name && n.startsWith(name)) {
+                        hint = QString(" — did you mean [%1] ?").arg(n);
+                        break;
+                    }
+                }
+                setErr(ctx, QString("unknown channel '%1' at position %2%3")
+                                .arg(name).arg(pos).arg(hint));
                 return nullptr;
             }
             return sig;
         }
-        setErr(ctx, QString("unexpected token '%1' at position %2").arg(cur.text).arg(cur.pos));
+        setErr(ctx, QString("unexpected token '%1' at position %2 — names with "
+                            "spaces or symbols must be written in square "
+                            "brackets, e.g. [Axis position]")
+                        .arg(cur.text).arg(cur.pos));
         return nullptr;
     }
 };
@@ -524,6 +570,18 @@ bool FormulaEngine::evaluate(const QString& sourceLine, QString* errorOut) {
     Parser parser(exprPart, ctx);
     auto result = parser.parseExpr();
     if (!result) return false;
+    // Nothing used to check the whole expression was consumed, so `Out = my ch`
+    // quietly evaluated to `my` and handed back the wrong channel's samples.
+    // For an engineering tool a refusal beats plausible-looking wrong data.
+    if (parser.cur.kind != Tok::End) {
+        if (errorOut)
+            *errorOut = QString("unexpected '%1' at position %2 — if it is part "
+                                "of a channel name, write the whole name in "
+                                "square brackets, e.g. [My Channel]")
+                            .arg(parser.cur.text)
+                            .arg(second.pos + 1 + parser.cur.pos);
+        return false;
+    }
 
     // A bare channel reference (`Out = speed`) returns the store-owned
     // source signal itself. Re-registering it under `outName` would mutate
@@ -545,6 +603,18 @@ bool FormulaEngine::evaluate(const QString& sourceLine, QString* errorOut) {
     // so recording here keeps the entry that the user just (re-)defined.
     impl_->setFormula(outName, exprPart.trimmed());
     return true;
+}
+
+QString FormulaEngine::quoteName(const QString& name) {
+    if (name.isEmpty()) return QStringLiteral("[]");
+    // Must match the Lexer's bare-identifier rule above exactly.
+    bool plain = (name[0].isLetter() || name[0] == '_');
+    for (QChar c : name) {
+        if (!(c.isLetterOrNumber() || c == '_' || c == '.')) { plain = false; break; }
+    }
+    // A name that would lex as a function call site is still plain — the
+    // parser only treats an ident as a call when a '(' follows it.
+    return plain ? name : QStringLiteral("[") + name + QStringLiteral("]");
 }
 
 QString FormulaEngine::formulaFor(const QString& name) const {
@@ -578,7 +648,10 @@ int FormulaEngine::recomputeAll(QStringList* errorsOut) {
             const QString expr = impl_->formulas.value(name);
             if (expr.isEmpty()) continue;  // forgotten mid-loop
             QString err;
-            if (evaluate(name + " = " + expr, &err)) {
+            // formulas are keyed by the RAW name, so a name needing brackets
+            // has to be re-quoted here — otherwise every recompute, redraw,
+            // layout load and undo/redo would report the formula as failed.
+            if (evaluate(FormulaEngine::quoteName(name) + " = " + expr, &err)) {
                 ++total;
                 progress = true;
             } else {

@@ -1337,3 +1337,163 @@ TEST(FormulaEngine, RevertFftBandKeepIsolatesTone) {
         if (std::abs(mk[k] + mz[k] - m[k]) > 1e-12) partition = false;
     EXPECT_TRUE(partition);
 }
+
+// ---------------------------------------------------------------------------
+// Channel names the bare identifier rule can't express.
+//
+// The app produces such names itself — "Axis position" et al. are the demo
+// channels (ShellWindow.cpp), and "Speed (2)" is what uniqueStoreName()
+// generates on an import collision — so before brackets existed those channels
+// simply could not be referenced in a formula. Underscores were always fine;
+// it is spaces, '-', '%', '#', '()' and leading digits that were not.
+// ---------------------------------------------------------------------------
+
+TEST(FormulaSpecialNames, UnderscoresWorkUnbracketedAsTheyAlwaysDid) {
+    SignalStore store;
+    store.add(makeRamp("test_1", 8, 0.1));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("out = test_1 * 2", &err)) << err.toStdString();
+    auto out = store.get("out");
+    ASSERT_TRUE(out != nullptr);
+    EXPECT_DOUBLE_EQ(out->readAsDouble()[3], 6.0);
+}
+
+TEST(FormulaSpecialNames, BracketsReferenceANameWithSpaces) {
+    SignalStore store;
+    store.add(makeRamp("Axis position", 8, 0.1));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("out = [Axis position] * 2", &err)) << err.toStdString();
+    auto out = store.get("out");
+    ASSERT_TRUE(out != nullptr);
+    EXPECT_DOUBLE_EQ(out->readAsDouble()[3], 6.0);
+}
+
+TEST(FormulaSpecialNames, BracketsCoverEverySymbolClassThatUsedToFail) {
+    for (const char* raw : {"Speed (2)", "a-b", "ch%", "ch#1", "1st",
+                            "MAIN.fb.x[3]", "Δt"}) {
+        SignalStore store;
+        const QString name = QString::fromUtf8(raw);
+        store.add(makeRamp(name, 8, 0.1));
+        FormulaEngine engine(store);
+        QString err;
+        EXPECT_TRUE(engine.evaluate("out = [" + name + "] + 1", &err))
+            << raw << " -> " << err.toStdString();
+        auto out = store.get("out");
+        ASSERT_TRUE(out != nullptr) << raw;
+        EXPECT_DOUBLE_EQ(out->readAsDouble()[2], 3.0) << raw;
+    }
+}
+
+TEST(FormulaSpecialNames, BracketedNameWorksOnTheLeftHandSideToo) {
+    SignalStore store;
+    store.add(makeRamp("src", 8, 0.1));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("[my out] = src * 3", &err)) << err.toStdString();
+    auto out = store.get("my out");
+    ASSERT_TRUE(out != nullptr) << "the output channel must be named without brackets";
+    EXPECT_DOUBLE_EQ(out->readAsDouble()[2], 6.0);
+}
+
+// The regression the verifier caught: formulas are keyed by the RAW name, and
+// recomputeAll rebuilds "<name> = <expr>". Without re-quoting, a bracketed
+// output name fails to lex on every recompute — which is every redraw, layout
+// load and undo/redo, not just an explicit refresh.
+TEST(FormulaSpecialNames, RecomputeSurvivesAnOutputNameNeedingBrackets) {
+    SignalStore store;
+    store.add(makeRamp("src", 8, 0.1));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("[my out] = src * 3", &err)) << err.toStdString();
+
+    QStringList errors;
+    const int n = engine.recomputeAll(&errors);
+    EXPECT_EQ(n, 1) << "the formula should have recomputed";
+    EXPECT_TRUE(errors.isEmpty())
+        << "recompute reported: " << errors.join("; ").toStdString();
+    auto out = store.get("my out");
+    ASSERT_TRUE(out != nullptr);
+    EXPECT_DOUBLE_EQ(out->readAsDouble()[2], 6.0);
+}
+
+TEST(FormulaSpecialNames, QuoteNameBracketsOnlyWhatNeedsIt) {
+    EXPECT_EQ(FormulaEngine::quoteName("speed").toStdString(), "speed");
+    EXPECT_EQ(FormulaEngine::quoteName("test_1").toStdString(), "test_1");
+    EXPECT_EQ(FormulaEngine::quoteName("MAIN.fb.x").toStdString(), "MAIN.fb.x");
+    EXPECT_EQ(FormulaEngine::quoteName("_x").toStdString(), "_x");
+    EXPECT_EQ(FormulaEngine::quoteName("Axis position").toStdString(), "[Axis position]");
+    EXPECT_EQ(FormulaEngine::quoteName("Speed (2)").toStdString(), "[Speed (2)]");
+    EXPECT_EQ(FormulaEngine::quoteName("1st").toStdString(), "[1st]");
+    EXPECT_EQ(FormulaEngine::quoteName("a-b").toStdString(), "[a-b]");
+}
+
+// A quoted name is a channel reference, never a call — so a channel may be
+// named after a function without becoming unreachable.
+TEST(FormulaSpecialNames, BracketedNameIsNeverTreatedAsAFunctionCall) {
+    SignalStore store;
+    store.add(makeRamp("Filter", 8, 0.1));
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("out = [Filter] + 1", &err)) << err.toStdString();
+    EXPECT_DOUBLE_EQ(store.get("out")->readAsDouble()[2], 3.0);
+}
+
+// ---------------------------------------------------------------------------
+// Silent wrong data. Trailing junk used to be lexed as end-of-input, so a
+// formula meaning one thing quietly evaluated to another and reported success.
+// ---------------------------------------------------------------------------
+
+TEST(FormulaStrictness, TrailingWordsAreRejectedNotSilentlyIgnored) {
+    SignalStore store;
+    store.add(makeRamp("my", 8, 0.1, 100.0));
+    store.add(makeRamp("speed", 8, 0.1));
+    FormulaEngine engine(store);
+
+    // The user means a channel called "my ch"; it must not quietly become "my".
+    QString err;
+    EXPECT_FALSE(engine.evaluate("out = my ch", &err));
+    EXPECT_FALSE(err.isEmpty());
+    EXPECT_TRUE(store.get("out") == nullptr) << "no channel may be produced";
+
+    err.clear();
+    EXPECT_FALSE(engine.evaluate("out = speed kmh", &err));
+    EXPECT_FALSE(err.isEmpty());
+}
+
+TEST(FormulaStrictness, StraySymbolsAreAnErrorNotEndOfInput) {
+    SignalStore store;
+    store.add(makeRamp("speed", 8, 0.1));
+    FormulaEngine engine(store);
+    for (const char* expr : {"out = speed )))(((", "out = speed @ 2",
+                             "out = speed ? 1", "out = [unterminated"}) {
+        QString err;
+        EXPECT_FALSE(engine.evaluate(expr, &err)) << expr;
+        EXPECT_FALSE(err.isEmpty()) << expr;
+    }
+}
+
+TEST(FormulaStrictness, LeadingDigitNameNoLongerBecomesAConstant) {
+    SignalStore store;
+    store.add(makeRamp("1st", 8, 0.1));
+    FormulaEngine engine(store);
+    QString err;
+    // Unbracketed it lexes as the number 1 followed by "st" — junk, so it must
+    // fail rather than silently produce a 1-sample constant.
+    EXPECT_FALSE(engine.evaluate("out = 1st", &err));
+    // Bracketed it resolves to the channel.
+    err.clear();
+    EXPECT_TRUE(engine.evaluate("out = [1st] + 1", &err)) << err.toStdString();
+    EXPECT_DOUBLE_EQ(store.get("out")->readAsDouble()[2], 3.0);
+}
+
+TEST(FormulaStrictness, UnknownChannelErrorSuggestsTheBracketedName) {
+    SignalStore store;
+    store.add(makeRamp("Axis position", 8, 0.1));
+    FormulaEngine engine(store);
+    QString err;
+    EXPECT_FALSE(engine.evaluate("out = Axis position", &err));
+    EXPECT_TRUE(err.contains("[Axis position]"))
+        << "the error should point at the fix, got: " << err.toStdString();
+}

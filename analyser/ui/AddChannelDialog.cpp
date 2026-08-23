@@ -48,6 +48,9 @@ public:
         completer_->setWidget(this);
         completer_->setCompletionMode(QCompleter::PopupCompletion);
         completer_->setCaseSensitivity(Qt::CaseInsensitive);
+        // Channel names needing brackets are offered as "[Axis position]", so
+        // a prefix match on what the user typed ("Axis") would never hit.
+        completer_->setFilterMode(Qt::MatchContains);
         QObject::connect(completer_, QOverload<const QString&>::of(&QCompleter::activated),
                          this, [this](const QString& chosen){ insertCompletion(chosen); });
     }
@@ -111,18 +114,45 @@ protected:
 private:
     QCompleter* completer_;
 
-    QString wordUnderCursor() const {
-        QTextCursor c = textCursor();
-        c.movePosition(QTextCursor::StartOfWord, QTextCursor::KeepAnchor);
-        return c.selectedText();
+    // Where the token under the cursor starts, by the formula lexer's rules
+    // rather than Qt's word rules. Qt stops at '.' and treats a space as a
+    // boundary, which made "Motor." complete to "Motor.Axis position" and
+    // "Axis " to "AxisAxis position". Here an unclosed '[' opens a token that
+    // runs to the cursor (so bracketed names complete whole), and otherwise a
+    // token is the run of identifier characters — '.' included, so "Motor.Sp"
+    // matches "Motor.Speed".
+    int tokenStart() const {
+        const QString text = toPlainText();
+        const int end = textCursor().position();
+        for (int i = end - 1; i >= 0; --i) {
+            const QChar c = text[i];
+            if (c == ']') break;        // that name is already closed
+            if (c == '[') return i;     // unclosed bracket owns the token
+        }
+        int i = end;
+        while (i > 0) {
+            const QChar c = text[i - 1];
+            if (!(c.isLetterOrNumber() || c == '_' || c == '.')) break;
+            --i;
+        }
+        return i;
     }
 
+    QString wordUnderCursor() const {
+        const int start = tokenStart();
+        return toPlainText().mid(start, textCursor().position() - start);
+    }
+
+    // Replace the whole partial token, rather than appending the difference
+    // between it and the completion — the old arithmetic duplicated text
+    // whenever the prefix Qt computed disagreed with what was really typed.
     void insertCompletion(const QString& chosen) {
         QTextCursor c = textCursor();
-        const int extra = chosen.length() - completer_->completionPrefix().length();
-        c.movePosition(QTextCursor::Left);
-        c.movePosition(QTextCursor::EndOfWord);
-        c.insertText(chosen.right(extra));
+        const int end = c.position();
+        const int start = tokenStart();
+        c.setPosition(start);
+        c.setPosition(end, QTextCursor::KeepAnchor);
+        c.insertText(chosen);
         setTextCursor(c);
     }
 };
@@ -402,7 +432,10 @@ void AddChannelDialog::setEditMode(const QString& originalName, const QString& f
 
 void AddChannelDialog::refreshCompletions() {
     completions_.clear();
-    for (const auto& n : store_.channelNames()) completions_ << n;
+    // Offer the form that actually parses: "[Axis position]", not
+    // "Axis position", which would lex as two idents.
+    for (const auto& n : store_.channelNames())
+        completions_ << FormulaEngine::quoteName(n);
     for (const auto& f : FunctionRegistry::instance().all())
         completions_ << f.name + "(";
     static_cast<FormulaEdit*>(formulaEdit_)->setCompletions(completions_);
@@ -473,8 +506,11 @@ void AddChannelDialog::onBuilderChanged() {
 void AddChannelDialog::onInsertFilter() {
     const QString fam = familyCombo_->currentData().toString();
     const int band = bandCombo_->currentData().toInt();
-    QString src = srcCombo_->currentText().trimmed();
-    if (src.isEmpty()) src = "signal";
+    QString rawSrc = srcCombo_->currentText().trimmed();
+    if (rawSrc.isEmpty()) rawSrc = "signal";
+    // Bracketed inside the formula; the raw name still seeds the output name
+    // below, where brackets would be noise.
+    const QString src = FormulaEngine::quoteName(rawSrc);
     const int order = (fam == "Filter") ? 1 : orderSpin_->value();
     auto num = [](double v) { return QString::number(v, 'g', 6); };
 
@@ -506,7 +542,7 @@ void AddChannelDialog::onInsertFilter() {
     }
     formulaEdit_->setPlainText(formula);
     if (nameEdit_->text().trimmed().isEmpty())
-        nameEdit_->setText(src + "_" + fam.toLower());
+        nameEdit_->setText(rawSrc + "_" + fam.toLower());
 }
 
 void AddChannelDialog::onFunctionSelected(QListWidgetItem* item) {
@@ -809,7 +845,9 @@ void AddChannelDialog::onAccept() {
         formulaEdit_->setFocus();
         return;
     }
-    const QString line = name + " = " + expr;
+    // Names with spaces or symbols only lex when bracketed, and the name
+    // here is whatever the user typed.
+    const QString line = FormulaEngine::quoteName(name) + " = " + expr;
     QString err;
     if (!engine_.evaluate(line, &err)) {
         QMessageBox::critical(this, "Formula error",

@@ -51,6 +51,16 @@ public:
     // be saved again and recomputed once sources appear).
     void rememberFormula(const QString& name, const QString& expr);
 
+    // Render a channel name as a formula reference. Names that satisfy the
+    // bare identifier rule (letter or '_', then letters/digits/'_'/'.') come
+    // back unchanged; anything else — spaces, '-', '%', '#', '()', a leading
+    // digit — is wrapped in square brackets, which the parser accepts as a
+    // channel reference and never as a function call.
+    //
+    // Callers that build a formula line from a name MUST go through this, or
+    // the line won't lex. That includes the engine's own recompute path.
+    static QString quoteName(const QString& name);
+
     // Forget a derived channel's formula (e.g. when it's removed).
     void forget(const QString& name);
 

@@ -1272,10 +1272,21 @@ void AnalyserPlot::editChannelDialog() {
     // scraping sourceSymbol for anything it doesn't know about.
     QString expr = engine_.formulaFor(name);
     if (expr.isEmpty()) {
-        const QString src = sig->meta().sourceSymbol;
-        const int eq = src.indexOf('=');
-        if (eq > 0 && src.left(eq).trimmed() == name)
-            expr = src.mid(eq + 1).trimmed();
+        // Same split rule as SignalIO's isDerivedChannel: the name may be
+        // bracketed, so don't just take the first '='.
+        QString scraped;
+        const QString src = sig->meta().sourceSymbol.trimmed();
+        QString lhs;
+        int eq = -1;
+        if (src.startsWith('[')) {
+            const int close = src.indexOf(']');
+            if (close >= 0) { lhs = src.mid(1, close - 1).trimmed();
+                              eq = src.indexOf('=', close + 1); }
+        } else {
+            eq = src.indexOf('=');
+            if (eq > 0) lhs = src.left(eq).trimmed();
+        }
+        if (eq > 0 && lhs == name) expr = src.mid(eq + 1).trimmed();
     }
     if (expr.isEmpty()) {
         QMessageBox::information(this, "Not a formula channel",
