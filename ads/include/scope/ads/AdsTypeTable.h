@@ -17,9 +17,17 @@ namespace scope::ads {
 struct AdsTypeMember {
     QString       name;
     QString       typeName;
-    std::uint32_t offset{0};   // bytes from the start of the parent
+    // Bytes from the start of the parent — EXCEPT when bitValue is set, in
+    // which case it is a bit index (0..7 within the parent's first byte, and
+    // upward), because TwinCAT addresses single bits differently.
+    std::uint32_t offset{0};
     std::uint32_t size{0};
     std::uint32_t adsDataType{0};
+    // A single bit inside a bit-field (declared BIT, e.g. AXIS_REF's
+    // ControlDWord.Enable). Addressed at index group 0x4041 with the offset
+    // in BITS — recording it at a byte offset reads a whole neighbouring byte
+    // instead.
+    bool          bitValue{false};
 };
 
 // One entry of the ADS data-type table (ADSIGRP_SYM_DT_UPLOAD, 0xF00E).

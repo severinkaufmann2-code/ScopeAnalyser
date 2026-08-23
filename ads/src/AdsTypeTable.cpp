@@ -12,6 +12,10 @@ using scope::core::DataType;
 namespace {
 
 constexpr std::size_t kHeaderBytes = 42;
+// Bit-addressed access. A BIT member is reached at this group with the offset
+// expressed in bits, not bytes — confirmed against the PLC's own answer for
+// AXIS_REF's ControlDWord.Enable (byte 0x60A98 -> 0x4041:0x3054C0 = 0x60A98*8).
+constexpr std::uint32_t kAdsigrpPlcRwBit = 0x4041;
 constexpr int kMaxDepth = 16;   // a self-referential type must still terminate
 
 std::uint16_t u16(const std::uint8_t* p) {
@@ -87,6 +91,8 @@ RawEntry parseEntry(const std::uint8_t* base, std::size_t total, std::size_t p,
         m.offset      = sub.offset;
         m.size        = sub.size;
         m.adsDataType = sub.adsDataType;
+        m.bitValue    = sub.typeName.compare(QLatin1String("BIT"),
+                                             Qt::CaseInsensitive) == 0;
         e.members.push_back(std::move(m));
         b += sub.entryLength;
     }
@@ -182,9 +188,27 @@ void expandInto(std::vector<AdsSymbol>& out, const AdsSymbol& root,
     }
 
     if (!t.members.empty()) {
-        for (const auto& m : t.members)
+        for (const auto& m : t.members) {
+            if (m.bitValue) {
+                // A single bit: its "offset" is a bit index, and it lives at
+                // the bit-access group with the whole address in bits. Adding
+                // it as a byte offset would silently read a neighbouring byte.
+                if (static_cast<int>(out.size()) >= maxLeaves) return;
+                AdsSymbol leaf = root;
+                leaf.name        = name + "." + m.name;
+                leaf.typeName    = QStringLiteral("BIT");
+                leaf.dataType    = DataType::Bool;
+                leaf.unsupported = false;
+                leaf.size        = 1;
+                leaf.arrayLen    = 1;
+                leaf.indexGroup  = kAdsigrpPlcRwBit;
+                leaf.indexOffset = offset * 8 + m.offset;
+                out.push_back(std::move(leaf));
+                continue;
+            }
             expandInto(out, root, name + "." + m.name, m.typeName,
                        offset + m.offset, types, depth + 1, maxLeaves, skipped);
+        }
         return;
     }
 

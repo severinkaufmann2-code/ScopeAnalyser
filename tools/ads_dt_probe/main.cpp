@@ -64,20 +64,30 @@ int main(int argc, char** argv) {
     if (args.size() < 3) {
         std::printf(
             "ads_dt_probe — dump a PLC's symbol and data-type tables\n\n"
-            "  ads_dt_probe <host> <target-netid> [ads-port] [out-dir]\n\n"
+            "  ads_dt_probe [--list] <host> <target-netid> [ads-port] [out-dir]\n\n"
+            "  --list   print the symbols the Recorder would show (with\n"
+            "           structure members and array elements expanded)\n"
+            "           instead of dumping the raw tables.\n\n"
             "Example:\n"
-            "  ads_dt_probe 127.0.0.1 5.123.45.67.1.1 851 .\n\n"
+            "  ads_dt_probe 127.0.0.1 5.123.45.67.1.1 851 .\n"
+            "  ads_dt_probe --list 127.0.0.1 5.123.45.67.1.1\n\n"
             "Use the same host / AMS NetId / port the Recorder connects with.\n"
             "Reads only; nothing is written to the PLC.\n");
         return 2;
     }
 
+    // --list prints the symbol list the Recorder would show, expansion and
+    // all, instead of dumping blobs. It is the quickest way to check whether a
+    // particular structure's members come through.
+    QStringList a = args;
+    bool listMode = a.removeAll("--list") > 0;
+
     scope::core::AdsRoute route;
-    route.host  = args.at(1);
-    route.netId = args.at(2);
-    route.port  = args.size() > 3 ? static_cast<std::uint16_t>(args.at(3).toUShort())
-                                  : std::uint16_t{851};
-    const QString outDir = args.size() > 4 ? args.at(4) : QStringLiteral(".");
+    route.host  = a.at(1);
+    route.netId = a.at(2);
+    route.port  = a.size() > 3 ? static_cast<std::uint16_t>(a.at(3).toUShort())
+                               : std::uint16_t{851};
+    const QString outDir = a.size() > 4 ? a.at(4) : QStringLiteral(".");
 
     std::printf("connecting to %s (NetId %s, port %u) …\n",
                 qPrintable(route.host), qPrintable(route.netId), route.port);
@@ -89,6 +99,23 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf("connected.\n");
+
+    if (listMode) {
+        const auto syms = client->listSymbols(&err);
+        if (syms.empty()) {
+            std::fprintf(stderr, "no symbols: %s\n", qPrintable(err));
+            return 1;
+        }
+        int recordable = 0;
+        for (const auto& s : syms) if (!s.unsupported) ++recordable;
+        std::printf("\n%zu entries — %d recordable, %zu aggregates\n\n",
+                    syms.size(), recordable, syms.size() - std::size_t(recordable));
+        for (const auto& s : syms)
+            std::printf("  %-56s %-28s %s\n", qPrintable(s.name),
+                        qPrintable(s.typeName),
+                        s.unsupported ? "(not recordable on its own)" : "");
+        return 0;
+    }
 
     // 1. Upload info: how big the two tables are.
     std::vector<std::byte> info(24);

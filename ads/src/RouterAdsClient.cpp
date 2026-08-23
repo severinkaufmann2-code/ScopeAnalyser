@@ -1,8 +1,11 @@
+#include <iterator>
 #include <optional>
 #include "scope/ads/RouterAdsClient.h"
 
 #include "scope/ads/AdsTypeNames.h"
 #include "scope/ads/AdsTypeTable.h"
+
+#include <QSet>
 
 #include <spdlog/spdlog.h>
 
@@ -489,19 +492,34 @@ std::vector<AdsSymbol> RouterAdsClient::listSymbols(QString* errorOut) {
         // structBytes/8 — a meaningless number that nothing read anyway.
         s.arrayLen = 1;
 
-        // Expand aggregates into recordable leaves. The type table (read
-        // above) resolves structures and arrays of structures; where it has
-        // nothing to say, the array declaration carried in the type NAME
-        // still covers a plain array of scalars.
+        outv.push_back(std::move(s));
+        p += h.entryLength;
+    }
+    // Expand aggregates only AFTER the whole upload is read, so a member the
+    // PLC already publishes in its own right (TwinCAT does this for the NC
+    // interface structures, at their own index groups) isn't duplicated by a
+    // computed copy. The PLC's own entry always wins — it is authoritative
+    // about the address.
+    QSet<QString> known;
+    known.reserve(static_cast<int>(outv.size()));
+    for (const auto& s : outv) known.insert(s.name);
+
+    std::vector<AdsSymbol> expanded;
+    for (const auto& s : outv) {
+        if (!s.unsupported) continue;
         std::vector<AdsSymbol> leaves;
-        if (s.unsupported && !typeTable.isEmpty())
+        if (!typeTable.isEmpty())
             leaves = scope::ads::expandWithTypeTable(s, typeTable);
         if (leaves.empty())
             leaves = scope::ads::expandArraySymbol(s);
-        outv.push_back(std::move(s));
-        for (auto& e : leaves) outv.push_back(std::move(e));
-        p += h.entryLength;
+        for (auto& e : leaves) {
+            if (known.contains(e.name)) continue;   // the PLC already lists it
+            known.insert(e.name);
+            expanded.push_back(std::move(e));
+        }
     }
+    outv.insert(outv.end(), std::make_move_iterator(expanded.begin()),
+                std::make_move_iterator(expanded.end()));
     return outv;
 }
 
