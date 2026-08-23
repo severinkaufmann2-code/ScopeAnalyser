@@ -244,6 +244,16 @@ RecorderWidget::RecorderWidget(scope::core::SignalStore& store, QWidget* parent)
             this, [this](const QString&){ updateActionButtons(); });
     connect(&recordStore_, &scope::core::SignalStore::channelRemoved,
             this, [this](const QString&){ updateActionButtons(); });
+    // appliedMap_ remembers what each recorded channel became in the shared
+    // store, so "send to Analyser" replaces rather than duplicates. A rename
+    // there has to move with it or the next send adds a second copy.
+    // Note: store_, not recordStore_ — appliedMap_'s VALUES are names in the
+    // shared store, which is where the Analyser's rename happens.
+    connect(&store_, &scope::core::SignalStore::channelRenamed, this,
+            [this](const QString& from, const QString& to) {
+        for (auto it = appliedMap_.begin(); it != appliedMap_.end(); ++it)
+            if (it.value() == from) it.value() = to;
+    });
     updateActionButtons();
 
     // ---- Undo / redo wiring ------------------------------------------

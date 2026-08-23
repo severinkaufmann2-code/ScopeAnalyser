@@ -63,6 +63,9 @@ public slots:
     void loadLayoutDialog();
     void addChannelDialog();
     void editChannelDialog();
+    // Rename the selected channel. Plain (recorded / imported) channels have
+    // no formula to redefine, so this is the only way to rename them.
+    void renameChannelDialog();
     void saveChartDialog();
     void openChartDialog();
 
@@ -84,6 +87,12 @@ private:
     enum class ViewMode { Time, Frequency, XY };
     ViewMode viewMode_{ViewMode::Time};
     QString  xyChannel_;            // valid only when viewMode_ == XY
+
+    // Dialog-free so tests can drive it. Returns false with *errorOut set
+    // when the rename can't be done (name taken, source gone).
+    bool renameChannel(const QString& from, const QString& to, QString* errorOut);
+    // Move this widget's own name-keyed state across a rename.
+    void remapLocalChannelNames(const QString& from, const QString& to);
 
     void rebuildTable();
     void redrawForActiveChannels();
@@ -221,6 +230,9 @@ private:
     // applyLayout) can't be driven through the modal Save/Open dialogs, so a
     // gtest fixture befriends us to call them directly.
     friend class AnalyserPlotLayoutTest;
+    // Drives renameChannel() directly: the rename itself is dialog-free so it
+    // can be tested without a modal.
+    friend class AnalyserPlotRenameTest;
 };
 
 }  // namespace scope::analyser::ui

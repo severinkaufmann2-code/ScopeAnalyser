@@ -19,6 +19,25 @@ void SignalStore::add(std::shared_ptr<Signal> signal) {
     emit channelAdded(name);
 }
 
+bool SignalStore::rename(const QString& from, const QString& to) {
+    if (from == to || to.trimmed().isEmpty()) return false;
+    std::shared_ptr<Signal> copy;
+    {
+        std::unique_lock lock(mtx_);
+        auto it = map_.find(from);
+        if (it == map_.end() || map_.count(to) > 0) return false;
+        const auto view = it->second->snapshotForRead();
+        auto meta = it->second->meta();
+        meta.name = to;
+        copy = std::make_shared<Signal>(meta);
+        if (view.count > 0) copy->append(view.timestamps, view.values, view.count);
+        map_.erase(it);
+        map_.insert_or_assign(to, copy);
+    }
+    emit channelRenamed(from, to);
+    return true;
+}
+
 void SignalStore::remove(const QString& name) {
     bool existed = false;
     {

@@ -23,6 +23,8 @@
 #include <QHeaderView>
 #include <QKeySequence>
 #include <QLabel>
+#include <QInputDialog>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -63,6 +65,8 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    // Right-click a row to rename, mirroring the Y-axis menu in the plot.
+    table_->setContextMenuPolicy(Qt::CustomContextMenu);
     table_->setAlternatingRowColors(true);
     table_->setShowGrid(false);
     style::installEmptyHint(table_,
@@ -157,7 +161,8 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         "Add a channel — a formula over existing channels, or a copy "
         "(autocomplete with Tab).");
     auto* editChBtn   = smallBtn(style::Glyph::Pencil,
-        "Edit the selected formula channel (double-click also works).");
+        "Edit the selected channel (double-click also works): its formula if "
+        "it has one, otherwise its name.");
     auto* removeChBtn = smallBtn(style::Glyph::Minus,
         "Remove the selected channel(s) from the store. Ctrl/Shift-click "
         "to select several rows and remove them all at once.");
@@ -202,6 +207,16 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
     connect(loadLayoutBtn, &QToolButton::clicked, this, &AnalyserPlot::loadLayoutDialog);
     connect(addChBtn,      &QToolButton::clicked, this, &AnalyserPlot::addChannelDialog);
     connect(editChBtn,     &QToolButton::clicked, this, &AnalyserPlot::editChannelDialog);
+    connect(table_, &QTableWidget::customContextMenuRequested, this,
+            [this](const QPoint& p) {
+        const int row = table_->rowAt(p.y());
+        if (row < 0) return;
+        table_->selectRow(row);
+        QMenu menu(this);
+        auto* rename = menu.addAction("Rename…");
+        if (menu.exec(table_->viewport()->mapToGlobal(p)) == rename)
+            renameChannelDialog();
+    });
     connect(saveChartBtn,  &QToolButton::clicked, this, &AnalyserPlot::saveChartDialog);
     connect(openChartBtn,  &QToolButton::clicked, this, &AnalyserPlot::openChartDialog);
     connect(viewCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -372,6 +387,11 @@ void AnalyserPlot::restoreState(const UndoSnap& snap) {
     // 1. Reconcile the store to exactly the snapshot's channel set. Removing
     //    extras and re-adding the held shared_ptrs is cheap (no data copy) and
     //    never re-reads a file. store_.add replaces an existing channel.
+    // The snapshot's layout is the whole truth about formulas. Without this,
+    // an entry created after the snapshot (e.g. by a rename) survives and
+    // recomputeAll below resurrects the channel the undo just removed.
+    engine_.forgetAll();
+
     QSet<QString> want;
     want.reserve(snap.channels.size());
     for (const auto& [name, sig] : snap.channels) want.insert(name);
@@ -1289,16 +1309,79 @@ void AnalyserPlot::editChannelDialog() {
         if (eq > 0 && lhs == name) expr = src.mid(eq + 1).trimmed();
     }
     if (expr.isEmpty()) {
-        QMessageBox::information(this, "Not a formula channel",
-            QString("'%1' wasn't created with a formula, so there's "
-                    "nothing to edit here. Use Remove + Add to replace "
-                    "it with a derived channel.").arg(name));
+        // A plain channel has no formula to redefine, but renaming it is a
+        // perfectly reasonable thing to want — offer that instead of a dead
+        // end. (Formula channels rename through the edit dialog already.)
+        renameChannelDialog();
         return;
     }
 
     AddChannelDialog dlg(store_, engine_, this);
     dlg.setEditMode(name, expr);
     dlg.exec();
+}
+
+void AnalyserPlot::renameChannelDialog() {
+    const int row = table_->currentRow();
+    if (row < 0 || !table_->item(row, ColName)) {
+        QMessageBox::information(this, "Rename channel",
+            "Select a channel in the table first.");
+        return;
+    }
+    const QString from = table_->item(row, ColName)->text();
+    bool ok = false;
+    const QString to = QInputDialog::getText(
+        this, "Rename channel", QString("New name for '%1':").arg(from),
+        QLineEdit::Normal, from, &ok).trimmed();
+    if (!ok || to.isEmpty() || to == from) return;
+
+    QString err;
+    if (!renameChannel(from, to, &err))
+        QMessageBox::warning(this, "Rename failed", err);
+}
+
+bool AnalyserPlot::renameChannel(const QString& from, const QString& to,
+                                 QString* errorOut) {
+    auto fail = [&](const QString& m) { if (errorOut) *errorOut = m; return false; };
+    if (from == to || to.trimmed().isEmpty()) return fail("Pick a different name.");
+    if (!store_.contains(from))
+        return fail(QString("'%1' is no longer in the store.").arg(from));
+    if (store_.contains(to))
+        return fail(QString("A channel called '%1' already exists. Remove it "
+                            "or pick another name.").arg(to));
+
+    // Order matters: move the formula registry first (it is keyed by name and
+    // doesn't touch the store), then re-key the store. Any name is allowed —
+    // formulas reference awkward names in brackets, and renameChannel()
+    // re-quotes every rewritten reference.
+    engine_.renameChannel(from, to);
+    if (!store_.rename(from, to)) return fail("The store rejected the rename.");
+    remapLocalChannelNames(from, to);
+
+    // Rebinds dependent formulas to the new name and, via evaluate(), rewrites
+    // each derived channel's Meta::sourceSymbol — which is what marks it as
+    // derived on save and on re-open. A plain channel's sourceSymbol (a PLC
+    // symbol or source file) is deliberately left alone.
+    engine_.recomputeAll();
+
+    rebuildXyXCombo();
+    rebuildTable();
+    recolorChannels();
+    redrawForActiveChannels();
+    scheduleCommit();
+    return true;
+}
+
+void AnalyserPlot::remapLocalChannelNames(const QString& from, const QString& to) {
+    auto move = [&](QHash<QString, std::pair<bool, int>>& h) {
+        if (h.contains(from)) h.insert(to, h.take(from));
+    };
+    move(savedRowState_);
+    for (auto& st : stateByDomain_) move(st.rowState);
+    if (pendingAssignments_.contains(from))
+        pendingAssignments_.insert(to, pendingAssignments_.take(from));
+    if (plotted_.contains(from)) plotted_.insert(to, plotted_.take(from));
+    if (xyChannel_ == from) xyChannel_ = to;
 }
 
 void AnalyserPlot::saveChartDialog() {

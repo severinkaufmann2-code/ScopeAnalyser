@@ -31,6 +31,18 @@ public:
     void remove(const QString& name);
     void clear();
 
+    // Re-key a channel. Returns false — changing nothing — when `from` is
+    // absent, when `to` is already taken (never clobbers) or when `to` is
+    // blank. The signal is CLONED under the new name rather than renamed in
+    // place, because undo snapshots elsewhere hold shared_ptrs to it and
+    // re-add them keyed by their own meta; mutating the meta would silently
+    // rewrite history.
+    //
+    // Emits channelRenamed, deliberately NOT channelRemoved + channelAdded:
+    // listeners treat a removal as the channel going away and tear down
+    // formulas, plot rows and XY selections that a rename must preserve.
+    bool rename(const QString& from, const QString& to);
+
     std::shared_ptr<Signal> get(const QString& name) const;
     bool contains(const QString& name) const;
     QStringList channelNames() const;
@@ -45,6 +57,7 @@ public:
 signals:
     void channelAdded(QString name);
     void channelRemoved(QString name);
+    void channelRenamed(QString from, QString to);
     // Emitted when an existing channel's sample data changed (appended /
     // recomputed) without the channel itself being added or removed.
     void channelDataChanged(QString name);

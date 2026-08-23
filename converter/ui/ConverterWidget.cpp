@@ -1432,6 +1432,19 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
     });
 
     // ---- Save chart: same dialog the Analyser uses ----
+    // A channel renamed elsewhere (the Analyser shares this store) must keep
+    // its association with the file it came from — otherwise re-applying the
+    // profile removes the OLD name (a no-op) and adds a duplicate, orphaning
+    // the renamed channel.
+    connect(&store_, &scope::core::SignalStore::channelRenamed, this,
+            [this](const QString& from, const QString& to) {
+        for (auto& f : impl_->files) {
+            if (!f) continue;
+            const int at = f->importedNames.indexOf(from);
+            if (at >= 0) f->importedNames[at] = to;
+        }
+    });
+
     connect(saveChartBtn, &QPushButton::clicked, this, [this]{
         if (store_.size() == 0) {
             QMessageBox::information(this, "Nothing to save",

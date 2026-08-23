@@ -626,6 +626,68 @@ void FormulaEngine::rememberFormula(const QString& name, const QString& expr) {
     impl_->setFormula(name, expr.trimmed());
 }
 
+namespace {
+
+// Replace every reference to `from` in an expression with `to`, using the
+// lexer so only whole identifiers match — a substring like "speedy" or a
+// name inside another bracketed name is left alone. The replacement goes
+// through quoteName so a new name needing brackets stays parseable.
+QString rewriteReferences(const QString& expr, const QString& from,
+                          const QString& to) {
+    Lexer lx(expr);
+    QString out;
+    int copied = 0;
+    for (;;) {
+        const Token t = lx.next();
+        if (t.kind == Tok::End) break;
+        if (t.kind == Tok::Ident && t.text == from) {
+            out += expr.mid(copied, t.pos - copied);
+            out += FormulaEngine::quoteName(to);
+            copied = lx.p;          // one past the token just consumed
+        }
+    }
+    return out + expr.mid(copied);
+}
+
+bool referencesChannel(const QString& expr, const QString& name) {
+    Lexer lx(expr);
+    for (;;) {
+        const Token t = lx.next();
+        if (t.kind == Tok::End) return false;
+        if (t.kind == Tok::Ident && t.text == name) return true;
+    }
+}
+
+}  // namespace
+
+void FormulaEngine::forgetAll() {
+    impl_->formulas.clear();
+    impl_->order.clear();
+}
+
+void FormulaEngine::renameChannel(const QString& from, const QString& to) {
+    if (from == to || to.isEmpty()) return;
+    for (auto it = impl_->formulas.begin(); it != impl_->formulas.end(); ++it)
+        it.value() = rewriteReferences(it.value(), from, to);
+    if (impl_->formulas.contains(from)) {
+        const QString expr = impl_->formulas.take(from);
+        // Keep the dependency order: recomputeAll walks `order`, and moving
+        // the entry to the end could evaluate a channel before its source.
+        const int at = impl_->order.indexOf(from);
+        if (at >= 0) impl_->order[at] = to;
+        else         impl_->order.append(to);
+        impl_->formulas.insert(to, expr);
+    }
+}
+
+QStringList FormulaEngine::dependentsOf(const QString& name) const {
+    QStringList out;
+    for (auto it = impl_->formulas.cbegin(); it != impl_->formulas.cend(); ++it)
+        if (it.key() != name && referencesChannel(it.value(), name))
+            out << it.key();
+    return out;
+}
+
 void FormulaEngine::forget(const QString& name) {
     impl_->formulas.remove(name);
     impl_->order.removeAll(name);

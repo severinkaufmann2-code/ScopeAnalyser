@@ -64,6 +64,22 @@ public:
     // Forget a derived channel's formula (e.g. when it's removed).
     void forget(const QString& name);
 
+    // Drop every remembered formula. Used by undo restore, which then
+    // re-registers exactly the snapshot's formulas — without this, entries
+    // created after the snapshot survive and recomputeAll resurrects the
+    // channels the undo just removed.
+    void forgetAll();
+
+    // Re-key a derived channel and rewrite every stored expression that
+    // references `from`, so recomputeAll still resolves afterwards. Token
+    // aware via the same lexer the parser uses, so renaming "speed" leaves
+    // "speedy" alone, and the rewritten reference is re-quoted if the new
+    // name needs brackets.
+    void renameChannel(const QString& from, const QString& to);
+
+    // Formula channels whose expression references `name`.
+    QStringList dependentsOf(const QString& name) const;
+
     // Re-evaluate every remembered formula against the current store, in
     // dependency order (multi-pass: a formula that references another
     // formula resolves once its dependency has been recomputed). Returns

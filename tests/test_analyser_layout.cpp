@@ -800,3 +800,157 @@ TEST_F(AnalyserPlotLayoutTest, UndoSnapshotReappliesAddedChannel) {
     EXPECT_TRUE(store.contains("A"));
     EXPECT_TRUE(store.contains("B"));
 }
+
+namespace scope::analyser::ui {
+
+// ---------------------------------------------------------------------------
+// Channel rename.
+//
+// Before this there was no rename anywhere in the stack — only a formula
+// channel *redefine* (AddChannelDialog re-runs "<name> = <expr>" and drops the
+// old key), which a plain recorded or imported channel cannot express. The
+// pencil button dead-ended on "wasn't created with a formula".
+//
+// A rename has to move the store key, the engine's formula key, every formula
+// that REFERENCES the channel, and this widget's own name-keyed state — all
+// without looking like a remove to the listeners that tear rows down.
+// ---------------------------------------------------------------------------
+
+class AnalyserPlotRenameTest : public ::testing::Test {
+protected:
+    void SetUp() override { ensureApp(); }
+    bool rename(AnalyserPlot& p, const QString& from, const QString& to,
+                QString* err = nullptr) {
+        QString sink;
+        return p.renameChannel(from, to, err ? err : &sink);
+    }
+};
+
+TEST_F(AnalyserPlotRenameTest, RenamesAPlainChannelKeepingItsSamples) {
+    SignalStore store;
+    addTimeChannel(store, "raw", "V");
+    FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    ASSERT_TRUE(rename(plot, "raw", "pressure"));
+    EXPECT_FALSE(store.contains("raw"));
+    ASSERT_TRUE(store.contains("pressure"));
+
+    auto s = store.get("pressure");
+    ASSERT_TRUE(s != nullptr);
+    EXPECT_EQ(s->meta().name.toStdString(), "pressure");
+    EXPECT_EQ(s->meta().unit.toStdString(), "V") << "unit must survive";
+    ASSERT_EQ(s->sampleCount(), 3u) << "samples must survive";
+    EXPECT_DOUBLE_EQ(s->readAsDouble()[1], 2.0);
+}
+
+TEST_F(AnalyserPlotRenameTest, AnyNameIsAllowedIncludingSpacesAndSymbols) {
+    SignalStore store;
+    addTimeChannel(store, "raw", "V");
+    FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    // Formulas reference awkward names in brackets, so nothing needs to be
+    // restricted to plain identifiers.
+    ASSERT_TRUE(rename(plot, "raw", "Axis position (mm)"));
+    EXPECT_TRUE(store.contains("Axis position (mm)"));
+}
+
+TEST_F(AnalyserPlotRenameTest, RefusesToClobberAnExistingChannel) {
+    SignalStore store;
+    addTimeChannel(store, "a", "V");
+    addTimeChannel(store, "b", "V");
+    FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    QString err;
+    EXPECT_FALSE(rename(plot, "a", "b", &err));
+    EXPECT_FALSE(err.isEmpty());
+    EXPECT_TRUE(store.contains("a")) << "the source must be left alone";
+    EXPECT_TRUE(store.contains("b"));
+    EXPECT_DOUBLE_EQ(store.get("b")->readAsDouble()[1], 2.0);
+}
+
+TEST_F(AnalyserPlotRenameTest, RewritesFormulasThatReferenceTheChannel) {
+    SignalStore store;
+    addTimeChannel(store, "speed", "rpm");
+    FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    QString err;
+    ASSERT_TRUE(engine.evaluate("doubled = speed * 2", &err)) << err.toStdString();
+    ASSERT_TRUE(rename(plot, "speed", "velocity"));
+
+    // The dependent formula now names the new channel and still recomputes.
+    EXPECT_EQ(engine.formulaFor("doubled").toStdString(), "velocity * 2");
+    QStringList errors;
+    engine.recomputeAll(&errors);
+    EXPECT_TRUE(errors.isEmpty()) << errors.join("; ").toStdString();
+    ASSERT_TRUE(store.contains("doubled"));
+    EXPECT_DOUBLE_EQ(store.get("doubled")->readAsDouble()[1], 4.0);
+}
+
+TEST_F(AnalyserPlotRenameTest, RewriteIsWholeTokenNotSubstring) {
+    SignalStore store;
+    addTimeChannel(store, "speed", "rpm");
+    addTimeChannel(store, "speedy", "rpm");
+    FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    QString err;
+    ASSERT_TRUE(engine.evaluate("sum = speed + speedy", &err)) << err.toStdString();
+    ASSERT_TRUE(rename(plot, "speed", "v"));
+    EXPECT_EQ(engine.formulaFor("sum").toStdString(), "v + speedy")
+        << "renaming 'speed' must not touch 'speedy'";
+}
+
+TEST_F(AnalyserPlotRenameTest, ReferenceIsRebracketedWhenTheNewNameNeedsIt) {
+    SignalStore store;
+    addTimeChannel(store, "speed", "rpm");
+    FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    QString err;
+    ASSERT_TRUE(engine.evaluate("doubled = speed * 2", &err)) << err.toStdString();
+    ASSERT_TRUE(rename(plot, "speed", "Axis speed"));
+
+    EXPECT_EQ(engine.formulaFor("doubled").toStdString(), "[Axis speed] * 2")
+        << "a name with a space only parses bracketed";
+    QStringList errors;
+    engine.recomputeAll(&errors);
+    EXPECT_TRUE(errors.isEmpty()) << errors.join("; ").toStdString();
+}
+
+TEST_F(AnalyserPlotRenameTest, RenamingAFormulaChannelMovesItsOwnFormula) {
+    SignalStore store;
+    addTimeChannel(store, "src", "V");
+    FormulaEngine engine(store);
+    AnalyserPlot plot(store, engine);
+
+    QString err;
+    ASSERT_TRUE(engine.evaluate("derived = src * 3", &err)) << err.toStdString();
+    ASSERT_TRUE(rename(plot, "derived", "scaled"));
+
+    EXPECT_TRUE(engine.formulaFor("derived").isEmpty());
+    EXPECT_EQ(engine.formulaFor("scaled").toStdString(), "src * 3");
+    QStringList errors;
+    engine.recomputeAll(&errors);
+    EXPECT_TRUE(errors.isEmpty()) << errors.join("; ").toStdString();
+    ASSERT_TRUE(store.contains("scaled"));
+    EXPECT_DOUBLE_EQ(store.get("scaled")->readAsDouble()[1], 6.0);
+}
+
+TEST_F(AnalyserPlotRenameTest, DependentsOfNamesTheFormulasThatWouldBreak) {
+    SignalStore store;
+    addTimeChannel(store, "a", "V");
+    FormulaEngine engine(store);
+    QString err;
+    ASSERT_TRUE(engine.evaluate("b = a * 2", &err)) << err.toStdString();
+    ASSERT_TRUE(engine.evaluate("c = b + 1", &err)) << err.toStdString();
+
+    EXPECT_EQ(engine.dependentsOf("a"), QStringList{"b"});
+    EXPECT_EQ(engine.dependentsOf("b"), QStringList{"c"});
+    EXPECT_TRUE(engine.dependentsOf("c").isEmpty());
+}
+
+}  // namespace scope::analyser::ui
