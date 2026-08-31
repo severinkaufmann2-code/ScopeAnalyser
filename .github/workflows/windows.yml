@@ -140,32 +140,28 @@ jobs:
         run: ctest --test-dir build -C $env:BUILD_TYPE --output-on-failure
 
       # --- Package ------------------------------------------------------------
-      # windeployqt copies the Qt runtime DLLs/plugins next to each executable;
-      # the vcpkg toolchain already deployed the non-Qt DLLs (applocal). The
-      # result under build/bin is a self-contained, runnable set of binaries.
-      - name: Deploy Qt runtime
-        shell: pwsh
-        run: |
-          $windeployqt = Join-Path $env:QT_ROOT_DIR "bin\windeployqt.exe"
-          Get-ChildItem build\bin\*.exe |
-            Where-Object { $_.Name -notlike "*test*" } |
-            ForEach-Object {
-              Write-Host "Deploying $($_.Name)"
-              & $windeployqt --release --no-translations --no-compiler-runtime $_.FullName
-            }
-
       # Reduce build/bin to what a user actually downloads, before packaging.
       #
-      # Two things come out. The linker's leftovers: .ilk is incremental-link
+      # Three things come out. The linker's leftovers: .ilk is incremental-link
       # scratch, meaningless outside the build tree that produced it, and .pdb
       # are debug symbols only useful alongside a matching local build — on
       # v0.5.0 those were 297 MB and 361 MB of a 764 MB artifact, 86% of it.
-      # And every executable except the application itself: the test runner has
+      # Every executable except the application itself: the test runner has
       # already done its job in the Test step, the standalone tools are the
       # same widgets the app hosts as tabs, and ads_dt_probe is a PLC
-      # diagnostic rather than something to hand a user.
+      # diagnostic rather than something to hand a user. And then the DLLs
+      # those executables brought in: vcpkg's applocal deployment runs per
+      # target, so dropping the test runner left gtest.dll and gtest_main.dll
+      # behind — they shipped in v0.5.1, imported by nothing.
       #
-      # Everything is still built and tested here — this only decides what gets
+      # This runs BEFORE windeployqt, which matters. Every DLL in build/bin at
+      # this point came from the build, so "does the application import it?" is
+      # a fair question to ask of all of them. It is NOT a fair question after
+      # windeployqt: Qt deploys blobs that nothing imports and loads by name at
+      # runtime — opengl32sw.dll for software OpenGL, the d3d compilers — and
+      # the same rule would quietly delete them.
+      #
+      # Everything is still built and tested here; this only decides what gets
       # published. Add a name to $ship below to include another executable.
       #
       # If a released build ever needs symbolising, re-run this workflow and
@@ -178,18 +174,99 @@ jobs:
                      Measure-Object Length -Sum).Sum
           Get-ChildItem build\bin -Recurse -Include *.ilk,*.pdb |
             Remove-Item -Force
-          # Ship the application only. The test runner has already done its
-          # job in the Test step; the three standalone executables are the same
-          # widgets the app hosts as tabs; ads_dt_probe is a PLC diagnostic.
-          # All four are still built and tested here — they are just not put in
-          # front of someone downloading the app. Add a name to ship it.
           $ship = @("ScopeAnalyser.exe")
           Get-ChildItem build\bin -File -Filter *.exe |
             Where-Object { $ship -notcontains $_.Name } |
             Remove-Item -Force
+
+          # Walk what the shipped executable imports, transitively, and keep
+          # only those. dumpbin comes from the MSVC environment set up above;
+          # without it, keep everything rather than guess.
+          if (-not (Get-Command dumpbin -ErrorAction SilentlyContinue)) {
+            Write-Host "::warning::dumpbin not on PATH; keeping every built DLL"
+          } else {
+            $present = @{}
+            Get-ChildItem build\bin -File -Filter *.dll |
+              ForEach-Object { $present[$_.Name.ToLower()] = $_.FullName }
+            $needed = [System.Collections.Generic.HashSet[string]]::new()
+            $queue  = [System.Collections.Generic.Queue[string]]::new()
+            Get-ChildItem build\bin -File -Filter *.exe |
+              ForEach-Object { $queue.Enqueue($_.FullName) }
+            while ($queue.Count -gt 0) {
+              $imports = & dumpbin /nologo /dependents $queue.Dequeue() |
+                         Select-String -Pattern '^\s+(\S+\.dll)\s*$' |
+                         ForEach-Object { $_.Matches[0].Groups[1].Value.ToLower() }
+              foreach ($dep in $imports) {
+                if ($present.ContainsKey($dep) -and $needed.Add($dep)) {
+                  $queue.Enqueue($present[$dep])
+                }
+              }
+            }
+            Get-ChildItem build\bin -File -Filter *.dll |
+              Where-Object { -not $needed.Contains($_.Name.ToLower()) } |
+              ForEach-Object {
+                Write-Host "dropping $($_.Name): nothing shipped imports it"
+                Remove-Item $_.FullName -Force
+              }
+          }
           $after = (Get-ChildItem build\bin -Recurse -File |
                     Measure-Object Length -Sum).Sum
           Write-Host ("payload {0:N0} MB -> {1:N0} MB" -f ($before/1MB), ($after/1MB))
+
+      # windeployqt copies the Qt runtime DLLs/plugins next to the executable;
+      # the vcpkg toolchain already deployed the non-Qt DLLs (applocal). The
+      # result under build/bin is a self-contained, runnable set of binaries.
+      # Only the shipped application is left by now, so this deploys once.
+      - name: Deploy Qt runtime
+        shell: pwsh
+        run: |
+          $windeployqt = Join-Path $env:QT_ROOT_DIR "bin\windeployqt.exe"
+          Get-ChildItem build\bin\*.exe |
+            ForEach-Object {
+              Write-Host "Deploying $($_.Name)"
+              & $windeployqt --release --no-translations --no-compiler-runtime $_.FullName
+            }
+
+      # Prove the bundle still runs after all that. The app's screenshot mode
+      # seeds demo data, walks every tab, exports the interactive HTML and
+      # quits by itself, so a DLL or Qt plugin that should not have been
+      # removed shows up here as a failure to start rather than as a broken
+      # download.
+      #
+      # Run against a COPY with the offscreen platform plugin added: the runner
+      # has no desktop session to open a real window on, and adding the plugin
+      # to the copy keeps the thing being tested identical to the thing being
+      # shipped in every other respect. PATH is cut back to the system
+      # directories on purpose — Qt's own bin is on PATH in this job, and
+      # leaving it there would let the app resolve a Qt DLL that is missing
+      # from the bundle.
+      - name: Smoke-test the packaged application
+        shell: pwsh
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP "smoke"
+          $shots = Join-Path $env:RUNNER_TEMP "shots"
+          Remove-Item -Recurse -Force $smoke, $shots -ErrorAction SilentlyContinue
+          Copy-Item build\bin $smoke -Recurse
+          New-Item -ItemType Directory -Force -Path $shots, "$smoke\platforms" | Out-Null
+          Copy-Item (Join-Path $env:QT_ROOT_DIR "plugins\platforms\qoffscreen.dll") `
+                    "$smoke\platforms\"
+
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:SCOPE_SHELL_SCREENSHOT_DIR = $shots
+          $env:PATH = "$env:SystemRoot\system32;$env:SystemRoot"
+          $app = Start-Process -FilePath "$smoke\ScopeAnalyser.exe" -PassThru -NoNewWindow
+          $null = $app.Handle          # cache it, or ExitCode reads back empty
+          if (-not $app.WaitForExit(180000)) {
+            $app.Kill()
+            throw "ScopeAnalyser.exe did not finish its screenshot run within 180 s"
+          }
+          if ($app.ExitCode -ne 0) {
+            throw ("ScopeAnalyser.exe exited with 0x{0:X8} — a missing DLL or Qt plugin?" -f $app.ExitCode)
+          }
+          $produced = @(Get-ChildItem $shots -File)
+          if ($produced.Count -eq 0) { throw "the app started but produced nothing" }
+          Write-Host ("smoke run wrote {0} files: {1}" -f $produced.Count,
+                      ($produced.Name -join ", "))
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
