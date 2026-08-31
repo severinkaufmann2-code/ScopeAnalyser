@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(ScopeAnalyser
-    VERSION 0.5.0
+    VERSION 0.5.1
     DESCRIPTION "Signal recording, analysis, and data conversion for TwinCAT ADS"
     LANGUAGES CXX)
 
