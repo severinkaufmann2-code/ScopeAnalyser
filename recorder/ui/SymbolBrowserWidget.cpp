@@ -7,6 +7,7 @@
 #include <QVBoxLayout>
 #include <QStandardItem>
 #include <QApplication>
+#include <QPalette>
 #include <QHeaderView>
 #include <QHash>
 #include <QSet>
@@ -54,13 +55,28 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
         "Structures and arrays expand — select a branch to take everything\n"
         "inside it. Filter, select, then “Add selected”.");
 
+    note_ = new QLabel(this);
+    note_->setWordWrap(true);
+    note_->setVisible(false);
+    note_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    {
+        QPalette pal = note_->palette();
+        pal.setColor(QPalette::WindowText,
+                     pal.color(QPalette::Disabled, QPalette::WindowText));
+        note_->setPalette(pal);
+    }
+
     byName_ = new QLineEdit(this);
     byName_->setPlaceholderText("Structure member by name, e.g. MAIN.stAxis.fActPos");
     byName_->setClearButtonEnabled(true);
     byName_->setToolTip(
-        "Structure members don't appear in the list above: the PLC's symbol\n"
-        "upload has one entry per declared variable, so a structure is a\n"
-        "single opaque entry and its members are not enumerated.\n\n"
+        "Structures and arrays expand in the list above whenever the PLC\n"
+        "serves its data-type table — the symbol upload itself has only one\n"
+        "entry per declared variable, so the members come from that table.\n\n"
+        "Use this when something is missing from the list: a PLC that won't\n"
+        "serve the table, a structure too large to list in full, or a type\n"
+        "the table doesn't describe. The line under the list says when that\n"
+        "happened.\n\n"
         "Type the full path and the PLC is asked about it directly — it\n"
         "reports the member's own address, size and type. Nested members and\n"
         "elements of an array of structures work too:\n"
@@ -94,6 +110,7 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
     layout->addWidget(scope::style::sectionLabel("PLC symbols", this));
     layout->addLayout(top);
     layout->addWidget(tree_);
+    layout->addWidget(note_);
 
     auto* byNameRow = new QHBoxLayout();
     byNameRow->addWidget(byName_, /*stretch=*/1);
@@ -178,9 +195,20 @@ void sortArrayChildren(QStandardItem* node) {
 
 }  // namespace
 
+void SymbolBrowserWidget::setNote(const QString& note) {
+    note_->setText(note);
+    note_->setToolTip(note);
+    note_->setVisible(!note.isEmpty());
+}
+
 void SymbolBrowserWidget::setSymbols(std::vector<scope::core::AdsSymbol> symbols) {
     symbols_ = std::move(symbols);
     model_->removeRows(0, model_->rowCount());
+
+    // Fill the model detached: a machine's worth of expanded structures is
+    // tens of thousands of rows, and every appendRow with the view attached
+    // costs a round of proxy filtering and layout.
+    proxy_->setSourceModel(nullptr);
 
     // Branch nodes by full path prefix, so every symbol finds or creates its
     // parents once. A prefix that is itself a symbol (a structure) reuses the
@@ -263,6 +291,7 @@ void SymbolBrowserWidget::setSymbols(std::vector<scope::core::AdsSymbol> symbols
         }
     }
     sortArrayChildren(model_->invisibleRootItem());
+    proxy_->setSourceModel(model_);
     tree_->collapseAll();
 }
 

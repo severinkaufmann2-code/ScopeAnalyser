@@ -102,6 +102,12 @@ public:
     virtual bool isConnected() const = 0;
 
     // Upload the PLC's symbol table. Returns empty vector on error.
+    //
+    // *errorOut also carries a NON-FATAL note when the list came back usable
+    // but incomplete — a data-type table the PLC only partly served, a
+    // structure too large to expand in full, members of a type that can't be
+    // recorded. Callers should show it whether or not the vector is empty:
+    // check emptiness for failure, not the string.
     virtual std::vector<AdsSymbol> listSymbols(QString* errorOut = nullptr) = 0;
 
     // Ask the PLC about ONE symbol by its fully qualified name, e.g.

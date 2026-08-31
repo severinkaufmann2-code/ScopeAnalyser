@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QLabel>
 #include <QTreeView>
 #include <QAbstractItemModel>
 
@@ -267,4 +268,29 @@ TEST(SymbolBrowserTree, SelectingAGroupIsReportedSoItCanBeConfirmed) {
     tv->selectionModel()->select(one, QItemSelectionModel::ClearAndSelect |
                                       QItemSelectionModel::Rows);
     EXPECT_TRUE(w.selectedGroupNames().isEmpty());
+}
+
+// A listing can come back usable but incomplete — a data-type table the PLC
+// only partly served, a structure past the leaf cap. That has to be visible:
+// a member missing from the tree with nothing said about it looks exactly
+// like a member the PLC never published.
+TEST(SymbolBrowserTree, ShowsTheListingNoteOnlyWhenThereIsSomethingToSay) {
+    ensureGuiApp();
+    scope::recorder::ui::SymbolBrowserWidget w;
+    w.setSymbols({leaf("MAIN.speed", "LREAL", 0x300)});
+    w.show();
+
+    auto* note = w.findChild<QLabel*>();
+    ASSERT_NE(note, nullptr);
+    EXPECT_FALSE(note->isVisible()) << "nothing to report, nothing shown";
+
+    const QString msg = "MAIN.fbMachine holds more than 32768 recordable values";
+    w.setNote(msg);
+    EXPECT_TRUE(note->isVisible());
+    EXPECT_EQ(note->text().toStdString(), msg.toStdString());
+    EXPECT_EQ(note->toolTip().toStdString(), msg.toStdString())
+        << "the full text stays reachable when the line is elided";
+
+    w.setNote({});
+    EXPECT_FALSE(note->isVisible());
 }

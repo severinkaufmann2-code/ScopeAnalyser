@@ -56,9 +56,11 @@ std::optional<ArrayTypeInfo> parseArrayTypeName(const QString& typeName);
 // cannot silently produce wrong offsets; it produces nothing.
 //
 // `maxElements` caps the expansion so a huge array can't flood the symbol list;
-// beyond it nothing is emitted and *warnOut says so.
+// beyond it nothing is emitted and *warnOut says so. The default matches
+// expandWithTypeTable's leaf cap, so which of the two paths a symbol happens
+// to take doesn't change how much of it is listed.
 std::vector<scope::core::AdsSymbol> expandArraySymbol(
-    const scope::core::AdsSymbol& sym, int maxElements = 4096,
+    const scope::core::AdsSymbol& sym, int maxElements = 32768,
     QString* warnOut = nullptr);
 
 }  // namespace scope::ads

@@ -334,13 +334,19 @@ void RecorderWidget::onDisconnectClicked() {
 
 void RecorderWidget::onRefreshSymbols() {
     if (!client_ || !client_->isConnected()) return;
-    QString err;
-    auto syms = client_->listSymbols(&err);
-    if (syms.empty() && !err.isEmpty()) {
-        QMessageBox::warning(this, "listSymbols", err);
+    QString note;
+    auto syms = client_->listSymbols(&note);
+    if (syms.empty()) {
+        if (!note.isEmpty()) QMessageBox::warning(this, "listSymbols", note);
+        symbols_->setSymbols({});
+        symbols_->setNote(note);
         return;
     }
+    // A note alongside a usable list means something was left out of it —
+    // shown under the tree rather than in a dialog, so refreshing doesn't
+    // interrupt, but the gap is never silent.
     symbols_->setSymbols(std::move(syms));
+    symbols_->setNote(note);
 }
 
 void RecorderWidget::onAddSelectedSymbols() {
@@ -380,8 +386,9 @@ void RecorderWidget::onAddSelectedSymbols() {
         QMessageBox::information(this, "Can't record these directly",
             QString("These symbols have no single numeric value, so they were "
                     "not added:\n\n%1\n\nRecord a structure's individual "
-                    "members or an array's individual elements instead — those "
-                    "appear as their own symbols once the PLC publishes them.")
+                    "members or an array's individual elements instead: expand "
+                    "the row to pick them, or type the full path into “Add by "
+                    "name” if the member isn't listed.")
                 .arg(rejected.join("\n")));
     }
 }

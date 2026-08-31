@@ -6,6 +6,7 @@
 #include "scope/ads/AdsTypeTable.h"
 
 #include <QSet>
+#include <QStringList>
 
 #include <spdlog/spdlog.h>
 
@@ -30,6 +31,7 @@ static constexpr socket_t kBadSock = -1;
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
+#include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -440,16 +442,30 @@ std::vector<AdsSymbol> RouterAdsClient::listSymbols(QString* errorOut) {
     // Best-effort: a target that won't serve it still gets its scalar symbols,
     // and plain arrays of scalars are still expanded from their type name.
     scope::ads::AdsTypeTable typeTable;
+    QStringList notes;                  // non-fatal, reported to the user
     if (info.nDatatypeSize > 0) {
         std::vector<std::byte> dt(info.nDatatypeSize);
-        QString dtErr;
+        QString dtErr, dtWarn;
         if (read(kAdsigrpSymDtUpload, 0, std::span<std::byte>(dt), &dtErr)) {
-            typeTable = scope::ads::parseAdsTypeTable(dt);
+            typeTable = scope::ads::parseAdsTypeTable(dt, &dtWarn);
             spdlog::info("ADS data-type table: {} of {} types parsed",
                          typeTable.size(), info.nDatatypes);
+            // A table that stopped early is the one failure that looks like
+            // nothing at all: the types before the cut expand as usual, and
+            // every symbol whose type came after it silently loses its
+            // members. Say so.
+            if (!dtWarn.isEmpty()) notes << dtWarn;
+            if (typeTable.size() < static_cast<int>(info.nDatatypes))
+                notes << QString("The PLC announced %1 data types but only %2 "
+                                 "could be read, so some structures can't be "
+                                 "expanded. Use “Add by name” for members "
+                                 "that are missing.")
+                             .arg(info.nDatatypes).arg(typeTable.size());
         } else {
             spdlog::warn("ADS data-type table unavailable ({}); structure "
                          "members won't be listed", dtErr.toStdString());
+            notes << QString("The PLC's data-type table couldn't be read (%1), "
+                             "so structure members are not listed.").arg(dtErr);
         }
     }
 
@@ -500,26 +516,42 @@ std::vector<AdsSymbol> RouterAdsClient::listSymbols(QString* errorOut) {
     // interface structures, at their own index groups) isn't duplicated by a
     // computed copy. The PLC's own entry always wins — it is authoritative
     // about the address.
-    QSet<QString> known;
-    known.reserve(static_cast<int>(outv.size()));
-    for (const auto& s : outv) known.insert(s.name);
-
-    std::vector<AdsSymbol> expanded;
-    for (const auto& s : outv) {
-        if (!s.unsupported) continue;
-        std::vector<AdsSymbol> leaves;
-        if (!typeTable.isEmpty())
-            leaves = scope::ads::expandWithTypeTable(s, typeTable);
-        if (leaves.empty())
-            leaves = scope::ads::expandArraySymbol(s);
-        for (auto& e : leaves) {
-            if (known.contains(e.name)) continue;   // the PLC already lists it
-            known.insert(e.name);
-            expanded.push_back(std::move(e));
-        }
+    //
+    // How far each one expands is sized by the listing itself; see
+    // expandAggregates.
+    scope::ads::ListingReport expandReport;
+    std::vector<AdsSymbol> expanded =
+        scope::ads::expandAggregates(outv, typeTable, {}, &expandReport);
+    for (const auto& n : expandReport.limits)
+        spdlog::warn("symbol expansion: {}", n.toStdString());
+    notes += expandReport.limits;
+    // The everyday kind, summarised: every PLC has strings and pointers, and
+    // listing them all would bury whatever else the note has to say. The names
+    // go to the log, where someone hunting one specific member can find it.
+    if (!expandReport.skipped.isEmpty()) {
+        spdlog::info("not recordable, left out of the symbol list: {}",
+                     expandReport.skipped.join(", ").toStdString());
+        notes << QString("%1 members have no single numeric value (strings, "
+                         "pointers, interfaces) and were left out; the log "
+                         "names them.").arg(expandReport.skipped.size());
     }
+    int aggregates = 0;
+    for (const auto& s : outv) if (s.unsupported) ++aggregates;
+
+    spdlog::info("ADS symbols: {} declared, {} aggregates expanded into {} "
+                 "recordable values", outv.size(), aggregates, expanded.size());
     outv.insert(outv.end(), std::make_move_iterator(expanded.begin()),
                 std::make_move_iterator(expanded.end()));
+
+    // A note, not a failure: the list is usable, but the caller is told what
+    // is missing from it so a member that never appears has an explanation.
+    if (errorOut && !notes.isEmpty()) {
+        constexpr int kMaxNotes = 6;
+        *errorOut = notes.mid(0, kMaxNotes).join("\n\n")
+                  + (notes.size() > kMaxNotes
+                         ? QString("\n\n(+%1 more)").arg(notes.size() - kMaxNotes)
+                         : QString());
+    }
     return outv;
 }
 
