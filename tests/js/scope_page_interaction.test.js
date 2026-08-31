@@ -11,6 +11,9 @@
 // The reference is ScopePlot::eventFilter / ScopePlot::zoomAt in
 // plot/src/ScopePlot.cpp; kZoomStep there is the 0.85 asserted below.
 //
+// It also covers the panel's cursor read-out on a mixed-rate union grid,
+// where a slower channel is null at the grid points a faster one put there.
+//
 // Run: node tests/js/scope_page_interaction.test.js  (ctest name: scope_page_js)
 //
 // The DOM and uPlot here are stubs — just enough surface for makeApp() to run
@@ -47,9 +50,10 @@ function mkEl(tag) {
 
 global.devicePixelRatio = 1;
 const docEvents = {};
+const byId = {};
 global.document = {
   createElement: mkEl,
-  getElementById: () => mkEl('div'),
+  getElementById: (id) => (byId[id] = byId[id] || mkEl('div')),
   addEventListener(t, fn) { (docEvents[t] = docEvents[t] || []).push(fn); },
   removeEventListener(t, fn) {
     const a = docEvents[t] || []; const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1);
@@ -246,6 +250,67 @@ p = snap();
 document.dispatch('mousemove', new MouseEvent('mousemove', { clientX: cx + 300, clientY: cy }));
 q = snap();
 check('pan stops on mouseup (listeners detached)', near(p.x, q.x));
+
+// --- cursor read-out over a mixed-rate union grid ---------------------------
+// "slow" samples every 10 ms and only over 0.02 s .. 0.08 s; "fast" samples
+// every 5 ms across the whole window. On their union grid slow is null at
+// every odd index — the read-out must still report the value the drawn line
+// carries there (interpolated, marked "≈") instead of going blank.
+const GRID = 21;                                   // 0 .. 100 ms, 5 ms apart
+const gt = [], slow = [], fast = [];
+for (let i = 0; i < GRID; i++) {
+  gt.push(i / 200);
+  slow.push(i % 2 === 0 && i >= 4 && i <= 16 ? 100 * (i / 200) : null);
+  fast.push(i);
+}
+const chartsHost = document.getElementById('charts');
+const nBlocks = chartsHost.children.length;
+makeApp({
+  view: 'time', xyChannel: '',
+  time: {
+    xLabel: 't [s]',
+    axes: [{ label: 'Y1', right: false, color: '#1e1e1e' }],
+    series: [{ name: 'slow', label: 'slow [mm]', color: '#1e1e1e', axis: 0, visible: true },
+             { name: 'fast', label: 'fast [mm]', color: '#d95319', axis: 0, visible: true }],
+    data: [gt, slow, fast],
+  },
+  frequency: null,
+});
+const u2 = INST;
+function collect(el, cls, out) {
+  out = out || [];
+  if (el.className === cls) out.push(el);
+  (el.children || []).forEach(c => collect(c, cls, out));
+  return out;
+}
+const cells = collect(chartsHost.children[nBlocks], 'cval');
+check('read-out has one value cell per channel', cells.length === 2,
+      `${cells.length} cells`);
+const readAt = i => {
+  u2.cursor.idx = i;
+  u2.opts.hooks.setCursor.forEach(fn => fn(u2));
+  return cells.map(c => c.textContent);
+};
+
+let r = readAt(6);                                  // slow has a sample here
+check('sampled point reads the sample itself, unmarked',
+      r[0] === '3' && r[1] === '6', `[${r.join(' | ')}]`);
+
+r = readAt(5);                                      // slow is null here
+check('gap between the slow channel\'s samples reads the interpolated value',
+      r[0] === '≈ 2.5' && r[1] === '5', `[${r.join(' | ')}]`);
+
+r = readAt(2);                                      // before slow's first sample
+check('before a channel\'s first sample it stays blank, others still read',
+      r[0] === '' && r[1] === '2', `[${r.join(' | ')}]`);
+
+r = readAt(18);                                     // after slow's last sample
+check('after a channel\'s last sample it stays blank',
+      r[0] === '' && r[1] === '18', `[${r.join(' | ')}]`);
+
+r = readAt(null);                                   // pointer off the plot
+check('no cursor → every cell blank', r[0] === '' && r[1] === '',
+      `[${r.join(' | ')}]`);
 
 console.log('\n' + (fails ? fails + ' FAILING' : 'all ' + total + ' checks passed'));
 process.exit(fails ? 1 : 0);

@@ -413,12 +413,58 @@ function makeApp(app) {
   }
 
   const fmt = v => Number(v.toPrecision(6)).toString();
+
+  // ---------- cursor read-out ----------
+  // Every channel of a domain is emitted against the union of all their
+  // timestamps, so a channel sampled at 10 ms is null at each grid point a
+  // 5 ms channel contributed — and reading the raw column at the cursor
+  // would blank the slower channel out at half the positions it is hovered.
+  // Report what the drawn line reads instead: the sample where there is
+  // one, otherwise a linear interpolation between the channel's own
+  // neighbouring samples, which is exactly the segment spanGaps draws
+  // through those holes. An interpolated read-out is prefixed "≈" so it is
+  // never mistaken for a recorded sample. Before a channel's first sample
+  // or after its last there is no line, hence no value.
+  //
+  // Each column's real sample positions are indexed once, lazily, so a
+  // hover costs a binary search rather than a walk over millions of points.
+  const samplePos = new WeakMap();
+  function samplePositions(col) {
+    let pos = samplePos.get(col);
+    if (!pos) {
+      let n = 0;
+      for (let i = 0; i < col.length; i++) if (col[i] != null) n++;
+      pos = new Int32Array(n);
+      for (let i = 0, k = 0; i < col.length; i++) if (col[i] != null) pos[k++] = i;
+      samplePos.set(col, pos);
+    }
+    return pos;
+  }
+  // → {v, exact} for grid point idx, or null where the channel has no line.
+  function readAt(xs, col, idx) {
+    if (col[idx] != null) return { v: col[idx], exact: true };
+    const pos = samplePositions(col);
+    let lo = 0, hi = pos.length;               // → first sample after idx
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (pos[m] < idx) lo = m + 1; else hi = m;
+    }
+    if (lo === 0 || lo === pos.length) return null;   // outside this channel
+    const a = pos[lo - 1], b = pos[lo];
+    // Samples sharing one timestamp leave no span to interpolate across.
+    const v = xs[a] === xs[b]
+                  ? col[a]
+                  : col[a] + (xs[idx] - xs[a]) / (xs[b] - xs[a]) * (col[b] - col[a]);
+    return { v, exact: false };
+  }
+
   function updateValues(uu) {
     if (curView !== "xy") {
       const idx = uu.cursor.idx;
+      const xs = uu.data[0];
       rows.forEach(r => {
-        const v = idx == null ? null : uu.data[r.chartIdx][idx];
-        r.valEl.textContent = (v == null) ? "" : fmt(v);
+        const s = idx == null ? null : readAt(xs, uu.data[r.chartIdx], idx);
+        r.valEl.textContent = !s ? "" : (s.exact ? fmt(s.v) : "≈ " + fmt(s.v));
       });
     } else {
       // The app's XY view has no per-channel cursor read-out either.
