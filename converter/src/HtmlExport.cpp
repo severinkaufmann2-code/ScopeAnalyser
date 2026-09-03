@@ -380,8 +380,14 @@ select.tbtn, select.psel { border: 1px solid #d4d8dd; background: #ffffff;
         font: inherit; font-size: 13px; border-radius: 4px; padding: 3px 6px; }
 select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 .body { display: flex; align-items: stretch; }
-.panel { width: 250px; min-width: 250px; border-right: 1px solid #e6e8eb;
+.panel { width: 250px; min-width: 250px; flex: none;
          padding: 8px 10px; box-sizing: border-box; }
+/* Divider between the channel list and the plot: a 1px rule inside a 7px
+   grab strip, so it reads as a hairline but is still easy to hit. */
+.pgrip { flex: none; width: 7px; cursor: col-resize; background: #e6e8eb;
+         border-left: 3px solid #ffffff; border-right: 3px solid #ffffff;
+         background-clip: padding-box; box-sizing: border-box; }
+.pgrip:hover, .pgrip.on { background: #2e6fd6; }
 .ptitle { color: #5d6570; font-size: 11px; font-weight: 700; letter-spacing: 1px;
           margin: 6px 0 6px 0; }
 .crow { display: flex; align-items: center; gap: 7px; padding: 3px 0; font-size: 13px; }
@@ -399,7 +405,7 @@ select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 <p class="meta">Exported %DATE% · %NCH% channel(s) · scroll = zoom X and Y at the
 cursor · Ctrl+scroll = X only · Shift+scroll = Y only · scroll over an axis = that
 axis · drag = pan · double-click = fit · Δ Measure: click two points, right-click
-clears</p>
+clears · drag the divider left of the plot to widen the channel list</p>
 <div id="charts"></div>
 <script>
 %PAGEJS%
@@ -660,8 +666,14 @@ select.tbtn, select.psel { border: 1px solid #d4d8dd; background: #ffffff;
         font: inherit; font-size: 13px; border-radius: 4px; padding: 3px 6px; }
 select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 .body { display: flex; align-items: stretch; }
-.panel { width: 250px; min-width: 250px; border-right: 1px solid #e6e8eb;
+.panel { width: 250px; min-width: 250px; flex: none;
          padding: 8px 10px; box-sizing: border-box; }
+/* Divider between the channel list and the plot: a 1px rule inside a 7px
+   grab strip, so it reads as a hairline but is still easy to hit. */
+.pgrip { flex: none; width: 7px; cursor: col-resize; background: #e6e8eb;
+         border-left: 3px solid #ffffff; border-right: 3px solid #ffffff;
+         background-clip: padding-box; box-sizing: border-box; }
+.pgrip:hover, .pgrip.on { background: #2e6fd6; }
 .ptitle { color: #5d6570; font-size: 11px; font-weight: 700; letter-spacing: 1px;
           margin: 6px 0 6px 0; }
 .crow { display: flex; align-items: center; gap: 7px; padding: 3px 0; font-size: 13px; }
@@ -679,7 +691,8 @@ select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 <p class="meta">Exported %DATE% · %NCH% channel(s) · %KIND% ·
 scroll = zoom X and Y at the cursor · Ctrl+scroll = X only · Shift+scroll = Y only ·
 scroll over an axis = that axis · drag = pan · double-click = fit · Δ Measure: click
-two points, right-click clears</p>
+two points, right-click clears · drag the divider left of the plot to widen the
+channel list</p>
 <div id="charts"></div>
 <script id="%ISLANDID%" type="application/octet-stream" data-encoding="gzip+base64">%ISLAND%</script>
 <script>%FFLATE%</script>

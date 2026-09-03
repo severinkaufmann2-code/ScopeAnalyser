@@ -21,6 +21,7 @@
 #include <QSvgGenerator>
 #endif
 #include <QComboBox>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -30,9 +31,11 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <memory>
 
 namespace scope::plot {
 
@@ -40,6 +43,27 @@ namespace {
 
 constexpr double kZoomStep = 0.85;
 constexpr double kPanFraction = 0.10;
+
+// Press-and-hold on a Zoom or Move button keeps going: after kHoldDelayMs the
+// action repeats every kHoldStartMs, and each repeat shortens the gap by
+// kHoldDecay down to kHoldMinMs, so a held button ramps up instead of crawling
+// at one step per tick. The delay is long enough that an ordinary click never
+// repeats by accident.
+//
+// kHoldMinMs is one display frame: replot() is queued and coalesces, so firing
+// faster than the screen refreshes only drops frames. To keep accelerating past
+// that the *step* has to grow, which is what kHoldBoost does — it multiplies
+// the pan fraction once the interval has bottomed out, up to kHoldBoostMax, so
+// a held Move ends up covering ~50 view-widths a second instead of 4.
+//
+// Zoom deliberately takes no boost: its step is a ratio, so holding it is
+// already geometric (0.85 per frame is ~1/750 of the range per second).
+constexpr int    kHoldDelayMs   = 500;
+constexpr int    kHoldStartMs   = 140;
+constexpr int    kHoldMinMs     = 16;
+constexpr double kHoldDecay     = 0.82;
+constexpr double kHoldBoost     = 1.05;
+constexpr double kHoldBoostMax  = 8.0;
 
 // Axis (and therefore channel) base colours per theme. Y1 is the neutral
 // "ink" colour; the rest are picked for contrast against the respective
@@ -220,8 +244,8 @@ ScopePlot::ScopePlot(QWidget* parent)
 
     // Related actions live in thin-bordered boxes ("button groups"), some
     // with a caption to their right:  [⤢ ↕] Fit   [↔+ ↔− ↕+ ↕−] Zoom
-    // …  [Y+ Y−]. The box styling comes from the app stylesheet via the
-    // "btnGroup" role.
+    // [← → ↑ ↓] Move  …  [Y+ Y−]. The box styling comes from the app
+    // stylesheet via the "btnGroup" role.
     auto makeGroup = [&]() -> QHBoxLayout* {
         auto* box = new QWidget(impl_->toolbar);
         box->setProperty("scopeRole", "btnGroup");
@@ -239,6 +263,47 @@ ScopePlot::ScopePlot(QWidget* parent)
         b->setToolTip(tooltip);
         b->setAutoRaise(true);
         connect(b, &QToolButton::clicked, this, fn);
+        into->addWidget(b);
+        return b;
+    };
+    // Zoom and Move buttons repeat while held, accelerating as described above;
+    // fn is handed the current boost. Fit and Y+/Y- are one-shot actions and
+    // keep the plain clicked() wiring of makeBtnInto.
+    auto makeHoldBtnInto = [this](QHBoxLayout* into, const QString& text,
+                                  const QString& tooltip,
+                                  std::function<void(double)> fn) {
+        auto* b = new QToolButton(impl_->toolbar);
+        b->setText(text);
+        b->setToolTip(tooltip);
+        b->setAutoRaise(true);
+        // One timer per button: pressed() acts at once and arms the delay, each
+        // timeout acts again and arms a shorter one, released() stops. Qt's own
+        // autoRepeat can't accelerate, and it re-emits pressed() on every tick,
+        // which leaves nowhere to reset the ramp. isDown() covers the holds that
+        // never see a release — button hidden or disabled, window deactivated
+        // mid-hold.
+        auto* timer = new QTimer(b);
+        timer->setSingleShot(true);
+        struct Ramp { int gap; double boost; };
+        auto r = std::make_shared<Ramp>(Ramp{kHoldStartMs, 1.0});
+        connect(timer, &QTimer::timeout, this, [b, fn, timer, r]{
+            if (!b->isDown()) return;
+            fn(r->boost);
+            timer->start(r->gap);       // this gap, then ramp for the next
+            if (r->gap > kHoldMinMs) {
+                r->gap = std::max(kHoldMinMs,
+                                  static_cast<int>(r->gap * kHoldDecay));
+            } else {
+                // Interval is at the frame floor; grow the step instead.
+                r->boost = std::min(kHoldBoostMax, r->boost * kHoldBoost);
+            }
+        });
+        connect(b, &QToolButton::pressed, this, [fn, timer, r]{
+            fn(1.0);
+            *r = Ramp{kHoldStartMs, 1.0};
+            timer->start(kHoldDelayMs);
+        });
+        connect(b, &QToolButton::released, timer, &QTimer::stop);
         into->addWidget(b);
         return b;
     };
@@ -266,19 +331,40 @@ ScopePlot::ScopePlot(QWidget* parent)
     tb->addSpacing(10);
     {   // [↔+ ↔− ↕+ ↕−] Zoom
         auto* g = makeGroup();
-        makeBtnInto(g, QString::fromUtf8("↔ +"),
-                    "Zoom X in  (Ctrl+Scroll up)",
-                    [this]{ zoomXBy(kZoomStep); });
-        makeBtnInto(g, QString::fromUtf8("↔ −"),
-                    "Zoom X out  (Ctrl+Scroll down)",
-                    [this]{ zoomXBy(1.0 / kZoomStep); });
-        makeBtnInto(g, QString::fromUtf8("↕ +"),
-                    "Zoom all Y in  (Shift+Scroll up)",
-                    [this]{ zoomYBy(kZoomStep); });
-        makeBtnInto(g, QString::fromUtf8("↕ −"),
-                    "Zoom all Y out  (Shift+Scroll down)",
-                    [this]{ zoomYBy(1.0 / kZoomStep); });
+        makeHoldBtnInto(g, QString::fromUtf8("↔ +"),
+                    "Zoom X in  (Ctrl+Scroll up).  Hold to keep zooming.",
+                    [this](double){ zoomXBy(kZoomStep); });
+        makeHoldBtnInto(g, QString::fromUtf8("↔ −"),
+                    "Zoom X out  (Ctrl+Scroll down).  Hold to keep zooming.",
+                    [this](double){ zoomXBy(1.0 / kZoomStep); });
+        makeHoldBtnInto(g, QString::fromUtf8("↕ +"),
+                    "Zoom all Y in  (Shift+Scroll up).  Hold to keep zooming.",
+                    [this](double){ zoomYBy(kZoomStep); });
+        makeHoldBtnInto(g, QString::fromUtf8("↕ −"),
+                    "Zoom all Y out  (Shift+Scroll down).  Hold to keep zooming.",
+                    [this](double){ zoomYBy(1.0 / kZoomStep); });
         addCaption(QString::fromUtf8("Zoom"));
+    }
+    tb->addSpacing(10);
+    {   // [← → ↑ ↓] Move — the arrow keys' step, on the toolbar
+        auto* g = makeGroup();
+        makeHoldBtnInto(g, QString::fromUtf8("←"),
+                    "Move the view left — show earlier X  (Left arrow).  "
+                    "Hold to keep moving, faster the longer you hold.",
+                    [this](double k){ panBy(-kPanFraction * k, 0); });
+        makeHoldBtnInto(g, QString::fromUtf8("→"),
+                    "Move the view right — show later X  (Right arrow).  "
+                    "Hold to keep moving, faster the longer you hold.",
+                    [this](double k){ panBy( kPanFraction * k, 0); });
+        makeHoldBtnInto(g, QString::fromUtf8("↑"),
+                    "Move the view up — every Y axis shows higher values.  "
+                    "Hold to keep moving, faster the longer you hold.",
+                    [this](double k){ panBy(0,  kPanFraction * k); });
+        makeHoldBtnInto(g, QString::fromUtf8("↓"),
+                    "Move the view down — every Y axis shows lower values.  "
+                    "Hold to keep moving, faster the longer you hold.",
+                    [this](double k){ panBy(0, -kPanFraction * k); });
+        addCaption(QString::fromUtf8("Move"));
     }
     tb->addSpacing(10);
     {

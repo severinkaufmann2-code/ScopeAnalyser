@@ -7,7 +7,10 @@ function makeApp(app) {
   const body = document.createElement("div"); body.className = "body";
   const panel = document.createElement("div"); panel.className = "panel";
   const plotwrap = document.createElement("div"); plotwrap.className = "plotwrap";
-  block.append(toolbar, body); body.append(panel, plotwrap);
+  const grip = document.createElement("div"); grip.className = "pgrip";
+  grip.title = "Drag to resize the channel list \u2014 double-click to fit the "
+             + "longest channel name";
+  block.append(toolbar, body); body.append(panel, grip, plotwrap);
   document.getElementById("charts").appendChild(block);
 
   const charts = { time: app.time, frequency: app.frequency };
@@ -52,10 +55,53 @@ function makeApp(app) {
     const g = document.createElement("div"); g.className = "tbgroup";
     parent.appendChild(g); return g;
   }
-  function btn(parent, text, tip, fn) {
+  // Press-and-hold on a Zoom or Move button keeps going, matching the app's
+  // toolbar: after HOLD_DELAY the action repeats every HOLD_START ms, each
+  // repeat shortening the gap by HOLD_DECAY down to HOLD_MIN. The delay is
+  // long enough that an ordinary click never repeats by accident.
+  //
+  // HOLD_MIN is one display frame — firing faster only drops frames — so to
+  // keep accelerating past it the step itself grows by HOLD_BOOST per repeat,
+  // up to HOLD_BOOST_MAX. Move takes that boost; Zoom does not, because its
+  // step is a ratio and holding it is already geometric.
+  const HOLD_DELAY = 500, HOLD_START = 140, HOLD_MIN = 16, HOLD_DECAY = 0.82;
+  const HOLD_BOOST = 1.05, HOLD_BOOST_MAX = 8;
+  function btn(parent, text, tip, fn, holdRepeats) {
     const b = document.createElement("button"); b.className = "tbtn";
     b.textContent = text; b.title = tip;
-    b.addEventListener("click", fn);
+    if (!holdRepeats) {
+      b.addEventListener("click", fn);
+    } else {
+      let t = null, gap = HOLD_START, boost = 1;
+      const stop = () => { clearTimeout(t); t = null; };
+      const tick = () => {
+        fn(boost);
+        t = setTimeout(tick, gap);      // this gap, then ramp for the next
+        if (gap > HOLD_MIN) gap = Math.max(HOLD_MIN, Math.round(gap * HOLD_DECAY));
+        else boost = Math.min(HOLD_BOOST_MAX, boost * HOLD_BOOST);
+      };
+      const start = () => { fn(1); gap = HOLD_START; boost = 1; stop();
+                            t = setTimeout(tick, HOLD_DELAY); };
+      b.addEventListener("pointerdown", e => {
+        if (e.button !== 0) return;
+        e.preventDefault();                 // no text selection while held
+        start();
+      });
+      // Sliding off the button ends the hold, as it does in the app; blur
+      // catches the release that lands outside the window entirely.
+      ["pointerup", "pointercancel", "pointerleave"].forEach(
+        ev => b.addEventListener(ev, stop));
+      window.addEventListener("blur", stop);
+      // pointerdown's preventDefault also suppresses the click these buttons
+      // would otherwise fire from the keyboard, so drive that side directly.
+      b.addEventListener("keydown", e => {
+        if (e.key !== " " && e.key !== "Enter") return;
+        e.preventDefault();
+        if (!e.repeat) start();             // let our ramp own the repeat
+      });
+      b.addEventListener("keyup", stop);
+      b.addEventListener("blur", stop);
+    }
     parent.appendChild(b); return b;
   }
   function caption(parent, text) {
@@ -67,11 +113,29 @@ function makeApp(app) {
   btn(gFit, "↕", "Fit each Y axis to the data inside the current X window", fitY);
   caption(toolbar, "Fit");
   const gZoom = group(toolbar);
-  btn(gZoom, "↔ +", "Zoom X in",  () => zoomX(0.85));
-  btn(gZoom, "↔ −", "Zoom X out", () => zoomX(1 / 0.85));
-  btn(gZoom, "↕ +", "Zoom all Y in",  () => zoomYAll(0.85));
-  btn(gZoom, "↕ −", "Zoom all Y out", () => zoomYAll(1 / 0.85));
+  btn(gZoom, "↔ +", "Zoom X in. Hold to keep zooming.",
+      () => zoomX(0.85), true);
+  btn(gZoom, "↔ −", "Zoom X out. Hold to keep zooming.",
+      () => zoomX(1 / 0.85), true);
+  btn(gZoom, "↕ +", "Zoom all Y in. Hold to keep zooming.",
+      () => zoomYAll(0.85), true);
+  btn(gZoom, "↕ −", "Zoom all Y out. Hold to keep zooming.",
+      () => zoomYAll(1 / 0.85), true);
   caption(toolbar, "Zoom");
+  const gPan = group(toolbar);
+  btn(gPan, "←", "Move the view left — show earlier X. Hold to keep moving, "
+           + "faster the longer you hold.",
+      k => panX(-PAN_STEP * k), true);
+  btn(gPan, "→", "Move the view right — show later X. Hold to keep moving, "
+           + "faster the longer you hold.",
+      k => panX(PAN_STEP * k), true);
+  btn(gPan, "↑", "Move the view up — every Y axis shows higher values. "
+           + "Hold to keep moving, faster the longer you hold.",
+      k => panY(PAN_STEP * k), true);
+  btn(gPan, "↓", "Move the view down — every Y axis shows lower values. "
+           + "Hold to keep moving, faster the longer you hold.",
+      k => panY(-PAN_STEP * k), true);
+  caption(toolbar, "Move");
   const mBtn = btn(toolbar, "Δ Measure",
     "Click two points to mark Δx / Δy / 1/|Δx|. Right-click clears.",
     () => { measure.on = !measure.on; measure.p1 = measure.p2 = null;
@@ -157,7 +221,7 @@ function makeApp(app) {
       const nm = document.createElement("span"); nm.className = "cname";
       nm.textContent = r.series.label; nm.title = r.series.label;
       const vl = document.createElement("span"); vl.className = "cval";
-      r.valEl = vl;
+      r.valEl = vl; r.nameEl = nm;
       row.append(cb, sw, nm, vl); rowsHost.appendChild(row);
     });
   }
@@ -245,7 +309,99 @@ function makeApp(app) {
   }
 
   // ---------- uPlot ----------
-  function plotWidth() { return Math.max(plotwrap.clientWidth - 20, 480); }
+  const MIN_PLOT_W = 260;
+  function plotWidth() {
+    return Math.max(plotwrap.clientWidth - 20, MIN_PLOT_W);
+  }
+
+  // ---------- resizable channel panel ----------
+  // Channel names are as long as the PLC symbols they came from, so a fixed
+  // panel just ellipsises them away. The divider drags, and double-clicking
+  // it widens the panel to whatever the longest visible name needs.
+  function setPanelWidth(px) {
+    const room = body.clientWidth - MIN_PLOT_W - grip.offsetWidth;
+    const w = Math.max(140, Math.min(Math.max(140, room), Math.round(px)));
+    panel.style.width = panel.style.minWidth = w + "px";
+    if (u) u.setSize({ width: plotWidth(), height: 430 });
+  }
+  grip.addEventListener("mousedown", e => {
+    if (e.button !== 0) return;
+    e.preventDefault();                     // no text selection while dragging
+    const x0 = e.clientX, w0 = panel.getBoundingClientRect().width;
+    const move = ev => setPanelWidth(w0 + ev.clientX - x0);
+    const up = () => {
+      grip.classList.remove("on");
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    grip.classList.add("on");
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+  grip.addEventListener("dblclick", () => {
+    // .cname is clipped, so scrollWidth - clientWidth is exactly the width
+    // its ellipsis is hiding.
+    let hidden = 0;
+    rows.forEach(r => {
+      if (r.nameEl)
+        hidden = Math.max(hidden, r.nameEl.scrollWidth - r.nameEl.clientWidth);
+    });
+    setPanelWidth(panel.getBoundingClientRect().width + hidden + 2);
+  });
+
+  // ---------- axis tick text and gutter width ----------
+  // uPlot writes ticks as grouped decimals in a flat 50 px gutter, which
+  // fails at both ends of a scope's range: 1.1e7 renders "11,000,000" — far
+  // wider than 50 px, so it runs across the neighbouring Y axis and over the
+  // axis titles — while 1.2e-5 rounds to "0" on every tick. Format the way
+  // the app's axes do (%g: plain decimals in the readable middle, exponent
+  // form outside it) and give each Y axis exactly the gutter its widest
+  // label needs.
+
+  // Decimals needed to write x without rounding a tick step away.
+  function decimalsFor(x) {
+    x = Math.abs(x);
+    for (let d = 0; d < 12; d++)
+      if (Math.abs(+x.toFixed(d) - x) <= x * 1e-9) return d;
+    return 12;
+  }
+  function axisValues(uu, splits, axisIdx, foundSpace, foundIncr) {
+    let maxAbs = 0;
+    for (const v of splits) if (v != null) maxAbs = Math.max(maxAbs, Math.abs(v));
+    if (maxAbs === 0) return splits.map(v => v == null ? "" : "0");
+    const incr = foundIncr > 0 ? foundIncr : maxAbs;
+    if (maxAbs >= 1e6 || maxAbs < 1e-3) {
+      // Enough significant digits that neighbouring ticks stay distinct.
+      const sig = Math.min(15, Math.max(0,
+          Math.ceil(Math.log10(maxAbs / incr) - 1e-9)));
+      return splits.map(v => v == null ? "" : v === 0 ? "0" : v.toExponential(sig));
+    }
+    const dec = decimalsFor(incr);
+    return splits.map(v => {
+      if (v == null) return "";
+      const t = v.toFixed(dec);
+      return /^-0(\.0*)?$/.test(t) ? t.slice(1) : t;      // never "-0"
+    });
+  }
+  // Widest label of this cycle + tick + gap, in place of uPlot's flat 50 px.
+  // uPlot re-runs the layout until the sizes settle, so later cycles must
+  // return what the first one claimed or the two would oscillate.
+  const MAX_Y_GUTTER = 150;
+  function axisSize(uu, values, axisIdx, cycleNum) {
+    const ax = uu.axes[axisIdx];
+    if (cycleNum > 1) return ax._size;
+    let px = ax.ticks.size + ax.gap;
+    if (values && values.length) {
+      const dpr = uPlot.pxRatio || devicePixelRatio;
+      uu.ctx.save();
+      uu.ctx.font = ax.font[0];
+      let w = 0;
+      for (const v of values) w = Math.max(w, uu.ctx.measureText(v).width);
+      uu.ctx.restore();
+      px += w / dpr;
+    }
+    return Math.min(Math.ceil(px), MAX_Y_GUTTER);
+  }
 
   function scalesAxes(spec) {
     const scales = { x: { time: false } };
@@ -266,11 +422,13 @@ function makeApp(app) {
     });
     const xLabel = curView === "xy" ? spec.series[xSel.i].label : spec.xLabel;
     const axes = [{ scale: "x", label: xLabel, stroke: "#5d6570",
+                    values: axisValues,
                     grid: { show: true, stroke: "#e6e8eb" },
                     ticks: { stroke: "#b4bac2" } }];
     spec.axes.forEach((ax, k) => {
       axes.push({ scale: sKey(k), side: ax.right ? 1 : 3, label: ax.label,
                   stroke: ax.color, ticks: { stroke: ax.color },
+                  values: axisValues, size: axisSize,
                   grid: { show: k === 0, stroke: "#e6e8eb" } });
     });
     return { scales, axes };
@@ -386,6 +544,24 @@ function makeApp(app) {
                                  : (s.min + s.max) / 2;
       const [min, max] = scaleAbout(s.min, s.max, c, f);
       stageY(k, min, max);
+    });
+    applyPending(null);
+  }
+
+  // Shift a range by a fraction of its own span, the way a drag does — the
+  // app's ScopePlot::panBy. The buttons move the *view*: "→" shows later X,
+  // "↑" shows higher Y.
+  const PAN_STEP = 0.10;                    // app's kPanFraction
+  function panX(frac) {
+    const s = u.scales.x;
+    const d = frac * (s.max - s.min);
+    applyPending({ min: s.min + d, max: s.max + d });
+  }
+  function panY(frac) {
+    activeSpec().axes.forEach((ax, k) => {
+      const s = u.scales[sKey(k)];
+      const d = frac * (s.max - s.min);
+      stageY(k, s.min + d, s.max + d);
     });
     applyPending(null);
   }

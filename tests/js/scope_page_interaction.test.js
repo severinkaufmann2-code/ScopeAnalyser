@@ -312,5 +312,141 @@ r = readAt(null);                                   // pointer off the plot
 check('no cursor → every cell blank', r[0] === '' && r[1] === '',
       `[${r.join(' | ')}]`);
 
+// ---------------------------------------------------------------------------
+// Press-and-hold on a Zoom / Move button repeats and accelerates, matching the
+// kHoldDelayMs / kHoldStartMs / kHoldMinMs / kHoldDecay ramp in ScopePlot.cpp.
+// Timers are faked so the ramp is asserted exactly, not raced against.
+const realSetTimeout = global.setTimeout, realClearTimeout = global.clearTimeout;
+let clock = 0, timerId = 1, timers = [];
+const gaps = [];
+global.setTimeout = (fn, ms) => {
+  gaps.push(ms);
+  const id = timerId++;
+  timers.push({ id, at: clock + ms, fn });
+  return id;
+};
+global.clearTimeout = (id) => {
+  const i = timers.findIndex(t => t.id === id);
+  if (i >= 0) timers.splice(i, 1);
+};
+function advance(ms) {
+  const end = clock + ms;
+  for (;;) {
+    timers.sort((a, b) => a.at - b.at);
+    if (!timers.length || timers[0].at > end) break;
+    const t = timers.shift();
+    clock = t.at;
+    t.fn();
+  }
+  clock = end;
+}
+
+function findBtn(text) {
+  const hit = [];
+  (function walk(el) {
+    if (!el || !el.children) return;
+    if (el.className === 'tbtn' && el.textContent === text) hit.push(el);
+    el.children.forEach(walk);
+  })(byId.charts);
+  return hit[0];
+}
+const press = (b) => b.dispatch('pointerdown',
+                                { button: 0, preventDefault() {} });
+const release = (b) => b.dispatch('pointerup', {});
+
+const right = findBtn('\u2192'), zoomIn = findBtn('\u2194 +');
+const fit = findBtn('\u2922');
+check('the Move and Zoom buttons are on the toolbar', !!right && !!zoomIn);
+
+// a plain click acts exactly once
+gaps.length = 0;
+p = snap(); press(right); release(right); advance(5000); q = snap();
+const oneStep = W(p.x) * 0.10;
+check('a click pans one step and stops — the hold never starts',
+      Math.abs((q.x[0] - p.x[0]) - oneStep) < 1e-9,
+      `moved ${(q.x[0] - p.x[0]).toFixed(6)}, one step is ${oneStep.toFixed(6)}`);
+
+// held, but let go before the delay is up
+gaps.length = 0;
+p = snap(); press(right); advance(400); release(right); advance(5000); q = snap();
+check('releasing before 500 ms still pans only once',
+      Math.abs((q.x[0] - p.x[0]) - W(p.x) * 0.10) < 1e-9,
+      `moved ${(q.x[0] - p.x[0]).toFixed(6)}`);
+check('the first wait is the 500 ms delay', gaps[0] === 500, `got ${gaps[0]}`);
+
+// held past the delay: it repeats, and each gap is shorter than the last
+gaps.length = 0;
+p = snap(); press(right); advance(500 + 800);   // at the floor, boost still climbing
+const ramp = gaps.slice(1);
+check('holding past 500 ms keeps moving', ramp.length > 1,
+      `${ramp.length} repeats`);
+check('the first repeat waits 140 ms', ramp[0] === 140, `got ${ramp[0]}`);
+check('every repeat is faster than the one before, down to the floor',
+      ramp.every((g, i) => i === 0 || g < ramp[i - 1] || g === 16),
+      ramp.slice(0, 8).join(','));
+check('the ramp bottoms out at one frame (16 ms) and stays there',
+      Math.min(...ramp) === 16 && ramp[ramp.length - 1] === 16,
+      `min ${Math.min(...ramp)}, last ${ramp[ramp.length - 1]}`);
+check('a held button covers far more ground than a click',
+      (snap().x[0] - p.x[0]) > oneStep * 5,
+      `moved ${(snap().x[0] - p.x[0]).toFixed(4)} vs one step ${oneStep.toFixed(4)}`);
+
+// past the floor the interval can't shrink further, so the step grows instead:
+// the same 250 ms of holding must cover more ground later than earlier
+const farA = snap().x[0];
+advance(250);
+const farB = snap().x[0];
+advance(250);
+const farC = snap().x[0];
+check('past the interval floor the step keeps growing',
+      (farC - farB) > (farB - farA) * 1.2,
+      `${(farB - farA).toFixed(3)} then ${(farC - farB).toFixed(3)}`);
+// and it stops growing at the cap rather than running away
+advance(4000);
+const capA = snap().x[0];
+advance(250);
+const capB = snap().x[0];
+advance(250);
+const capC = snap().x[0];
+// 250 ms is 15.6 repeats at the 16 ms floor, so consecutive windows differ by
+// at most the one tick that quantisation moves across the boundary.
+check('the boost tops out instead of growing without bound',
+      Math.abs((capC - capB) - (capB - capA)) <= oneStep * 8 * 1.000001,
+      `${(capB - capA).toFixed(3)} then ${(capC - capB).toFixed(3)}, ` +
+      `one capped step is ${(oneStep * 8).toFixed(3)}`);
+check('top speed is the capped step at one frame per repeat',
+      Math.abs((capC - capB) - oneStep * 8 * (250 / 16)) < oneStep * 8,
+      `${(capC - capB).toFixed(3)} in 250 ms, cap predicts ` +
+      `${(oneStep * 8 * (250 / 16)).toFixed(3)}`);
+
+// release stops it dead
+release(right);
+p = snap(); advance(10000); q = snap();
+check('release stops the repeat — no drift afterwards',
+      Math.abs(q.x[0] - p.x[0]) < 1e-12);
+
+// the ramp resets, so the next hold starts slow again
+gaps.length = 0;
+press(right); advance(1);
+check('the next hold starts from the 500 ms delay again', gaps[0] === 500,
+      `got ${gaps[0]}`);
+release(right);
+
+// zoom holds the same way, and compounds
+gaps.length = 0;
+p = snap(); press(zoomIn); advance(500 + 140); q = snap();
+check('holding Zoom repeats too', W(q.x) < W(p.x) * 0.85 * 0.999,
+      `width ${W(p.x).toFixed(4)} → ${W(q.x).toFixed(4)}`);
+release(zoomIn);
+
+// Fit is a one-shot action and must not repeat
+gaps.length = 0;
+if (fit) { press(fit); advance(5000); release(fit); }
+check('Fit does not repeat on hold', gaps.length === 0,
+      `${gaps.length} timers armed`);
+
+global.setTimeout = realSetTimeout;
+global.clearTimeout = realClearTimeout;
+
 console.log('\n' + (fails ? fails + ' FAILING' : 'all ' + total + ' checks passed'));
 process.exit(fails ? 1 : 0);

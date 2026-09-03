@@ -6,8 +6,12 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QEventLoop>
 #include <QFile>
+#include <QMouseEvent>
 #include <QSignalSpy>
+#include <QTimer>
+#include <QToolButton>
 
 #include <filesystem>
 #include <fstream>
@@ -812,4 +816,108 @@ TEST(PlotLayout, StripFormulasAndStripLayoutAreIndependent) {
     EXPECT_TRUE(g.axesByDomain.isEmpty());
     EXPECT_EQ(g.viewMode.toStdString(), "time");
     EXPECT_TRUE(g.xyChannel.isEmpty());
+}
+
+namespace {
+// Real Qt timers drive the toolbar's press-and-hold, so these spin an event
+// loop rather than sleeping.
+void spinFor(int ms) {
+    QEventLoop loop;
+    QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+    loop.exec();
+}
+void sendMouse(QToolButton* b, QEvent::Type type) {
+    QMouseEvent e(type, QPointF(5, 5), QPointF(5, 5), Qt::LeftButton,
+                  Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(b, &e);
+}
+QToolButton* toolButton(QWidget& w, const QString& text) {
+    for (auto* b : w.findChildren<QToolButton*>())
+        if (b->text() == text) return b;
+    return nullptr;
+}
+}  // namespace
+
+TEST(ScopePlot, ClickingMoveStepsOnceAndDoesNotRepeat) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(1200, 400);
+    sp.show();
+    spinFor(80);
+
+    auto* right = toolButton(sp, QString::fromUtf8("\u2192"));
+    ASSERT_NE(right, nullptr);
+    auto* plot = sp.plot();
+    const double span = plot->xAxis->range().size();
+    const double before = plot->xAxis->range().lower;
+
+    sendMouse(right, QEvent::MouseButtonPress);
+    sendMouse(right, QEvent::MouseButtonRelease);
+    // Well past the 500 ms hold delay: a click must not have armed a repeat.
+    spinFor(900);
+
+    EXPECT_NEAR(plot->xAxis->range().lower - before, span * 0.10, span * 1e-9);
+}
+
+TEST(ScopePlot, HoldingMoveRepeatsAcceleratesAndStopsOnRelease) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(1200, 400);
+    sp.show();
+    spinFor(80);
+
+    auto* right = toolButton(sp, QString::fromUtf8("\u2192"));
+    ASSERT_NE(right, nullptr);
+    auto* plot = sp.plot();
+    const double span = plot->xAxis->range().size();
+    const double step = span * 0.10;
+    const double start = plot->xAxis->range().lower;
+
+    sendMouse(right, QEvent::MouseButtonPress);
+    spinFor(400);
+    // Under the 500 ms delay the hold has not started yet.
+    EXPECT_NEAR(plot->xAxis->range().lower - start, step, span * 1e-9);
+
+    spinFor(600);                       // now ~1.0 s held
+    const double atOneSec = plot->xAxis->range().lower - start;
+    EXPECT_GT(atOneSec, step * 3);
+
+    spinFor(500);                       // ~1.5 s held
+    const double atOneAndAHalf = plot->xAxis->range().lower - start;
+    // The ramp shortens the gap every repeat, so the last half-second must
+    // cover more ground than the whole first second did.
+    EXPECT_GT(atOneAndAHalf - atOneSec, atOneSec);
+
+    sendMouse(right, QEvent::MouseButtonRelease);
+    const double atRelease = plot->xAxis->range().lower;
+    spinFor(600);
+    EXPECT_DOUBLE_EQ(plot->xAxis->range().lower, atRelease);
+}
+
+TEST(ScopePlot, HoldingZoomRepeatsButFitDoesNot) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(1200, 400);
+    sp.show();
+    spinFor(80);
+
+    auto* zoomIn = toolButton(sp, QString::fromUtf8("\u2194 +"));
+    auto* fit    = toolButton(sp, QString::fromUtf8("\u2922"));
+    ASSERT_NE(zoomIn, nullptr);
+    ASSERT_NE(fit, nullptr);
+    auto* plot = sp.plot();
+
+    const double before = plot->xAxis->range().size();
+    sendMouse(zoomIn, QEvent::MouseButtonPress);
+    spinFor(800);
+    sendMouse(zoomIn, QEvent::MouseButtonRelease);
+    // One click would be a single 0.85; a hold compounds well past that.
+    EXPECT_LT(plot->xAxis->range().size(), before * 0.85 * 0.85);
+
+    // Fit is one-shot: holding it must not keep firing (it is idempotent, so
+    // assert on the button's own wiring rather than on the range).
+    EXPECT_FALSE(fit->autoRepeat());
 }

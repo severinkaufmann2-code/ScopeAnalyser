@@ -333,10 +333,14 @@ QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
 /* ---------- containers ---------- */
-QSplitter::handle { background: transparent; }
+/* A hairline inside a 5px grab strip: the divider is visible, so it reads as
+   draggable, but still looks like a rule rather than a bar. */
+QSplitter::handle { background: %BORDER%; }
 QSplitter::handle:hover { background: %SELBG%; }
-QSplitter::handle:horizontal { width: 5px; }
-QSplitter::handle:vertical { height: 5px; }
+QSplitter::handle:horizontal { width: 5px;
+    border-left: 2px solid %WINDOW%; border-right: 2px solid %WINDOW%; }
+QSplitter::handle:vertical { height: 5px;
+    border-top: 2px solid %WINDOW%; border-bottom: 2px solid %WINDOW%; }
 
 QGroupBox {
     border: 1px solid %BORDER%;
