@@ -41,12 +41,36 @@ function mkEl(tag) {
       const a = this._events[t] || []; const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1);
     },
     dispatch(t, ev) { (this._events[t] || []).forEach(fn => fn(ev)); },
-    getBoundingClientRect() { return { ...PLOT }; },
+    getBoundingClientRect() {
+      // Just enough vertical layout for the chart's fit-to-window sizing:
+      // the plot area starts below the page header and toolbar, the canvas
+      // sits inside it between 8px of padding, and the block adds the grab
+      // strip and its border underneath.
+      if (this.className === 'plotwrap') {
+        const top = LAYOUT.wrapTop;
+        const h = LAYOUT.padTop + LAYOUT.chartH + LAYOUT.padBottom;
+        return { ...PLOT, top, bottom: top + h, height: h };
+      }
+      if (this.className === 'block') {
+        const top = LAYOUT.blockTop;
+        const bottom = LAYOUT.wrapTop + LAYOUT.padTop + LAYOUT.chartH
+                     + LAYOUT.padBottom + LAYOUT.belowWrap;
+        return { ...PLOT, top, bottom, height: bottom - top };
+      }
+      return { ...PLOT };
+    },
     querySelector() { return null; },
     get clientWidth() { return PLOT.width + 20; },
   };
   return el;
 }
+
+// Vertical layout the stub reports. chartH is what uPlot's setSize writes back.
+const LAYOUT = { blockTop: 90, wrapTop: 140, padTop: 8, padBottom: 8,
+                 belowWrap: 8, chartH: 430 };
+let VIEW_H = 1000;
+global.getComputedStyle = () => ({ paddingTop: LAYOUT.padTop + 'px',
+                                   paddingBottom: LAYOUT.padBottom + 'px' });
 
 global.devicePixelRatio = 1;
 const docEvents = {};
@@ -59,8 +83,14 @@ global.document = {
     const a = docEvents[t] || []; const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1);
   },
   dispatch(t, ev) { (docEvents[t] || []).slice().forEach(fn => fn(ev)); },
+  documentElement: { get clientHeight() { return VIEW_H; } },
 };
-global.window = { addEventListener() {} };
+const winEvents = {};
+global.window = {
+  addEventListener(t, fn) { (winEvents[t] = winEvents[t] || []).push(fn); },
+  dispatch(t, ev) { (winEvents[t] || []).slice().forEach(fn => fn(ev)); },
+  scrollY: 0,
+};
 global.WheelEvent = class { constructor(t, o) { Object.assign(this, o); this.type = t; } preventDefault() {} };
 global.MouseEvent = class { constructor(t, o) { Object.assign(this, o); this.type = t; } preventDefault() {} };
 
@@ -68,6 +98,7 @@ let INST = null;
 global.uPlot = function (opts, data) {
   const self = {
     opts, data, over: mkEl('div'), root: mkEl('div'),
+    width: opts.width, height: opts.height,   // uPlot exposes both; the page
     axes: opts.axes, scales: {}, select: { width: 0, height: 0 },
   };
   // seed scales from data extents
@@ -116,7 +147,11 @@ global.uPlot = function (opts, data) {
   self.setSelect = () => {};
   self.redraw = () => {};
   self.destroy = () => {};
-  self.setSize = () => {};
+  self.setSize = (o) => {                     // reads u.height when dragging
+    if (!o) return;
+    if (o.width)  self.width  = o.width;
+    if (o.height) { self.height = o.height; LAYOUT.chartH = o.height; }
+  };
   self.cursor = { left: 0, top: 0, idx: null };
   self.ctx = { save(){}, restore(){}, beginPath(){}, arc(){}, fill(){}, stroke(){},
                moveTo(){}, lineTo(){}, fillRect(){}, strokeRect(){}, fillText(){},
@@ -250,6 +285,65 @@ p = snap();
 document.dispatch('mousemove', new MouseEvent('mousemove', { clientX: cx + 300, clientY: cy }));
 q = snap();
 check('pan stops on mouseup (listeners detached)', near(p.x, q.x));
+
+// ---------------------------------------------------------------------------
+// The chart fills the window the way the app's plot fills its own, instead of
+// sitting in a fixed 430px band with the rest of a tall screen left empty.
+function findByClass(cls) {
+  const hit = [];
+  (function walk(el) {
+    if (!el || !el.children) return;
+    if (el.className === cls) hit.push(el);
+    el.children.forEach(walk);
+  })(byId.charts);
+  return hit[0];
+}
+// canvasTop = wrapTop + padTop; below = padBottom + belowWrap; margin = 24.
+const fitted = (viewH) => viewH - 24 - (LAYOUT.wrapTop + LAYOUT.padTop)
+                        - LAYOUT.padBottom - LAYOUT.belowWrap;
+
+check('the chart is sized to the window, not to a fixed 430',
+      LAYOUT.chartH === fitted(VIEW_H),
+      `${LAYOUT.chartH}, expected ${fitted(VIEW_H)}`);
+check('that is taller than the old fixed band', LAYOUT.chartH > 430,
+      `${LAYOUT.chartH}`);
+
+VIEW_H = 1400;
+window.dispatch('resize', {});
+check('a taller window gives a taller chart', LAYOUT.chartH === fitted(1400),
+      `${LAYOUT.chartH}, expected ${fitted(1400)}`);
+
+// the strip under the chart drags to an explicit height
+const vgrip = findByClass('vgrip');
+check('there is a grab strip under the chart', !!vgrip);
+const beforeDrag = LAYOUT.chartH;
+vgrip.dispatch('mousedown',
+               new MouseEvent('mousedown', { button: 0, clientY: 500,
+                                             preventDefault() {} }));
+document.dispatch('mousemove', new MouseEvent('mousemove', { clientY: 650 }));
+document.dispatch('mouseup', new MouseEvent('mouseup', {}));
+check('dragging the strip resizes the chart by the drag distance',
+      LAYOUT.chartH === beforeDrag + 150,
+      `${beforeDrag} → ${LAYOUT.chartH}`);
+
+VIEW_H = 900;
+window.dispatch('resize', {});
+check('a dragged height is kept when the window changes',
+      LAYOUT.chartH === beforeDrag + 150, `${LAYOUT.chartH}`);
+
+vgrip.dispatch('dblclick', {});
+check('double-clicking the strip goes back to filling the window',
+      LAYOUT.chartH === fitted(900), `${LAYOUT.chartH}, expected ${fitted(900)}`);
+
+VIEW_H = 300;
+window.dispatch('resize', {});
+check('a tiny window still leaves a usable chart, not a sliver',
+      LAYOUT.chartH === 220, `${LAYOUT.chartH}`);
+VIEW_H = 1000;
+window.dispatch('resize', {});
+
+// Everything below adds a second chart to the page, and only a lone chart can
+// have the window to itself — so the sizing checks above must run first.
 
 // --- cursor read-out over a mixed-rate union grid ---------------------------
 // "slow" samples every 10 ms and only over 0.02 s .. 0.08 s; "fast" samples

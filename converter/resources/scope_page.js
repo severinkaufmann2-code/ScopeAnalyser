@@ -10,7 +10,9 @@ function makeApp(app) {
   const grip = document.createElement("div"); grip.className = "pgrip";
   grip.title = "Drag to resize the channel list \u2014 double-click to fit the "
              + "longest channel name";
-  block.append(toolbar, body); body.append(panel, grip, plotwrap);
+  const vgrip = document.createElement("div"); vgrip.className = "vgrip";
+  vgrip.title = "Drag to resize the chart \u2014 double-click to fill the window";
+  block.append(toolbar, body, vgrip); body.append(panel, grip, plotwrap);
   document.getElementById("charts").appendChild(block);
 
   const charts = { time: app.time, frequency: app.frequency };
@@ -309,10 +311,71 @@ function makeApp(app) {
   }
 
   // ---------- uPlot ----------
-  const MIN_PLOT_W = 260;
+  const MIN_PLOT_W = 260, MIN_PLOT_H = 220;
   function plotWidth() {
     return Math.max(plotwrap.clientWidth - 20, MIN_PLOT_W);
   }
+
+  // ---------- chart height ----------
+  // The app's plot fills its window, so the exported one should too — a fixed
+  // band leaves most of a tall screen empty. Height follows the window until
+  // the strip under the chart is dragged, which pins it until double-clicked.
+  let manualH = 0;                          // 0 = follow the window
+  let autoH = 430;
+  function plotHeight() { return Math.max(MIN_PLOT_H, manualH || autoH); }
+  // Only one block ever fills the window; a page holding several keeps the
+  // fixed height, since they cannot each be a windowful.
+  const soleBlock = () =>
+      document.getElementById("charts").children.length === 1;
+  // Size the chart so the block's bottom edge lands one page margin above the
+  // bottom of the window.
+  //
+  // Every term here is deliberately independent of the chart's own height:
+  // where the plot area starts (fixed by the title, meta line and a toolbar
+  // that rewraps as the window narrows, so not a constant worth hardcoding),
+  // its top padding, and what sits below it. Nothing reads the chart, because
+  // uPlot sizes its DOM later than it returns — right after new uPlot() the
+  // root still measures 0 — so any formula that subtracts the current canvas
+  // height is reading a layout that does not exist yet. .body stretches its
+  // columns, so plotwrap's bottom is the body's bottom whatever the panel
+  // does, leaving `below` as just the grab strip and the block's border.
+  const PAGE_MARGIN = 24;                   // body's margin, top and bottom
+  function fitToWindow() {
+    if (manualH || !u || !soleBlock()) return;
+    const wrap = plotwrap.getBoundingClientRect();
+    const below = block.getBoundingClientRect().bottom - wrap.bottom;
+    const pad = getComputedStyle(plotwrap);
+    const padTop = parseFloat(pad.paddingTop) || 0;
+    const padBottom = parseFloat(pad.paddingBottom) || 0;   // inside wrap, so
+    const canvasTop = wrap.top + window.scrollY + padTop;   // not in `below`
+    autoH = Math.max(MIN_PLOT_H, Math.round(
+        document.documentElement.clientHeight - PAGE_MARGIN - canvasTop
+        - padBottom - below));
+    u.setSize({ width: plotWidth(), height: autoH });
+  }
+  function relayout() {
+    if (!u) return;
+    u.setSize({ width: plotWidth(), height: plotHeight() });
+    fitToWindow();
+  }
+  vgrip.addEventListener("mousedown", e => {
+    if (e.button !== 0) return;
+    e.preventDefault();                     // no text selection while dragging
+    const y0 = e.clientY, h0 = u ? u.height : plotHeight();
+    const move = ev => {
+      manualH = Math.max(MIN_PLOT_H, h0 + ev.clientY - y0);
+      if (u) u.setSize({ width: plotWidth(), height: manualH });
+    };
+    const up = () => {
+      vgrip.classList.remove("on");
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    vgrip.classList.add("on");
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+  vgrip.addEventListener("dblclick", () => { manualH = 0; relayout(); });
 
   // ---------- resizable channel panel ----------
   // Channel names are as long as the PLC symbols they came from, so a fixed
@@ -322,7 +385,7 @@ function makeApp(app) {
     const room = body.clientWidth - MIN_PLOT_W - grip.offsetWidth;
     const w = Math.max(140, Math.min(Math.max(140, room), Math.round(px)));
     panel.style.width = panel.style.minWidth = w + "px";
-    if (u) u.setSize({ width: plotWidth(), height: 430 });
+    relayout();
   }
   grip.addEventListener("mousedown", e => {
     if (e.button !== 0) return;
@@ -465,7 +528,7 @@ function makeApp(app) {
     });
     return {
       mode: xyMode ? 2 : 1,
-      width: plotWidth(), height: 430,
+      width: plotWidth(), height: plotHeight(),
       scales, axes,
       series: [{}].concat(sList),
       legend: { show: false },
@@ -497,6 +560,7 @@ function makeApp(app) {
       const xs = spec.data[0];
       u.setScale("x", xr ? xr : { min: xs[0], max: xs[xs.length - 1] });
     }
+    fitToWindow();          // a view switch can rewrap the toolbar
   }
 
   // ---------- actions (same semantics as the app) ----------
@@ -824,8 +888,7 @@ function makeApp(app) {
     });
   }
 
-  window.addEventListener("resize",
-      () => u && u.setSize({ width: plotWidth(), height: 430 }));
+  window.addEventListener("resize", relayout);
 
   resetYState();
   rebuildPanelRows();
