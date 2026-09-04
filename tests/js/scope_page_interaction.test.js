@@ -93,6 +93,7 @@ global.window = {
 };
 global.WheelEvent = class { constructor(t, o) { Object.assign(this, o); this.type = t; } preventDefault() {} };
 global.MouseEvent = class { constructor(t, o) { Object.assign(this, o); this.type = t; } preventDefault() {} };
+global.KeyboardEvent = class { constructor(t, o) { Object.assign(this, o); this.type = t; } preventDefault() {} };
 
 let INST = null;
 global.uPlot = function (opts, data) {
@@ -188,7 +189,10 @@ makeApp({
   frequency: null,
 });
 
-const u = INST;
+// fitAll() rebuilds the chart, so this is rebound after any check that
+// fits (Home / double-click) — a stale instance would silently stop
+// tracking the page.
+let u = INST;
 const snap = () => ({ x: [u.scales.x.min, u.scales.x.max],
                       y0: [u.scales.y0.min, u.scales.y0.max],
                       y1: [u.scales.y1.min, u.scales.y1.max] });
@@ -279,6 +283,167 @@ check('drag down shows higher Y (content follows the pointer)',
 check('pan moves every Y axis, not just Y1', Math.abs(q.y1[0] - p.y1[0]) > 1e-12);
 check('pan distance matches the pointer exactly',
       Math.abs((p.x[0] - q.x[0]) - (80 / PLOT.width) * W(p.x)) < 1e-9);
+
+// ---------------------------------------------------------------------------
+// Arrow keys pan, mirroring ScopePlot's shortcuts: one PAN_STEP per press,
+// growing while the key repeats (KEY_BOOST per repeat inside KEY_RAMP_GAP,
+// capped at HOLD_BOOST_MAX), reset by a pause or a change of direction.
+const KEY_BOOST = 1.08, KEY_CAP = 8, PAN = 0.10;
+let keyClock = 0;
+function key(name, dtMs) {
+  keyClock += (dtMs == null ? 1000 : dtMs);
+  window.dispatch('keydown', new KeyboardEvent('keydown', {
+    key: name, timeStamp: keyClock, target: { tagName: 'DIV' },
+    preventDefault() {},
+  }));
+}
+
+p = snap(); key('ArrowRight'); q = snap();
+check('→ key pans one step right, exactly like the Move button',
+      Math.abs(W(q.x) - W(p.x)) < 1e-9
+      && Math.abs((q.x[0] - p.x[0]) - W(p.x) * PAN) < 1e-9,
+      `moved ${(q.x[0] - p.x[0]).toFixed(6)}, one step is ${(W(p.x) * PAN).toFixed(6)}`);
+
+p = snap(); key('ArrowLeft'); q = snap();
+check('← key pans one step left', Math.abs((q.x[0] - p.x[0]) + W(p.x) * PAN) < 1e-9);
+
+p = snap(); key('ArrowUp'); q = snap();
+check('↑ key shows higher Y on every axis, X untouched — the ↑ button\'s way',
+      near(p.x, q.x)
+      && Math.abs((q.y0[0] - p.y0[0]) - W(p.y0) * PAN) < 1e-9
+      && Math.abs((q.y1[0] - p.y1[0]) - W(p.y1) * PAN) < 1e-9,
+      `y0 ${p.y0[0].toFixed(4)} → ${q.y0[0].toFixed(4)}`);
+
+p = snap(); key('ArrowDown'); q = snap();
+check('↓ key shows lower Y on every axis',
+      near(p.x, q.x) && Math.abs((q.y0[0] - p.y0[0]) + W(p.y0) * PAN) < 1e-9);
+
+// taps spaced out past the ramp gap never accelerate
+p = snap(); key('ArrowRight', 1000); q = snap();
+check('a lone tap after a pause is one plain step, never a boosted one',
+      Math.abs((q.x[0] - p.x[0]) - W(p.x) * PAN) < 1e-9,
+      `moved ${(q.x[0] - p.x[0]).toFixed(6)}`);
+
+// repeats inside the gap grow the step
+p = snap(); key('ArrowRight', 30); q = snap();
+check('a repeat inside the ramp gap moves further than the press before it',
+      Math.abs((q.x[0] - p.x[0]) - W(p.x) * PAN * KEY_BOOST) < 1e-9,
+      `moved ${(q.x[0] - p.x[0]).toFixed(6)}, expected ` +
+      `${(W(p.x) * PAN * KEY_BOOST).toFixed(6)}`);
+p = snap(); key('ArrowRight', 30); q = snap();
+check('and the next one further still',
+      Math.abs((q.x[0] - p.x[0]) - W(p.x) * PAN * KEY_BOOST * KEY_BOOST) < 1e-9);
+
+// a gap longer than KEY_RAMP_GAP starts over
+p = snap(); key('ArrowRight', 400); q = snap();
+check('letting go (a gap past 300 ms) resets to one step',
+      Math.abs((q.x[0] - p.x[0]) - W(p.x) * PAN) < 1e-9,
+      `moved ${(q.x[0] - p.x[0]).toFixed(6)}`);
+
+// changing direction mid-ramp starts over too
+key('ArrowRight', 30); key('ArrowRight', 30);
+p = snap(); key('ArrowLeft', 30); q = snap();
+check('turning around starts the ramp over rather than inheriting it',
+      Math.abs((p.x[0] - q.x[0]) - W(p.x) * PAN) < 1e-9,
+      `moved ${(p.x[0] - q.x[0]).toFixed(6)}`);
+
+// held long enough, the step tops out at the same cap the buttons use
+for (let i = 0; i < 200; i++) key('ArrowRight', 30);
+p = snap(); key('ArrowRight', 30); q = snap();
+check('a held arrow tops out at the ×8 cap, not at runaway speed',
+      Math.abs((q.x[0] - p.x[0]) - W(p.x) * PAN * KEY_CAP) < 1e-9,
+      `moved ${(q.x[0] - p.x[0]).toFixed(6)}, cap is ` +
+      `${(W(p.x) * PAN * KEY_CAP).toFixed(6)}`);
+
+// keys that belong to the page (or to a text box) are left alone
+p = snap();
+key('ArrowRight', 1000);            // re-arm: this one is a real pan
+const oneTap = snap().x[0] - p.x[0];
+p = snap();
+window.dispatch('keydown', new KeyboardEvent('keydown', {
+  key: 'ArrowRight', timeStamp: (keyClock += 30),
+  target: { tagName: 'INPUT' }, preventDefault() {} }));
+q = snap();
+check('arrows typed into an input box do not pan the chart', near(p.x, q.x));
+window.dispatch('keydown', new KeyboardEvent('keydown', {
+  key: 'ArrowRight', timeStamp: (keyClock += 30), ctrlKey: true,
+  target: { tagName: 'DIV' }, preventDefault() {} }));
+check('Ctrl+arrow is left to the browser', near(p.x, snap().x));
+check('the ignored presses did not feed the ramp either',
+      Math.abs((snap().x[0] - p.x[0])) < 1e-12, `${oneTap.toFixed(6)}`);
+
+// Home / +/− match the app's other shortcuts
+p = snap(); key('-', 1000); q = snap();
+check('the − key zooms both axes out', grew(p.x, q.x) && grew(p.y0, q.y0));
+p = snap(); key('+', 1000); q = snap();
+check('the + key zooms both axes in', shrank(p.x, q.x) && shrank(p.y0, q.y0));
+key('Home', 1000);
+u = INST;                                  // fitAll() rebuilt the chart
+check('Home fits the data again',
+      Math.abs(u.scales.x.min - t[0]) < 1e-9
+      && Math.abs(u.scales.x.max - t[t.length - 1]) < 1e-9,
+      `x ${u.scales.x.min.toFixed(4)} … ${u.scales.x.max.toFixed(4)}`);
+
+// ---------------------------------------------------------------------------
+// Holding an arrow takes the wheel over: a notch moves the view along that
+// arrow instead of zooming, backwards goes back, and the notches feed the same
+// ramp — ScopePlot::eventFilter routes it identically.
+function keyUp(name) {
+  window.dispatch('keyup', new KeyboardEvent('keyup', { key: name }));
+}
+function wheelAt(deltaY, opts) {
+  const o = opts || {};
+  keyClock += (o.dt == null ? 30 : o.dt);
+  u.root.dispatch('wheel', new WheelEvent('wheel', {
+    deltaY, deltaMode: 0,
+    clientX: PLOT.left + PLOT.width / 2, clientY: PLOT.top + PLOT.height / 2,
+    ctrlKey: !!o.ctrl, shiftKey: !!o.shift, timeStamp: keyClock,
+    preventDefault() {},
+  }));
+}
+
+key('ArrowRight', 1000);                    // and hold it
+p = snap(); wheelAt(-100); q = snap();      // one notch up
+check('scrolling with → held moves the view instead of zooming',
+      Math.abs(W(q.x) - W(p.x)) < 1e-9 && Math.abs(W(q.y0) - W(p.y0)) < 1e-9
+      && q.x[0] > p.x[0] + 1e-12,
+      `width ${W(p.x).toFixed(4)} → ${W(q.x).toFixed(4)}, ` +
+      `xmin ${p.x[0].toFixed(4)} → ${q.x[0].toFixed(4)}`);
+
+p = snap(); wheelAt(+100); q = snap();      // one notch down
+check('rolling the wheel backwards moves back the other way',
+      Math.abs(W(q.x) - W(p.x)) < 1e-9 && q.x[0] < p.x[0] - 1e-12);
+
+p = snap(); wheelAt(-100, { ctrl: true }); wheelAt(-100, { shift: true }); q = snap();
+check('a held arrow beats Ctrl and Shift — nothing zooms while it is down',
+      Math.abs(W(q.x) - W(p.x)) < 1e-9 && Math.abs(W(q.y0) - W(p.y0)) < 1e-9,
+      `x ${W(p.x).toFixed(4)} → ${W(q.x).toFixed(4)}`);
+
+p = snap(); wheelAt(-100); const n1 = snap().x[0] - p.x[0];
+p = snap(); wheelAt(-100); const n2 = snap().x[0] - p.x[0];
+check('each notch covers more ground than the one before',
+      n2 > n1 * 1.0001, `${n1.toFixed(5)} then ${n2.toFixed(5)}`);
+
+keyUp('ArrowRight');
+p = snap(); wheelAt(-100, { dt: 1000 }); q = snap();
+check('letting the arrow go makes the wheel a zoom again',
+      shrank(p.x, q.x) && shrank(p.y0, q.y0),
+      `x ${W(p.x).toFixed(4)} → ${W(q.x).toFixed(4)}`);
+
+key('ArrowUp', 1000);                       // hold ↑ instead
+p = snap(); wheelAt(-100); q = snap();
+check('scrolling with ↑ held moves every Y axis, X untouched',
+      near(p.x, q.x) && Math.abs(W(q.y0) - W(p.y0)) < 1e-9
+      && q.y0[0] > p.y0[0] + 1e-12 && q.y1[0] > p.y1[0] + 1e-12,
+      `y0 ${p.y0[0].toFixed(4)} → ${q.y0[0].toFixed(4)}`);
+keyUp('ArrowUp');
+
+// window.blur clears it too — a release that lands on another window
+key('ArrowRight', 1000);
+window.dispatch('blur', {});
+p = snap(); wheelAt(-100, { dt: 1000 }); q = snap();
+check('losing the window with a key down does not leave the wheel stuck',
+      shrank(p.x, q.x) && shrank(p.y0, q.y0));
 
 // mouseup detaches the listeners — a later move must not keep panning
 p = snap();

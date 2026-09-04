@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QMouseEvent>
 #include <QSignalSpy>
+#include <QTest>
 #include <QTimer>
 #include <QToolButton>
 
@@ -894,6 +895,184 @@ TEST(ScopePlot, HoldingMoveRepeatsAcceleratesAndStopsOnRelease) {
     const double atRelease = plot->xAxis->range().lower;
     spinFor(600);
     EXPECT_DOUBLE_EQ(plot->xAxis->range().lower, atRelease);
+}
+
+namespace {
+// Arrow keys reach ScopePlot as QShortcuts, which are matched on the way in
+// from the platform — so the key has to go to the window, not to the widget.
+void sendKey(QWidget& w, Qt::Key k) {
+    ASSERT_NE(w.windowHandle(), nullptr);
+    QTest::keyClick(w.windowHandle(), k);
+}
+}  // namespace
+
+TEST(ScopePlot, ArrowKeysPanTheSameWayTheMoveButtonsDo) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(1200, 400);
+    sp.show();
+    spinFor(80);
+
+    auto* plot = sp.plot();
+    const auto reset = [&] {
+        plot->xAxis->setRange(0.0, 10.0);
+        plot->yAxis->setRange(0.0, 10.0);
+    };
+    const double step = 10.0 * 0.10;    // kPanFraction of the span
+
+    reset();
+    sendKey(sp, Qt::Key_Right);
+    EXPECT_NEAR(plot->xAxis->range().lower, step, 1e-9);
+    EXPECT_NEAR(plot->yAxis->range().lower, 0.0, 1e-9);   // Y untouched
+
+    reset();
+    sendKey(sp, Qt::Key_Left);
+    EXPECT_NEAR(plot->xAxis->range().lower, -step, 1e-9);
+
+    // Up shows higher values — the same direction as the toolbar's ↑ button,
+    // which is what a reader of both would expect.
+    reset();
+    sendKey(sp, Qt::Key_Up);
+    EXPECT_NEAR(plot->yAxis->range().lower, step, 1e-9);
+    EXPECT_NEAR(plot->xAxis->range().lower, 0.0, 1e-9);   // X untouched
+
+    reset();
+    sendKey(sp, Qt::Key_Down);
+    EXPECT_NEAR(plot->yAxis->range().lower, -step, 1e-9);
+
+    auto* up = toolButton(sp, QString::fromUtf8("\u2191"));
+    ASSERT_NE(up, nullptr);
+    reset();
+    sendMouse(up, QEvent::MouseButtonPress);
+    sendMouse(up, QEvent::MouseButtonRelease);
+    EXPECT_NEAR(plot->yAxis->range().lower, step, 1e-9);
+}
+
+TEST(ScopePlot, HeldArrowKeyAcceleratesAndResetsAfterAPause) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(1200, 400);
+    sp.show();
+    spinFor(80);
+
+    auto* plot = sp.plot();
+    const double step = 1.0;            // 10 % of the span set below
+    const auto panOnce = [&] {
+        plot->xAxis->setRange(0.0, 10.0);
+        sendKey(sp, Qt::Key_Right);
+        return plot->xAxis->range().lower;
+    };
+
+    // Back-to-back presses are how the OS delivers a held key: each one moves
+    // further than the last.
+    const double first  = panOnce();
+    const double second = panOnce();
+    const double third  = panOnce();
+    EXPECT_NEAR(first, step, 1e-9);
+    EXPECT_GT(second, first);
+    EXPECT_GT(third, second);
+
+    // Held long enough the step tops out at the cap the Move buttons use,
+    // rather than running away.
+    double last = third;
+    for (int i = 0; i < 200; ++i) last = panOnce();
+    EXPECT_NEAR(last, step * 8.0, 1e-9);
+
+    // Letting go — a gap longer than the ramp window — starts over.
+    spinFor(400);
+    EXPECT_NEAR(panOnce(), step, 1e-9);
+
+    // So does turning around mid-ramp.
+    panOnce();
+    plot->xAxis->setRange(0.0, 10.0);
+    sendKey(sp, Qt::Key_Left);
+    EXPECT_NEAR(plot->xAxis->range().lower, -step, 1e-9);
+}
+
+namespace {
+// A wheel notch over the middle of the plot. Positive = scrolled up.
+void sendWheel(scope::plot::ScopePlot& sp, int notches,
+               Qt::KeyboardModifiers mods = Qt::NoModifier) {
+    auto* plot = sp.plot();
+    const QPointF pos(plot->axisRect()->rect().center());
+    QWheelEvent ev(pos, plot->mapToGlobal(pos.toPoint()), QPoint(),
+                   QPoint(0, 120 * notches), Qt::NoButton, mods,
+                   Qt::NoScrollPhase, false);
+    QApplication::sendEvent(plot, &ev);
+    QApplication::processEvents();
+}
+}  // namespace
+
+TEST(ScopePlot, ScrollingWithAnArrowHeldMovesTheViewInsteadOfZooming) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(1200, 400);
+    sp.show();
+    spinFor(80);
+    ASSERT_NE(sp.windowHandle(), nullptr);
+
+    auto* plot = sp.plot();
+    const auto reset = [&] {
+        plot->xAxis->setRange(0.0, 10.0);
+        plot->yAxis->setRange(0.0, 10.0);
+    };
+    const double step = 10.0 * 0.10;
+
+    // Held down: the wheel moves along the arrow, and nothing zooms.
+    reset();
+    QTest::keyPress(sp.windowHandle(), Qt::Key_Right);
+    const double afterKey = plot->xAxis->range().lower;   // the press itself pans
+    sendWheel(sp, +1);
+    EXPECT_NEAR(plot->xAxis->range().size(), 10.0, 1e-9);   // no zoom
+    EXPECT_NEAR(plot->yAxis->range().size(), 10.0, 1e-9);
+    EXPECT_GT(plot->xAxis->range().lower, afterKey);
+
+    // Rolling the wheel backwards goes back the other way.
+    const double forward = plot->xAxis->range().lower;
+    sendWheel(sp, -1);
+    EXPECT_LT(plot->xAxis->range().lower, forward);
+    EXPECT_NEAR(plot->xAxis->range().size(), 10.0, 1e-9);
+
+    // Even with Ctrl or Shift held, the arrow wins — no zoom while it is down.
+    reset();
+    sendWheel(sp, +1, Qt::ControlModifier);
+    sendWheel(sp, +1, Qt::ShiftModifier);
+    EXPECT_NEAR(plot->xAxis->range().size(), 10.0, 1e-9);
+    EXPECT_NEAR(plot->yAxis->range().size(), 10.0, 1e-9);
+
+    // Successive notches cover more ground than the ones before them.
+    reset();
+    const double before = plot->xAxis->range().lower;
+    sendWheel(sp, +1);
+    const double first = plot->xAxis->range().lower - before;
+    sendWheel(sp, +1);
+    const double second = plot->xAxis->range().lower - before - first;
+    EXPECT_GT(second, first);
+
+    // Let go and the wheel is a zoom again.
+    QTest::keyRelease(sp.windowHandle(), Qt::Key_Right);
+    reset();
+    sendWheel(sp, +1);
+    EXPECT_LT(plot->xAxis->range().size(), 10.0);
+    EXPECT_LT(plot->yAxis->range().size(), 10.0);
+
+    // A held Up moves every Y axis instead, leaving X alone.
+    const int rightIdx = sp.addYAxis("R", Qt::AlignRight);
+    QApplication::processEvents();
+    reset();
+    sp.yAxis(rightIdx)->setRange(0.0, 10.0);
+    QTest::keyPress(sp.windowHandle(), Qt::Key_Up);
+    const double afterUp = plot->yAxis->range().lower;
+    sendWheel(sp, +1);
+    EXPECT_GT(plot->yAxis->range().lower, afterUp);
+    EXPECT_GT(sp.yAxis(rightIdx)->range().lower, afterUp);
+    EXPECT_NEAR(plot->xAxis->range().lower, 0.0, 1e-9);
+    EXPECT_NEAR(plot->yAxis->range().size(), 10.0, 1e-9);
+    QTest::keyRelease(sp.windowHandle(), Qt::Key_Up);
+    EXPECT_NEAR(step, 1.0, 1e-9);   // the step these deltas are built from
 }
 
 TEST(ScopePlot, HoldingZoomRepeatsButFitDoesNot) {

@@ -4,6 +4,8 @@
 
 #include <QAction>
 #include <QContextMenuEvent>
+#include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -64,6 +66,34 @@ constexpr int    kHoldMinMs     = 16;
 constexpr double kHoldDecay     = 0.82;
 constexpr double kHoldBoost     = 1.05;
 constexpr double kHoldBoostMax  = 8.0;
+
+// The arrow keys pan by that same kPanFraction step, and holding one speeds up
+// too. The keyboard's repeat rate belongs to the OS, though, so only the step
+// can grow here: every repeat that lands within kKeyRampGapMs of the previous
+// one, in the same direction, multiplies it by kKeyPanBoost up to the same
+// kHoldBoostMax ceiling. At a typical 30 repeats a second that reaches the cap
+// in about a second. A longer pause — or a change of direction — starts over,
+// so a single tap always moves exactly one step, and tapping fast ramps up the
+// way holding does.
+constexpr int    kKeyRampGapMs  = 300;
+constexpr double kKeyPanBoost   = 1.08;
+
+// Holding an arrow also takes the wheel over: while one is down, a notch moves
+// the view along that arrow instead of zooming, and feeds the same ramp — so
+// scrolling on a held arrow is how you cover ground fast, and each notch goes
+// further than the last. Rolling the wheel backwards moves back the other way.
+//
+// The release is read from the application-wide event filter, but a grab or a
+// lost focus can swallow it, and a stuck flag would leave the wheel unable to
+// zoom. kArrowHeldStaleMs is the backstop: auto-repeat refreshes the clock ~30
+// times a second, so a genuinely held key never goes stale, while a missed
+// release clears itself in two seconds.
+constexpr int    kArrowHeldStaleMs = 2000;
+
+bool isArrowKey(int key) {
+    return key == Qt::Key_Left || key == Qt::Key_Right
+        || key == Qt::Key_Up   || key == Qt::Key_Down;
+}
 
 // Axis (and therefore channel) base colours per theme. Y1 is the neutral
 // "ink" colour; the rest are picked for contrast against the respective
@@ -193,7 +223,40 @@ struct ScopePlot::Impl {
     QCPItemText*         measureText{nullptr};
 
     ScopePlot::DisplayMode lineDisplayMode{ScopePlot::DisplayMode::Line};
+
+    // ---- Arrow-key pan ramp --------------------------------------
+    // Direction of the last arrow pan, the step multiplier it used, and how
+    // long ago it fired. A QShortcut has no release to reset on, so the gap
+    // between repeats is what tells a held key from a fresh press.
+    QPointF        keyPanDir;
+    double         keyPanBoost{1.0};
+    QElapsedTimer  keyPanClock;
+    // Whether that arrow is still down — set by the shortcut, cleared by the
+    // key release (or by the window losing focus with the key still down).
+    bool           arrowDown{false};
+
+    // Step multiplier for the next arrow-key pan in direction `dir`.
+    double nextKeyPanBoost(QPointF dir) {
+        const bool ramping = keyPanClock.isValid()
+                          && keyPanClock.elapsed() <= kKeyRampGapMs
+                          && dir == keyPanDir;
+        keyPanBoost = ramping ? std::min(kHoldBoostMax,
+                                         keyPanBoost * kKeyPanBoost)
+                              : 1.0;
+        keyPanDir = dir;
+        keyPanClock.start();
+        arrowDown = true;
+        return keyPanBoost;
+    }
+
+    // Is an arrow key down right now? Decides whether the wheel moves the
+    // view instead of zooming.
+    bool arrowHeld() const {
+        return arrowDown && keyPanClock.isValid()
+            && keyPanClock.elapsed() <= kArrowHeldStaleMs;
+    }
 };
+
 
 ScopePlot::ScopePlot(QWidget* parent)
     : QWidget(parent), impl_(std::make_unique<Impl>()) {
@@ -207,6 +270,10 @@ ScopePlot::ScopePlot(QWidget* parent)
     impl_->plot->setFocusPolicy(Qt::ClickFocus);
     impl_->plot->setContextMenuPolicy(Qt::DefaultContextMenu);
     impl_->plot->installEventFilter(this);
+    // Arrow keys arrive as QShortcuts, which fire on press and say nothing
+    // about release; the release has to be caught wherever the focus happens
+    // to be, hence application-wide. eventFilter() only ever reads it.
+    if (auto* app = QCoreApplication::instance()) app->installEventFilter(this);
 
     // Track the default Y axis as index 0; applyThemeColors() at the end of
     // the ctor gives it the first palette entry.
@@ -350,19 +417,27 @@ ScopePlot::ScopePlot(QWidget* parent)
         auto* g = makeGroup();
         makeHoldBtnInto(g, QString::fromUtf8("←"),
                     "Move the view left — show earlier X  (Left arrow).  "
-                    "Hold to keep moving, faster the longer you hold.",
+                    "Hold to keep moving, faster the longer you hold.  "
+                    "Scrolling with the arrow held moves too, instead of "
+                    "zooming.",
                     [this](double k){ panBy(-kPanFraction * k, 0); });
         makeHoldBtnInto(g, QString::fromUtf8("→"),
                     "Move the view right — show later X  (Right arrow).  "
-                    "Hold to keep moving, faster the longer you hold.",
+                    "Hold to keep moving, faster the longer you hold.  "
+                    "Scrolling with the arrow held moves too, instead of "
+                    "zooming.",
                     [this](double k){ panBy( kPanFraction * k, 0); });
         makeHoldBtnInto(g, QString::fromUtf8("↑"),
-                    "Move the view up — every Y axis shows higher values.  "
-                    "Hold to keep moving, faster the longer you hold.",
+                    "Move the view up — every Y axis shows higher values  "
+                    "(Up arrow).  Hold to keep moving, faster the longer you "
+                    "hold.  Scrolling with the arrow held moves too, instead "
+                    "of zooming.",
                     [this](double k){ panBy(0,  kPanFraction * k); });
         makeHoldBtnInto(g, QString::fromUtf8("↓"),
-                    "Move the view down — every Y axis shows lower values.  "
-                    "Hold to keep moving, faster the longer you hold.",
+                    "Move the view down — every Y axis shows lower values  "
+                    "(Down arrow).  Hold to keep moving, faster the longer you "
+                    "hold.  Scrolling with the arrow held moves too, instead "
+                    "of zooming.",
                     [this](double k){ panBy(0, -kPanFraction * k); });
         addCaption(QString::fromUtf8("Move"));
     }
@@ -509,10 +584,18 @@ ScopePlot::ScopePlot(QWidget* parent)
     sc(QKeySequence(Qt::Key_Plus),  [this]{ zoomBothBy(kZoomStep); });
     sc(QKeySequence(Qt::Key_Equal), [this]{ zoomBothBy(kZoomStep); });
     sc(QKeySequence(Qt::Key_Minus), [this]{ zoomBothBy(1.0 / kZoomStep); });
-    sc(QKeySequence(Qt::Key_Left),  [this]{ panBy(-kPanFraction, 0); });
-    sc(QKeySequence(Qt::Key_Right), [this]{ panBy( kPanFraction, 0); });
-    sc(QKeySequence(Qt::Key_Up),    [this]{ panBy(0, -kPanFraction); });
-    sc(QKeySequence(Qt::Key_Down),  [this]{ panBy(0,  kPanFraction); });
+    // Arrow keys are the Move buttons on the keyboard: same step, same
+    // directions (Up shows higher values), and holding one accelerates.
+    auto panKey = [this](double dx, double dy) {
+        return [this, dx, dy] {
+            const double k = impl_->nextKeyPanBoost(QPointF(dx, dy));
+            panBy(dx * kPanFraction * k, dy * kPanFraction * k);
+        };
+    };
+    sc(QKeySequence(Qt::Key_Left),  panKey(-1,  0));
+    sc(QKeySequence(Qt::Key_Right), panKey( 1,  0));
+    sc(QKeySequence(Qt::Key_Up),    panKey( 0,  1));
+    sc(QKeySequence(Qt::Key_Down),  panKey( 0, -1));
 
     applyThemeColors();
 }
@@ -1165,6 +1248,17 @@ void ScopePlot::showAxisContextMenu(int axisIndex, QPoint globalPos) {
 }
 
 bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
+    // Arrow up/down state, from anywhere in the application: the wheel needs
+    // to know whether an arrow is being held. Never consumed — this only
+    // watches. Auto-repeat releases are ignored; the platforms that send them
+    // pair each one with a fresh press, so the key is still down.
+    if (ev->type() == QEvent::KeyRelease) {
+        auto* k = static_cast<QKeyEvent*>(ev);
+        if (!k->isAutoRepeat() && isArrowKey(k->key())) impl_->arrowDown = false;
+    } else if (ev->type() == QEvent::WindowDeactivate) {
+        impl_->arrowDown = false;       // released over some other window
+    }
+
     if (obj != impl_->plot) return false;
 
     switch (ev->type()) {
@@ -1201,6 +1295,12 @@ bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
                           overYAxisArea, overXAxisArea);
 
             // Routing (first match wins):
+            //  0. An arrow key held     → move the view along that arrow
+            //                             instead of zooming: the notch
+            //                             carries the step (backwards goes
+            //                             back), and feeds the same ramp the
+            //                             held key does, so each notch covers
+            //                             more than the one before.
             //  1. Ctrl modifier         → X only
             //  2. Shift / Alt modifier  → if cursor is hovering near a Y
             //                             axis: that axis only. Otherwise
@@ -1211,7 +1311,12 @@ bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
             //  3. Cursor over a Y-axis label area (no modifier) → that axis
             //  4. Cursor over the X-axis label area (no modifier) → X only
             //  5. Default (cursor inside plot rect, no modifier) → zoom both
-            if (m & Qt::ControlModifier) {
+            if (impl_->arrowHeld()) {
+                const QPointF dir = impl_->keyPanDir;
+                const double  k   = impl_->nextKeyPanBoost(dir);
+                const double  d   = kPanFraction * k * notches;
+                panBy(dir.x() * d, dir.y() * d);
+            } else if (m & Qt::ControlModifier) {
                 zoomAt(mousePx, factor, 0, -1);
             } else if (m & (Qt::ShiftModifier | Qt::AltModifier)) {
                 if (overYAxisArea) {

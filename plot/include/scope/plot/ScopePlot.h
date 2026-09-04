@@ -19,13 +19,16 @@ namespace scope::plot {
 //   Scroll          → zoom X and ALL Y axes (centred on cursor)
 //   Ctrl+Scroll     → zoom X only
 //   Shift+Scroll    → zoom the Y axis nearest the cursor
+//   Arrow held + Scroll → move the view along that arrow, no zoom at all
 //
 // Ctrl+LeftDrag → region zoom (rectangle).
 // Plain LeftDrag → pan (QCustomPlot iRangeDrag).
 //
 // Right-click a Y-axis label → rename / set range / auto-scale / remove.
 //
-// Keyboard: Home (fit), +/- (zoom both), arrow keys (pan).
+// Keyboard: Home (fit), +/- (zoom both), arrow keys (pan — hold one and
+// the step grows, the way the toolbar's Move buttons do; scrolling while it
+// is held moves the view too, a notch at a time, instead of zooming).
 class ScopePlot : public QWidget {
     Q_OBJECT
 public:

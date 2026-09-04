@@ -1,5 +1,10 @@
 "use strict";
 
+// Which chart block the keyboard drives on a page that carries more than
+// one: whichever the pointer last entered or clicked, starting with the
+// first one built. A single-chart page — the usual export — never changes it.
+let keyBlock = null;
+
 function makeApp(app) {
   // ---------- DOM scaffold ----------
   const block = document.createElement("div"); block.className = "block";
@@ -14,6 +19,9 @@ function makeApp(app) {
   vgrip.title = "Drag to resize the chart \u2014 double-click to fill the window";
   block.append(toolbar, body, vgrip); body.append(panel, grip, plotwrap);
   document.getElementById("charts").appendChild(block);
+  if (!keyBlock) keyBlock = block;
+  ["pointerenter", "pointerdown"].forEach(
+    ev => block.addEventListener(ev, () => { keyBlock = block; }));
 
   const charts = { time: app.time, frequency: app.frequency };
   const sKey = k => "y" + k;
@@ -125,17 +133,21 @@ function makeApp(app) {
       () => zoomYAll(1 / 0.85), true);
   caption(toolbar, "Zoom");
   const gPan = group(toolbar);
-  btn(gPan, "←", "Move the view left — show earlier X. Hold to keep moving, "
-           + "faster the longer you hold.",
+  btn(gPan, "←", "Move the view left — show earlier X (Left arrow). Hold to "
+           + "keep moving, faster the longer you hold. Scrolling with the "
+           + "arrow held moves too, instead of zooming.",
       k => panX(-PAN_STEP * k), true);
-  btn(gPan, "→", "Move the view right — show later X. Hold to keep moving, "
-           + "faster the longer you hold.",
+  btn(gPan, "→", "Move the view right — show later X (Right arrow). Hold to "
+           + "keep moving, faster the longer you hold. Scrolling with the "
+           + "arrow held moves too, instead of zooming.",
       k => panX(PAN_STEP * k), true);
-  btn(gPan, "↑", "Move the view up — every Y axis shows higher values. "
-           + "Hold to keep moving, faster the longer you hold.",
+  btn(gPan, "↑", "Move the view up — every Y axis shows higher values "
+           + "(Up arrow). Hold to keep moving, faster the longer you hold. "
+           + "Scrolling with the arrow held moves too, instead of zooming.",
       k => panY(PAN_STEP * k), true);
-  btn(gPan, "↓", "Move the view down — every Y axis shows lower values. "
-           + "Hold to keep moving, faster the longer you hold.",
+  btn(gPan, "↓", "Move the view down — every Y axis shows lower values "
+           + "(Down arrow). Hold to keep moving, faster the longer you hold. "
+           + "Scrolling with the arrow held moves too, instead of zooming.",
       k => panY(-PAN_STEP * k), true);
   caption(toolbar, "Move");
   const mBtn = btn(toolbar, "Δ Measure",
@@ -762,14 +774,15 @@ function makeApp(app) {
   // The app steps 0.85 per wheel notch and reads partial notches from
   // high-resolution devices, so the factor is continuous rather than a fixed
   // step. Browsers report the delta in px / lines / pages — normalise to px
-  // first, then to notches at the ~100px per notch browsers use.
+  // first, then to notches at the ~100px per notch browsers use. The notch
+  // count is what a held-arrow pan scales its step by, so it is read out
+  // separately from the zoom factor built on it.
   const ZOOM_STEP = 0.85;
-  function wheelFactor(e) {
+  function wheelNotches(e) {
     let dy = e.deltaY || e.deltaX;
     if (e.deltaMode === 1) dy *= 16;        // lines  → px
     else if (e.deltaMode === 2) dy *= 400;  // pages  → px
-    if (!dy) return 0;
-    return Math.pow(ZOOM_STEP, -dy / 100);
+    return -dy / 100;                       // up is positive, as in the app
   }
 
   // Where the pointer is relative to the plot rect, in the same terms the
@@ -809,10 +822,22 @@ function makeApp(app) {
 
   function onWheel(uu, e) {
     e.preventDefault();
-    const f = wheelFactor(e);
-    if (!f) return;
+    const notches = wheelNotches(e);
+    if (!notches) return;
     const h = hit(uu, e);
 
+    // An arrow key held down takes the wheel over: the notch moves the view
+    // along that arrow instead of zooming (rolling backwards goes back), and
+    // feeds the same ramp the held key does, so each notch covers more ground
+    // than the one before. ScopePlot::eventFilter routes it the same way.
+    if (heldArrow) {
+      const dir = KEY_PAN[heldArrow];
+      const d = keyStep(heldArrow, e.timeStamp || Date.now()) * notches;
+      if (dir[0]) panX(dir[0] * d); else panY(dir[1] * d);
+      return;
+    }
+
+    const f = Math.pow(ZOOM_STEP, notches);
     // Same routing ladder as the app, first match wins.
     if (e.ctrlKey || e.metaKey) {
       zoomAt(f, 0, h.left, h.top, -1);
@@ -887,6 +912,61 @@ function makeApp(app) {
       }
     });
   }
+
+  // ---------- keyboard ----------
+  // The app's ScopePlot shortcuts, on the exported page: arrow keys pan by one
+  // PAN_STEP — ← / → move the X window, ↑ / ↓ move every Y axis, in the same
+  // directions as the Move buttons — Home fits, and +/− zoom both.
+  //
+  // Holding an arrow accelerates the way holding a Move button does, except
+  // that the OS owns the key-repeat rate, so only the step can grow: each
+  // repeat that lands within KEY_RAMP_GAP of the last one, in the same
+  // direction, multiplies it by KEY_BOOST up to the same HOLD_BOOST_MAX
+  // ceiling. A longer pause — or a change of direction — starts over, so one
+  // tap is always exactly one step, and tapping fast ramps up like holding.
+  const KEY_RAMP_GAP = 300, KEY_BOOST = 1.08;
+  const KEY_PAN = { ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+                    ArrowUp: [0, 1], ArrowDown: [0, -1] };
+  let keyDir = "", keyBoost = 1, keyAt = -Infinity;
+  // Which arrow is down right now, for onWheel to route on. keyup and the
+  // window losing focus both clear it, so the wheel can never be left stuck
+  // moving the view when the key is long gone.
+  let heldArrow = "";
+  function keyStep(key, now) {
+    const held = key === keyDir && now - keyAt <= KEY_RAMP_GAP;
+    keyBoost = held ? Math.min(HOLD_BOOST_MAX, keyBoost * KEY_BOOST) : 1;
+    keyDir = key; keyAt = now;
+    return keyBoost * PAN_STEP;
+  }
+  // Typing in the X-range boxes or working the channel list owns its own keys.
+  function typing(t) {
+    return !!t && (t.tagName === "INPUT" || t.tagName === "SELECT"
+                   || t.tagName === "TEXTAREA" || t.isContentEditable);
+  }
+  window.addEventListener("keydown", e => {
+    if (keyBlock !== block || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (typing(e.target)) return;
+    const dir = KEY_PAN[e.key];
+    if (dir) {
+      heldArrow = e.key;
+      const step = keyStep(e.key, e.timeStamp || Date.now());
+      if (dir[0]) panX(dir[0] * step); else panY(dir[1] * step);
+    } else if (e.key === "Home") {
+      fitAll();
+    } else if (e.key === "+" || e.key === "=") {
+      zoomX(ZOOM_STEP); zoomYAll(ZOOM_STEP);
+    } else if (e.key === "-") {
+      zoomX(1 / ZOOM_STEP); zoomYAll(1 / ZOOM_STEP);
+    } else {
+      return;
+    }
+    e.preventDefault();                 // don't scroll the page as well
+  });
+
+  window.addEventListener("keyup", e => {
+    if (e.key === heldArrow) heldArrow = "";
+  });
+  window.addEventListener("blur", () => { heldArrow = ""; });
 
   window.addEventListener("resize", relayout);
 

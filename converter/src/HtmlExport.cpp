@@ -410,7 +410,8 @@ select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 <h1>ScopeAnalyser — interactive chart</h1>
 <p class="meta">Exported %DATE% · %NCH% channel(s) · scroll = zoom X and Y at the
 cursor · Ctrl+scroll = X only · Shift+scroll = Y only · scroll over an axis = that
-axis · drag = pan · double-click = fit · Δ Measure: click two points, right-click
+axis · drag = pan · arrow keys = move the view, hold one to go faster ·
+hold an arrow and scroll = move, not zoom · double-click = fit · Δ Measure: click two points, right-click
 clears · drag the divider left of the plot to widen the channel list · drag
 the strip under the chart to resize it</p>
 <div id="charts"></div>
@@ -703,7 +704,8 @@ select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 <h1>ScopeAnalyser — interactive chart</h1>
 <p class="meta">Exported %DATE% · %NCH% channel(s) · %KIND% ·
 scroll = zoom X and Y at the cursor · Ctrl+scroll = X only · Shift+scroll = Y only ·
-scroll over an axis = that axis · drag = pan · double-click = fit · Δ Measure: click
+scroll over an axis = that axis · drag = pan · arrow keys = move the view, hold
+one to go faster · hold an arrow and scroll = move, not zoom · double-click = fit · Δ Measure: click
 two points, right-click clears · drag the divider left of the plot to widen the
 channel list · drag the strip under the chart to resize it</p>
 <div id="charts"></div>
