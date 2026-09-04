@@ -36,6 +36,12 @@ function mkEl(tag) {
     appendChild(c) { this.children.push(c); return c; },
     append(...c) { this.children.push(...c); },
     insertBefore(c) { this.children.unshift(c); return c; },
+    removeChild(c) {
+      const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1);
+      return c;
+    },
+    setAttribute(k, v) { this[k] = v; },
+    select() {},
     addEventListener(t, fn) { (this._events[t] = this._events[t] || []).push(fn); },
     removeEventListener(t, fn) {
       const a = this._events[t] || []; const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1);
@@ -92,7 +98,18 @@ global.document = {
   },
   dispatch(t, ev) { (docEvents[t] || []).slice().forEach(fn => fn(ev)); },
   documentElement: { get clientHeight() { return VIEW_H; } },
+  body: mkEl('body'),
+  // The page's clipboard fallback selects a textarea and asks the document to
+  // copy it; that is the path a file:// export takes, where the async
+  // clipboard API is not a secure context.
+  execCommand(cmd) {
+    if (cmd !== 'copy') return false;
+    const ta = document.body.children[document.body.children.length - 1];
+    EXEC_COPIED = ta ? ta.value : '';
+    return true;
+  },
 };
+let EXEC_COPIED = '';
 const winEvents = {};
 global.window = {
   addEventListener(t, fn) { (winEvents[t] = winEvents[t] || []).push(fn); },
@@ -612,12 +629,28 @@ check('the table keeps its rows, blank — the chart must not resize under the '
 // The copied report carries the same numbers.
 clickAt(0.25, 0.5, { alt: true }); clickAt(0.75, 0.3, { alt: true });
 let copied = '';
-global.navigator = { clipboard: { writeText(t) { copied = t; return Promise.resolve(); } } };
+// Newer node versions ship a read-only `navigator`, so it has to be replaced
+// outright rather than assigned to.
+const setNavigator = v => Object.defineProperty(global, 'navigator',
+                                                { value: v, configurable: true });
+setNavigator({ clipboard: { writeText(t) { copied = t; return Promise.resolve(); } } });
 findBtn('⧉ Copy').dispatch('click', {});
+const carriesEverything = t => t.includes('Δx = ') && t.includes('Channel\t@x1')
+                            && t.split('\n').length > 4;
 check('Copy puts the deltas and the table on the clipboard',
-      copied.includes('Δx = ') && copied.includes('Channel\t@x1')
-      && copied.split('\n').length > 4,
-      JSON.stringify(copied.slice(0, 60)));
+      carriesEverything(copied), JSON.stringify(copied.slice(0, 60)));
+
+// A file:// page is not a secure context in every browser, so the async
+// clipboard API may not be there at all — the textarea fallback is the path
+// an export usually takes, and it has to carry the same text.
+setNavigator(undefined);
+EXEC_COPIED = '';
+document.body.children.length = 0;
+findBtn('⧉ Copy').dispatch('click', {});
+check('and does the same through the textarea fallback',
+      carriesEverything(EXEC_COPIED), JSON.stringify(EXEC_COPIED.slice(0, 60)));
+check('the fallback cleans up after itself', document.body.children.length === 0,
+      `${document.body.children.length} left behind`);
 mBtn.dispatch('click', {});                 // done measuring
 
 // ---------------------------------------------------------------------------

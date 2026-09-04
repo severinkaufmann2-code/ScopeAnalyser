@@ -1026,7 +1026,8 @@ function makeApp(app) {
   function copyMeasurement() {
     const text = measureReport();
     if (!text) return false;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
+    if (typeof navigator !== "undefined"
+        && navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).catch(() => copyViaTextarea(text));
     } else {
       copyViaTextarea(text);
