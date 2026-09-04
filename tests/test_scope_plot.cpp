@@ -12,6 +12,8 @@
 #include <QSignalSpy>
 #include <QTest>
 #include <QTimer>
+#include <QMenu>
+#include <QTableWidget>
 #include <QToolButton>
 
 #include <filesystem>
@@ -895,6 +897,344 @@ TEST(ScopePlot, HoldingMoveRepeatsAcceleratesAndStopsOnRelease) {
     const double atRelease = plot->xAxis->range().lower;
     spinFor(600);
     EXPECT_DOUBLE_EQ(plot->xAxis->range().lower, atRelease);
+}
+
+namespace {
+// A left click in the plot, in axis-rect fractions (0,0 = top-left).
+void clickPlot(scope::plot::ScopePlot& sp, double fx, double fy) {
+    auto* plot = sp.plot();
+    const QRect ar = plot->axisRect()->rect();
+    const QPointF pos(ar.left() + fx * ar.width(), ar.top() + fy * ar.height());
+    QMouseEvent ev(QEvent::MouseButtonPress, pos, plot->mapToGlobal(pos.toPoint()),
+                   Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(plot, &ev);
+    QApplication::processEvents();
+}
+}  // namespace
+
+namespace {
+// A click at an exact pixel inside the plot, with modifiers.
+void clickPx(scope::plot::ScopePlot& sp, QPointF px,
+             Qt::KeyboardModifiers mods = Qt::NoModifier,
+             Qt::MouseButton button = Qt::LeftButton) {
+    auto* plot = sp.plot();
+    QMouseEvent ev(QEvent::MouseButtonPress, px, plot->mapToGlobal(px.toPoint()),
+                   button, button, mods);
+    QApplication::sendEvent(plot, &ev);
+    QApplication::processEvents();
+}
+// A ramp y = x over 0 .. 1 in steps of 0.1, on a plot scaled 0..1 both ways,
+// so a data coordinate and a pixel are trivially convertible.
+QCPGraph* rampPlot(scope::plot::ScopePlot& sp) {
+    auto* g = sp.plot()->addGraph();
+    g->setName("ramp");
+    QVector<double> xs, ys;
+    for (int i = 0; i <= 10; ++i) { xs << i * 0.1; ys << i * 0.1; }
+    g->setData(xs, ys, true);
+    sp.plot()->xAxis->setRange(0.0, 1.0);
+    sp.plot()->yAxis->setRange(0.0, 1.0);
+    sp.plot()->replot();
+    return g;
+}
+QPointF dataPx(scope::plot::ScopePlot& sp, double x, double y) {
+    return QPointF(sp.plot()->xAxis->coordToPixel(x),
+                   sp.plot()->yAxis->coordToPixel(y));
+}
+}  // namespace
+
+TEST(ScopePlot, MeasurementSnapsToSamplesUnlessAltIsHeld) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(900, 500);
+    sp.show();
+    spinFor(80);
+    rampPlot(sp);
+    sp.setMeasureMode(true);
+
+    // Both clicks land a few pixels off a sample: they snap onto it, so the
+    // measurement is between two real data points rather than two guesses.
+    clickPx(sp, dataPx(sp, 0.2, 0.2) + QPointF(4, -5));
+    clickPx(sp, dataPx(sp, 0.8, 0.8) + QPointF(-3, 4));
+    auto rows = sp.channelMeasurements();
+    ASSERT_EQ(rows.size(), 1);
+    EXPECT_NEAR(rows[0].atX1, 0.2, 1e-9);
+    EXPECT_NEAR(rows[0].atX2, 0.8, 1e-9);
+    EXPECT_TRUE(sp.measurementReadout().contains("Δx = 0.6"))
+        << sp.measurementReadout().toStdString();
+
+    // Alt places where the mouse actually is — for measuring against a level
+    // rather than against a sample. The same offset that snapped away above
+    // now stays, so the cursor sits between two samples.
+    sp.clearMeasurement();
+    clickPx(sp, dataPx(sp, 0.2, 0.2) + QPointF(9, -20), Qt::AltModifier);
+    clickPx(sp, dataPx(sp, 0.8, 0.8), Qt::AltModifier);
+    rows = sp.channelMeasurements();
+    ASSERT_EQ(rows.size(), 1);
+    EXPECT_GT(rows[0].atX1, 0.2 + 1e-3) << rows[0].atX1;
+    EXPECT_FALSE(sp.measurementReadout().contains("Δx = 0.6"))
+        << sp.measurementReadout().toStdString();
+}
+
+TEST(ScopePlot, ShiftLocksTheSecondPointToAPureDeltaXOrY) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(900, 500);
+    sp.show();
+    spinFor(80);
+    rampPlot(sp);
+    sp.setMeasureMode(true);
+
+    // Mostly horizontal → Δy is forced to zero.
+    clickPx(sp, dataPx(sp, 0.2, 0.5), Qt::AltModifier);
+    clickPx(sp, dataPx(sp, 0.8, 0.55), Qt::AltModifier | Qt::ShiftModifier);
+    QString out = sp.measurementReadout();
+    EXPECT_TRUE(out.contains("Δy = 0")) << out.toStdString();
+    EXPECT_TRUE(out.contains("Δx = 0.6")) << out.toStdString();
+
+    // Mostly vertical → Δx is forced to zero, so there is no 1/|Δx| line.
+    sp.clearMeasurement();
+    clickPx(sp, dataPx(sp, 0.5, 0.2), Qt::AltModifier);
+    clickPx(sp, dataPx(sp, 0.53, 0.9), Qt::AltModifier | Qt::ShiftModifier);
+    out = sp.measurementReadout();
+    EXPECT_TRUE(out.contains("Δx = 0 s")) << out.toStdString();
+    EXPECT_FALSE(out.contains("1/|Δx|")) << out.toStdString();
+}
+
+TEST(ScopePlot, ChannelMeasurementsReportTheGateStatistics) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(900, 500);
+    sp.show();
+    spinFor(80);
+    rampPlot(sp);
+    sp.setMeasureMode(true);
+    clickPx(sp, dataPx(sp, 0.2, 0.2));
+    clickPx(sp, dataPx(sp, 0.8, 0.8));
+
+    const auto rows = sp.channelMeasurements();
+    ASSERT_EQ(rows.size(), 1);
+    const auto& c = rows[0];
+    EXPECT_EQ(c.name.toStdString(), "ramp");
+    EXPECT_NEAR(c.delta, 0.6, 1e-9);
+    EXPECT_NEAR(c.slope, 1.0, 1e-9);          // y = x
+    EXPECT_NEAR(c.ratio, 4.0, 1e-9);          // 0.8 / 0.2
+    EXPECT_NEAR(c.dB, 20.0 * std::log10(4.0), 1e-6);
+    EXPECT_EQ(c.samples, 7);                  // 0.2 .. 0.8 inclusive
+    EXPECT_NEAR(c.min, 0.2, 1e-9);
+    EXPECT_NEAR(c.max, 0.8, 1e-9);
+    EXPECT_NEAR(c.peakToPeak, 0.6, 1e-9);
+    EXPECT_NEAR(c.mean, 0.5, 1e-9);
+    EXPECT_NEAR(c.rms, std::sqrt(0.29), 1e-9);
+    EXPECT_NEAR(c.stdDev, 0.2160246899, 1e-6);
+    EXPECT_NEAR(c.area, 0.3, 1e-9);           // ∫x dx over 0.2..0.8
+
+    // A value between samples is the value the drawn line carries there.
+    sp.clearMeasurement();
+    clickPx(sp, dataPx(sp, 0.25, 0.25), Qt::AltModifier);
+    clickPx(sp, dataPx(sp, 0.35, 0.35), Qt::AltModifier);
+    const auto mid = sp.channelMeasurements();
+    ASSERT_EQ(mid.size(), 1);
+    EXPECT_NEAR(mid[0].atX1, 0.25, 1e-3);
+    EXPECT_NEAR(mid[0].atX2, 0.35, 1e-3);
+
+    // The report carries the same numbers, tab separated, under the header.
+    const QString rep = sp.measurementReport();
+    EXPECT_TRUE(rep.contains("Channel\t@x1\t@x2")) << rep.toStdString();
+    EXPECT_TRUE(rep.contains("ramp\t")) << rep.toStdString();
+    EXPECT_TRUE(sp.measurementReport().contains("Δx"));
+}
+
+TEST(ScopePlot, SeveralMeasurementsCoexistAndRightClickTakesBackOne) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(900, 500);
+    sp.show();
+    spinFor(80);
+    rampPlot(sp);
+    sp.setMeasureMode(true);
+
+    clickPx(sp, dataPx(sp, 0.1, 0.1));
+    clickPx(sp, dataPx(sp, 0.3, 0.3));
+    EXPECT_EQ(sp.measurementCount(), 1);
+    // A click past a finished pair starts another instead of throwing the
+    // first away — that is what "several at once" means.
+    clickPx(sp, dataPx(sp, 0.6, 0.6));
+    clickPx(sp, dataPx(sp, 0.9, 0.9));
+    EXPECT_EQ(sp.measurementCount(), 2);
+    EXPECT_TRUE(sp.measurementReadout().startsWith("#2"))
+        << sp.measurementReadout().toStdString();
+
+    // Right-click on the first one takes back only that one.
+    clickPx(sp, dataPx(sp, 0.1, 0.1), Qt::NoModifier, Qt::RightButton);
+    EXPECT_EQ(sp.measurementCount(), 1);
+    EXPECT_TRUE(sp.measurementReadout().contains("Δx = 0.3"))
+        << sp.measurementReadout().toStdString();
+
+    // Right-click away from any of them clears the lot, as it always did.
+    clickPx(sp, dataPx(sp, 0.05, 0.95), Qt::NoModifier, Qt::RightButton);
+    EXPECT_EQ(sp.measurementCount(), 0);
+    EXPECT_TRUE(sp.measurementReadout().isEmpty());
+    EXPECT_TRUE(sp.channelMeasurements().isEmpty());
+}
+
+TEST(ScopePlot, MeasurementIsReadInTheAxisOfTheChannelItSnappedTo) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(900, 500);
+    sp.show();
+    spinFor(80);
+
+    const int second = sp.addYAxis("Torque", Qt::AlignRight);
+    QApplication::processEvents();
+    auto* plot = sp.plot();
+    auto* ramp = plot->addGraph();                       // on Y1, 0 .. 1
+    ramp->setName("Speed");
+    auto* torque = plot->addGraph(plot->xAxis, sp.yAxis(second));
+    torque->setName("Torque");                           // on Torque, 0 .. 100
+    QVector<double> xs, ys, ts;
+    for (int i = 0; i <= 10; ++i) { xs << i * 0.1; ys << i * 0.1; ts << i * 10.0; }
+    ramp->setData(xs, ys, true);
+    torque->setData(xs, ts, true);
+    plot->xAxis->setRange(0.0, 1.0);
+    plot->yAxis->setRange(0.0, 1.0);
+    sp.yAxis(second)->setRange(0.0, 200.0);   // so the two traces do not overlap
+    plot->replot();
+    sp.setMeasureMode(true);
+
+    // Started on the Y1 ramp: Δy is in Y1's units, and there is one Δy line
+    // rather than one per axis.
+    clickPx(sp, dataPx(sp, 0.2, 0.2));
+    clickPx(sp, dataPx(sp, 0.8, 0.8));
+    QString out = sp.measurementReadout();
+    EXPECT_TRUE(out.contains("Δy Y1 = 0.6")) << out.toStdString();
+    EXPECT_EQ(out.count("Δy"), 1) << out.toStdString();
+
+    // Started on the Torque trace: the same two x positions, read in Torque.
+    sp.clearMeasurement();
+    const auto torquePx = [&](double x, double v) {
+        return QPointF(plot->xAxis->coordToPixel(x),
+                       sp.yAxis(second)->coordToPixel(v));
+    };
+    clickPx(sp, torquePx(0.2, 20.0));
+    clickPx(sp, torquePx(0.8, 80.0));
+    out = sp.measurementReadout();
+    EXPECT_TRUE(out.contains("Δy Torque = 60")) << out.toStdString();
+
+    // Placed freely, with nothing to snap to, it falls back to the first axis.
+    sp.clearMeasurement();
+    clickPx(sp, dataPx(sp, 0.2, 0.95), Qt::AltModifier);
+    clickPx(sp, dataPx(sp, 0.8, 0.45), Qt::AltModifier);
+    out = sp.measurementReadout();
+    EXPECT_TRUE(out.contains("Δy Y1 = -0.5")) << out.toStdString();
+}
+
+TEST(ScopePlot, MeasureTableListsTheChannelsOnThePlot) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(900, 500);
+    sp.show();
+    spinFor(80);
+
+    const int second = sp.addYAxis("Torque", Qt::AlignRight);
+    QApplication::processEvents();
+    auto* plot = sp.plot();
+    auto* g1 = plot->addGraph();
+    g1->setName("Speed");
+    auto* g2 = plot->addGraph(plot->xAxis, sp.yAxis(second));
+    g2->setName("Torque");
+    QVector<double> xs, ys;
+    for (int i = 0; i <= 10; ++i) { xs << i * 0.1; ys << i * 0.1; }
+    g1->setData(xs, ys, true);
+    g2->setData(xs, ys, true);
+    plot->xAxis->setRange(0.0, 1.0);
+    plot->yAxis->setRange(0.0, 1.0);
+    sp.yAxis(second)->setRange(0.0, 1.0);
+    plot->replot();
+
+    sp.setMeasureMode(true);
+    clickPx(sp, dataPx(sp, 0.2, 0.2));
+    clickPx(sp, dataPx(sp, 0.8, 0.8));
+    auto names = [&] {
+        QStringList out;
+        for (const auto& c : sp.channelMeasurements()) out << c.name;
+        return out;
+    };
+    // Every channel on the plot, whichever axis it belongs to.
+    EXPECT_EQ(names(), (QStringList{"Speed", "Torque"}));
+
+    // Hiding one in the host's channel list is how it leaves the table —
+    // one selection to keep rather than two.
+    g2->setVisible(false);
+    EXPECT_EQ(names(), (QStringList{"Speed"}));
+    g2->setVisible(true);
+    EXPECT_EQ(names(), (QStringList{"Speed", "Torque"}));
+
+    // And the table on screen follows, without the host having to say so:
+    // hosts change their channels in their own way (the Analyser adds and
+    // removes plottables outright) and none of them tells the plot.
+    auto* table = sp.findChild<QTableWidget*>();
+    ASSERT_NE(table, nullptr);
+    EXPECT_EQ(table->rowCount(), 2);
+
+    g2->setVisible(false);
+    plot->replot();
+    QApplication::processEvents();
+    EXPECT_EQ(table->rowCount(), 1);
+    EXPECT_EQ(table->item(0, 0)->text().toStdString(), "Speed");
+
+    g2->setVisible(true);
+    plot->replot();
+    QApplication::processEvents();
+    EXPECT_EQ(table->rowCount(), 2);
+
+    // Removing the plottable altogether is the Analyser's own path.
+    plot->removePlottable(g2);
+    plot->replot();
+    QApplication::processEvents();
+    EXPECT_EQ(table->rowCount(), 1);
+}
+
+TEST(ScopePlot, MeasurementTableFoldsAwayAndGivesTheSpaceBack) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(900, 500);
+    sp.show();
+    spinFor(80);
+    rampPlot(sp);
+    sp.setMeasureMode(true);
+    clickPx(sp, dataPx(sp, 0.2, 0.2));
+    clickPx(sp, dataPx(sp, 0.8, 0.8));
+
+    QToolButton* fold = nullptr;
+    for (auto* b : sp.findChildren<QToolButton*>())
+        if (b->text().contains("Measurement")) fold = b;
+    ASSERT_NE(fold, nullptr);
+    auto* table = sp.findChild<QTableWidget*>();
+    ASSERT_NE(table, nullptr);
+    auto* panel = table->parentWidget();          // the measurement panel
+    const int open = panel->maximumHeight();
+    EXPECT_TRUE(table->isVisible());
+
+    fold->click();
+    QApplication::processEvents();
+    EXPECT_FALSE(table->isVisible());
+    EXPECT_LT(panel->maximumHeight(), open);      // the plot takes it back
+    EXPECT_TRUE(fold->text().startsWith(QString::fromUtf8("▸")))
+        << fold->text().toStdString();
+
+    fold->click();
+    QApplication::processEvents();
+    EXPECT_TRUE(table->isVisible());
+    EXPECT_EQ(panel->maximumHeight(), open);
+    // Folding is about the space, not the measurement: the numbers are intact.
+    EXPECT_FALSE(sp.channelMeasurements().isEmpty());
 }
 
 namespace {

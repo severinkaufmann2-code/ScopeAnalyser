@@ -15,9 +15,27 @@ function makeApp(app) {
   const grip = document.createElement("div"); grip.className = "pgrip";
   grip.title = "Drag to resize the channel list \u2014 double-click to fit the "
              + "longest channel name";
-  const vgrip = document.createElement("div"); vgrip.className = "vgrip";
-  vgrip.title = "Drag to resize the chart \u2014 double-click to fill the window";
-  block.append(toolbar, body, vgrip); body.append(panel, grip, plotwrap);
+  // The per-channel measurement table sits under the chart: it holds far more
+  // than a label on the plot can. Inside the block, so fitToWindow()'s "what
+  // sits below the chart" term accounts for it without being told.
+  const mpanel = document.createElement("div");
+  mpanel.style.display = "none";
+  // A strip that folds the table away: the numbers are worth a lot of the
+  // window while reading them and nothing at all while not, and the chart
+  // takes back every pixel the table gives up.
+  const mhead = document.createElement("div"); mhead.className = "mhead";
+  const mfold = document.createElement("button"); mfold.className = "tbtn";
+  mfold.title = "Fold the measurement table away, giving the space back to "
+              + "the chart. Click again to bring it back.";
+  mhead.appendChild(mfold);
+  const mwrap = document.createElement("div"); mwrap.className = "mtable";
+  mpanel.append(mhead, mwrap);
+  let mFolded = false;
+  mfold.addEventListener("click", () => {
+    mFolded = !mFolded;
+    updateMeasurePanel();
+  });
+  block.append(toolbar, body, mpanel); body.append(panel, grip, plotwrap);
   document.getElementById("charts").appendChild(block);
   if (!keyBlock) keyBlock = block;
   ["pointerenter", "pointerdown"].forEach(
@@ -56,10 +74,17 @@ function makeApp(app) {
     autoY  = Array(n).fill(true);
     manual = Array(n).fill(null);
   }
-  const measure = { on: false, p1: null, p2: null };
+  // A measurement point is one x and one y *per Y axis*: the same pixel reads
+  // a different value on every axis, and which of them the markers are drawn
+  // in is decided per measurement, by the channel the first click snapped to.
+  const measure = { on: false, list: [] };
+  function activeMeasure() {
+    for (let i = measure.list.length - 1; i >= 0; i--)
+      if (measure.list[i].p2) return measure.list[i];
+    return null;
+  }
   let u = null;
   let rows = [];                          // {series, chartIdx, valEl}
-
   // ---------- toolbar ----------
   function group(parent) {
     const g = document.createElement("div"); g.className = "tbgroup";
@@ -151,11 +176,28 @@ function makeApp(app) {
       k => panY(-PAN_STEP * k), true);
   caption(toolbar, "Move");
   const mBtn = btn(toolbar, "Δ Measure",
-    "Click two points to mark Δx / Δy / 1/|Δx|. Right-click clears.",
-    () => { measure.on = !measure.on; measure.p1 = measure.p2 = null;
+    "Click two points to mark Δx / Δy / 1/|Δx|, and read every channel "
+    + "between them in the table under the chart. Clicks snap to the nearest "
+    + "sample — hold Alt to place freely, Shift to lock the second point to a "
+    + "pure Δx or Δy. Clicking on adds another measurement; right-click takes "
+    + "back the one under the cursor, or clears them all. With several Y axes, "
+    + "the measurement is drawn in the axis of the channel it snapped to.",
+    () => { measure.on = !measure.on; measure.list = [];
             mBtn.classList.toggle("on", measure.on);
+            rebuildMeasureChips();
+            updateMeasurePanel();
             u.over.style.cursor = measure.on ? "crosshair" : "grab";
             u.redraw(); });
+  const copyBtn = btn(toolbar, "⧉ Copy",
+    "Copy the measurement to the clipboard (Ctrl+C): the deltas, then a "
+    + "tab-separated row per channel — paste straight into a spreadsheet.",
+    () => copyMeasurement());
+  copyBtn.style.display = "none";
+  // All that is left of the old axis picker: Copy earns its place in the
+  // toolbar only while measuring.
+  function rebuildMeasureChips() {
+    copyBtn.style.display = measure.on ? "" : "none";
+  }
   const modeSel = document.createElement("select"); modeSel.className = "tbtn";
   ["Line", "Points", "Line + points"].forEach((t, i) => {
     const o = document.createElement("option"); o.value = i; o.textContent = t;
@@ -182,8 +224,9 @@ function makeApp(app) {
     curView = viewSel.value;
     xTitle.style.display = xRow.style.display =
         curView === "xy" ? "" : "none";
-    measure.p1 = measure.p2 = null;
+    measure.list = [];
     resetYState();
+    updateMeasurePanel();
     rebuildPanelRows();
     buildChart(false);
   });
@@ -198,8 +241,9 @@ function makeApp(app) {
   if (xSel) xRow.value = xCands.indexOf(xSel);
   xRow.addEventListener("change", () => {
     xSel = xCands[+xRow.value];
-    measure.p1 = measure.p2 = null;
+    measure.list = [];
     resetYState();
+    updateMeasurePanel();
     rebuildPanelRows();
     buildChart(false);
   });
@@ -229,6 +273,7 @@ function makeApp(app) {
       cb.addEventListener("change", () => {
         r.series.visible = cb.checked;             // remembered per channel
         u.setSeries(r.chartIdx, { show: cb.checked });
+        updateMeasurePanel();                      // and out of the table
       });
       const sw = document.createElement("span"); sw.className = "swatch";
       sw.style.background = r.series.color;
@@ -332,9 +377,11 @@ function makeApp(app) {
   // The app's plot fills its window, so the exported one should too — a fixed
   // band leaves most of a tall screen empty. Height follows the window until
   // the strip under the chart is dragged, which pins it until double-clicked.
-  let manualH = 0;                          // 0 = follow the window
-  let autoH = 430;
-  function plotHeight() { return Math.max(MIN_PLOT_H, manualH || autoH); }
+  // The chart follows the window, always: it is the only thing on the page
+  // worth the space, and a height pinned by hand only ever went stale the
+  // next time the window changed.
+  let autoH = 430;                          // until the first fit
+  function plotHeight() { return Math.max(MIN_PLOT_H, autoH); }
   // Only one block ever fills the window; a page holding several keeps the
   // fixed height, since they cannot each be a windowful.
   const soleBlock = () =>
@@ -353,7 +400,7 @@ function makeApp(app) {
   // does, leaving `below` as just the grab strip and the block's border.
   const PAGE_MARGIN = 24;                   // body's margin, top and bottom
   function fitToWindow() {
-    if (manualH || !u || !soleBlock()) return;
+    if (!u || !soleBlock()) return;
     const wrap = plotwrap.getBoundingClientRect();
     const below = block.getBoundingClientRect().bottom - wrap.bottom;
     const pad = getComputedStyle(plotwrap);
@@ -370,24 +417,6 @@ function makeApp(app) {
     u.setSize({ width: plotWidth(), height: plotHeight() });
     fitToWindow();
   }
-  vgrip.addEventListener("mousedown", e => {
-    if (e.button !== 0) return;
-    e.preventDefault();                     // no text selection while dragging
-    const y0 = e.clientY, h0 = u ? u.height : plotHeight();
-    const move = ev => {
-      manualH = Math.max(MIN_PLOT_H, h0 + ev.clientY - y0);
-      if (u) u.setSize({ width: plotWidth(), height: manualH });
-    };
-    const up = () => {
-      vgrip.classList.remove("on");
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-    };
-    vgrip.classList.add("on");
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
-  });
-  vgrip.addEventListener("dblclick", () => { manualH = 0; relayout(); });
 
   // ---------- resizable channel panel ----------
   // Channel names are as long as the PLC symbols they came from, so a fixed
@@ -577,7 +606,7 @@ function makeApp(app) {
 
   // ---------- actions (same semantics as the app) ----------
   function fitAll() {
-    measure.p1 = measure.p2 = null;
+    measure.list = [];
     resetYState();
     buildChart(false);
   }
@@ -725,25 +754,121 @@ function makeApp(app) {
   }
 
   // ---------- measure tool ----------
+  // Snapping is the default: a measurement between two real samples is worth
+  // more than one between two mouse positions, and the pixel the user hit is
+  // rarely the one the data sits on. Alt places freely, for measuring against
+  // a level. Shift locks the second point to the first — whichever pixel
+  // distance is the larger wins — for a pure Δx or a pure Δy.
+  const SNAP_PX = 18, HIT_PX = 10;
+  function seriesOnAxis(chartIdx) {     // which Y axis that column is drawn on
+    const r = viewSeries().find(v => v.chartIdx === chartIdx);
+    return r ? r.series.axis : 0;
+  }
+  function snapTo(uu, left, top) {
+    let best = SNAP_PX, at = { left, top, axis: -1 };
+    const x = uu.posToVal(left, "x");
+    for (const r of viewSeries()) {
+      if (!r.series.visible) continue;
+      const i = r.chartIdx;
+      const col = uu.data[i], xs = uu.data[0];
+      if (!col || !xs.length) continue;
+      // Nearest sample by x, then judged in pixels so a compressed axis does
+      // not make a far-away sample look close.
+      let lo = 0, hi = xs.length - 1;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] < x) lo = m + 1; else hi = m; }
+      for (const j of [lo - 1, lo]) {
+        if (j < 0 || j >= xs.length || col[j] == null) continue;
+        const sl = uu.valToPos(xs[j], "x", true) / devicePixelRatio;
+        const st = uu.valToPos(col[j], sKey(seriesOnAxis(i)), true) / devicePixelRatio;
+        const d = Math.hypot(sl - left, st - top);
+        if (d < best) { best = d; at = { left: sl, top: st, axis: r.series.axis }; }
+      }
+    }
+    return at;
+  }
+  function pointAt(uu, left, top, free, lock) {
+    let at = free ? { left, top, axis: -1 } : snapTo(uu, left, top);
+    const open = measure.list.length ? measure.list[measure.list.length - 1] : null;
+    if (lock && open && open.p1 && !open.p2) {
+      const anchor = open.anchor;
+      const al = uu.valToPos(open.p1.x, "x", true) / devicePixelRatio;
+      const at2 = uu.valToPos(open.p1.y[anchor], sKey(anchor), true) / devicePixelRatio;
+      if (Math.abs(at.left - al) >= Math.abs(at.top - at2)) at = { left: at.left, top: at2 };
+      else                                                  at = { left: al, top: at.top };
+    }
+    return { x: uu.posToVal(at.left, "x"), axis: at.axis,
+             y: activeSpec().axes.map((ax, k) => uu.posToVal(at.top, sKey(k))) };
+  }
+  function placeMeasurePoint(uu, left, top, free, lock) {
+    // A click after a finished pair starts the next measurement rather than
+    // discarding the last: several can stand on the chart at once.
+    let m = measure.list.length ? measure.list[measure.list.length - 1] : null;
+    if (!m || m.p2) { m = { p1: null, p2: null, anchor: 0 }; measure.list.push(m); }
+    const p = pointAt(uu, left, top, free, lock);
+    if (!m.p1) {
+      m.p1 = p;
+      // The measurement belongs to the channel it was started on, so its
+      // markers and Δy read in that channel's units. Placed freely (Alt, or
+      // with nothing near enough to snap to) it falls back to the first axis.
+      m.anchor = p.axis >= 0 ? p.axis : 0;
+    } else {
+      m.p2 = p;
+    }
+  }
+  // Right-click takes back the measurement under the cursor — its markers, or
+  // the line between them. Away from all of them the caller clears the lot.
+  function removeMeasureAt(uu, left, top) {
+    for (let i = measure.list.length - 1; i >= 0; i--) {
+      const m = measure.list[i];
+      const pxOf = p => [
+        uu.valToPos(p.x, "x", true) / devicePixelRatio,
+        uu.valToPos(p.y[m.anchor], sKey(m.anchor), true) / devicePixelRatio];
+      let d = Infinity;
+      if (m.p1) { const [a, b] = pxOf(m.p1); d = Math.min(d, Math.hypot(a - left, b - top)); }
+      if (m.p2) { const [a, b] = pxOf(m.p2); d = Math.min(d, Math.hypot(a - left, b - top)); }
+      if (m.p1 && m.p2) {
+        const [ax, ay] = pxOf(m.p1), [bx, by] = pxOf(m.p2);
+        const vx = bx - ax, vy = by - ay, len2 = vx * vx + vy * vy;
+        const t = len2 ? Math.max(0, Math.min(1, ((left - ax) * vx + (top - ay) * vy) / len2)) : 0;
+        d = Math.min(d, Math.hypot(ax + t * vx - left, ay + t * vy - top));
+      }
+      if (d <= HIT_PX) { measure.list.splice(i, 1); return true; }
+    }
+    return false;
+  }
+
   function drawMeasure(uu) {
-    if (!measure.p1) return;
+    if (!measure.list.length) return;
     const ctx = uu.ctx;
-    const px = p => [uu.valToPos(p.x, "x", true), uu.valToPos(p.y, sKey(0), true)];
+    const spec = activeSpec();
+    const nameAxis = spec.axes.length > 1;
     ctx.save();
-    ctx.fillStyle = "#dc6400"; ctx.strokeStyle = "#dc6400";
-    const dot = p => { const [cx, cy] = px(p);
-      ctx.beginPath(); ctx.arc(cx, cy, 4 * devicePixelRatio, 0, 2 * Math.PI); ctx.fill(); };
-    dot(measure.p1);
-    if (measure.p2) {
-      dot(measure.p2);
-      const [x1, y1] = px(measure.p1), [x2, y2] = px(measure.p2);
+    const numbered = measure.list.length > 1;
+    measure.list.forEach((m, n) => {
+      // Each measurement is drawn in its own channel's axis.
+      const anchor = m.anchor;
+      const px = p => [uu.valToPos(p.x, "x", true),
+                       uu.valToPos(p.y[anchor], sKey(anchor), true)];
+      ctx.fillStyle = "#dc6400"; ctx.strokeStyle = "#dc6400";
+      const dot = p => { const [cx, cy] = px(p);
+        ctx.beginPath(); ctx.arc(cx, cy, 4 * devicePixelRatio, 0, 2 * Math.PI); ctx.fill(); };
+      if (m.p1) dot(m.p1);
+      if (!m.p1 || !m.p2) return;
+      dot(m.p2);
+      const [x1, y1] = px(m.p1), [x2, y2] = px(m.p2);
       ctx.setLineDash([5 * devicePixelRatio, 4 * devicePixelRatio]);
       ctx.lineWidth = devicePixelRatio;
       ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
       ctx.setLineDash([]);
-      const dx = measure.p2.x - measure.p1.x;
-      const dy = measure.p2.y - measure.p1.y;
-      const lines = ["Δx = " + fmt(dx), "Δy = " + fmt(dy)];
+      const dx = m.p2.x - m.p1.x;
+      const lines = [(numbered ? "#" + (n + 1) + "  " : "") + "Δx = " + fmt(dx)];
+      // Δy in the units of the axis the markers ride on — named when the
+      // chart has more than one, so the number is never unit-less. What each
+      // channel does between the markers is the table's job, in the channel's
+      // own units.
+      const dy = m.p2.y[anchor] - m.p1.y[anchor];
+      lines.push(nameAxis ? "Δy " + spec.axes[anchor].label + " = " + fmt(dy)
+                          : "Δy = " + fmt(dy));
       if (dx !== 0 && curView === "time")
         lines.push("1/|Δx| = " + fmt(1 / Math.abs(dx)) + " Hz");
       ctx.font = (12 * devicePixelRatio) + "px system-ui, sans-serif";
@@ -757,8 +882,166 @@ function makeApp(app) {
       ctx.fillStyle = "#b35000";
       lines.forEach((t, i) => ctx.fillText(t, bx + 6 * devicePixelRatio,
                                            by + (i + 1) * lh));
-    }
+    });
     ctx.restore();
+  }
+
+  // ---------- what every channel does between the markers ----------
+  // The value the drawn line carries at x: the sample where there is one,
+  // otherwise a linear interpolation between the neighbours, which is exactly
+  // the segment drawn through them. Null outside the channel's own samples —
+  // a read-out there would be an extrapolation, not a measurement.
+  function valueAt(uu, si, x) {
+    const xs = uu.data[0], col = uu.data[si];
+    if (!xs || !col || !xs.length) return null;
+    let lo = 0, hi = xs.length - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] < x) lo = m + 1; else hi = m; }
+    // Walk out to the nearest non-null neighbours: a channel sampled slower
+    // than the union grid is null at most of it.
+    let a = lo; while (a >= 0 && col[a] == null) a--;
+    let b = lo; while (b < xs.length && col[b] == null) b++;
+    if (a >= 0 && xs[a] === x) return col[a];
+    if (a < 0 || b >= xs.length) return null;
+    const span = xs[b] - xs[a];
+    if (span <= 0) return col[a];
+    return col[a] + (col[b] - col[a]) * (x - xs[a]) / span;
+  }
+  // Statistics over the window between the markers. The area is a trapezoid
+  // between consecutive samples, so unevenly sampled channels integrate
+  // correctly; n says how many samples the numbers rest on.
+  function gateStats(uu, si, lo, hi) {
+    const xs = uu.data[0], col = uu.data[si];
+    let n = 0, sum = 0, sumSq = 0, area = 0, mn = null, mx = null, pk = 0, pv = 0;
+    for (let i = 0; i < xs.length; i++) {
+      const k = xs[i], v = col[i];
+      if (k < lo || k > hi || v == null) continue;
+      if (n === 0) { mn = mx = v; } else {
+        mn = Math.min(mn, v); mx = Math.max(mx, v);
+        area += 0.5 * (v + pv) * (k - pk);
+      }
+      sum += v; sumSq += v * v; pk = k; pv = v; n++;
+    }
+    if (!n) return { n: 0 };
+    const mean = sum / n;
+    const sd = n > 1 ? Math.sqrt(Math.max(0, (sumSq - sum * sum / n) / (n - 1))) : null;
+    return { n, min: mn, max: mx, p2p: mx - mn, mean, rms: Math.sqrt(sumSq / n),
+             sd, area: n > 1 ? area : 0 };
+  }
+  function channelMeasurements() {
+    const m = activeMeasure();
+    if (!m || !u) return [];
+    const lo = Math.min(m.p1.x, m.p2.x), hi = Math.max(m.p1.x, m.p2.x);
+    const out = [];
+    // Every channel on the chart: unticking one in the channel list is how
+    // it leaves the table, which is one selection to keep rather than two.
+    viewSeries().forEach(r => {
+      if (!r.series.visible) return;
+      const si = r.chartIdx;              // its column in the chart's data
+      const a = valueAt(u, si, m.p1.x), b = valueAt(u, si, m.p2.x);
+      const d = (a == null || b == null) ? null : b - a;
+      const dx = m.p2.x - m.p1.x;
+      // A ratio through zero is not a ratio, and dB of a sign change is not a
+      // level, so both stay empty rather than printing an infinity.
+      const ratio = (a && b != null) ? b / a : null;
+      const st = gateStats(u, si, lo, hi);
+      out.push({ name: r.series.label, atX1: a, atX2: b, delta: d,
+                 slope: (d != null && dx) ? d / dx : null,
+                 ratio, dB: (ratio > 0) ? 20 * Math.log10(ratio) : null,
+                 min: st.min, max: st.max, p2p: st.p2p, mean: st.mean,
+                 rms: st.rms, sd: st.sd, area: st.area, n: st.n || 0 });
+    });
+    return out;
+  }
+
+  const M_COLS = ["Channel", "@x1", "@x2", "Δ", "Δ/Δx", "ratio", "dB",
+                  "min", "max", "p-p", "mean", "RMS", "σ", "∫", "n"];
+  const mCell = v => (v == null || !isFinite(v)) ? "—" : fmt(v);
+  // With nothing measured yet the rows are still there, empty: the table is
+  // sized by the channel count either way, so entering measure mode reserves
+  // its space once instead of the chart jumping under the cursor between the
+  // first click and the second.
+  function measureRows() {
+    const got = channelMeasurements();
+    if (got.length) {
+      return got.map(c => [
+        c.name, c.atX1, c.atX2, c.delta, c.slope, c.ratio, c.dB,
+        c.min, c.max, c.p2p, c.mean, c.rms, c.sd, c.area, c.n]);
+    }
+    return viewSeries().filter(r => r.series.visible)
+        .map(r => [r.series.label].concat(Array(M_COLS.length - 1).fill(null)));
+  }
+  function updateMeasurePanel() {
+    const rowsData = measure.on ? measureRows() : [];
+    const show = rowsData.length > 0;
+    mpanel.style.display = show ? "" : "none";
+    mfold.textContent = (mFolded ? "▸" : "▾") + " Measurement";
+    mwrap.style.display = show && !mFolded ? "" : "none";
+    mwrap.textContent = "";
+    if (show && !mFolded) {
+      const tbl = document.createElement("table");
+      const head = document.createElement("tr");
+      M_COLS.forEach(h => {
+        const th = document.createElement("th"); th.textContent = h;
+        head.appendChild(th);
+      });
+      tbl.appendChild(head);
+      rowsData.forEach(r => {
+        const tr = document.createElement("tr");
+        r.forEach((v, i) => {
+          const td = document.createElement("td");
+          td.textContent = i === 0 ? v
+                         : (i === r.length - 1 && v != null) ? String(v)
+                         : mCell(v);
+          tr.appendChild(td);
+        });
+        tbl.appendChild(tr);
+      });
+      mwrap.appendChild(tbl);
+    }
+    relayout();                 // the chart keeps whatever the table leaves
+  }
+  // The whole measurement as tab-separated text: the deltas, then the table.
+  function measureReport() {
+    const m = activeMeasure();
+    if (!m) return "";
+    const spec = activeSpec();
+    const dx = m.p2.x - m.p1.x;
+    const head = ["Δx = " + fmt(dx)];
+    head.push((spec.axes.length > 1
+        ? "Δy " + spec.axes[m.anchor].label + " = " : "Δy = ")
+        + fmt(m.p2.y[m.anchor] - m.p1.y[m.anchor]));
+    if (dx !== 0 && curView === "time")
+      head.push("1/|Δx| = " + fmt(1 / Math.abs(dx)) + " Hz");
+    const body = channelMeasurements().map(c => [
+        c.name, c.atX1, c.atX2, c.delta, c.slope, c.ratio, c.dB,
+        c.min, c.max, c.p2p, c.mean, c.rms, c.sd, c.area, c.n]).map(
+        r => r.map((v, i) => i === 0 ? v : (v == null || !isFinite(v) ? "" : v))
+              .join("\t"));
+    return head.join("\t") + "\n\n" + M_COLS.join("\t") + "\n"
+         + body.join("\n") + "\n";
+  }
+  // file:// pages are not a secure context in every browser, so the async
+  // clipboard API may not be there at all; the textarea is the fallback that
+  // works everywhere an export gets opened.
+  function copyMeasurement() {
+    const text = measureReport();
+    if (!text) return false;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(() => copyViaTextarea(text));
+    } else {
+      copyViaTextarea(text);
+    }
+    return true;
+  }
+  function copyViaTextarea(text) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) { /* nothing else to try */ }
+    document.body.removeChild(ta);
   }
 
   // ---------- mouse wiring ----------
@@ -898,18 +1181,20 @@ function makeApp(app) {
     uu.over.addEventListener("click", e => {
       if (!measure.on) return;
       const rect = uu.over.getBoundingClientRect();
-      const p = { x: uu.posToVal(e.clientX - rect.left, "x"),
-                  y: uu.posToVal(e.clientY - rect.top, sKey(0)) };
-      if (!measure.p1 || measure.p2) { measure.p1 = p; measure.p2 = null; }
-      else                           { measure.p2 = p; }
+      placeMeasurePoint(uu, e.clientX - rect.left, e.clientY - rect.top,
+                        e.altKey, e.shiftKey);
+      updateMeasurePanel();
       uu.redraw();
     });
     uu.over.addEventListener("contextmenu", e => {
-      if (measure.on) {
-        e.preventDefault();
-        measure.p1 = measure.p2 = null;
-        uu.redraw();
-      }
+      if (!measure.on) return;
+      e.preventDefault();
+      const rect = uu.over.getBoundingClientRect();
+      // The one under the cursor, or all of them.
+      if (!removeMeasureAt(uu, e.clientX - rect.left, e.clientY - rect.top))
+        measure.list = [];
+      updateMeasurePanel();
+      uu.redraw();
     });
   }
 
@@ -944,7 +1229,15 @@ function makeApp(app) {
                    || t.tagName === "TEXTAREA" || t.isContentEditable);
   }
   window.addEventListener("keydown", e => {
-    if (keyBlock !== block || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (keyBlock !== block) return;
+    // Ctrl+C copies the measurement, but only while measuring — otherwise it
+    // belongs to whatever the reader has selected on the page.
+    if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
+      if (measure.on && !window.getSelection().toString() && copyMeasurement())
+        e.preventDefault();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (typing(e.target)) return;
     const dir = KEY_PAN[e.key];
     if (dir) {

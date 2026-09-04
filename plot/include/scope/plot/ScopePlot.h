@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QList>
+#include <QString>
+#include <QVector>
 #include <QWidget>
 
 #include <memory>
@@ -20,6 +22,13 @@ namespace scope::plot {
 //   Ctrl+Scroll     → zoom X only
 //   Shift+Scroll    → zoom the Y axis nearest the cursor
 //   Arrow held + Scroll → move the view along that arrow, no zoom at all
+//
+// Measure mode: left-click places markers, snapping to the nearest sample
+// (Alt places freely, Shift locks the second point to a pure Δx or Δy). A
+// measurement is drawn in the axis of the channel it snapped to, and the
+// table under the plot reports every visible channel between the markers.
+// A click past a finished pair starts another measurement; right-click takes
+// back the one under the cursor, or clears them all away from any.
 //
 // Ctrl+LeftDrag → region zoom (rectangle).
 // Plain LeftDrag → pan (QCustomPlot iRangeDrag).
@@ -107,11 +116,34 @@ public:
     // ---- Two-point measurement -------------------------------------
     // When enabled, left-clicks in the plot interior place markers (up
     // to two). With both placed, a connecting line and a text label
-    // show ΔX / ΔY. Right-click clears. setMeasureMode(false) hides
-    // everything and restores normal click behaviour.
+    // show ΔX and a ΔY per measured axis. Right-click clears.
+    // setMeasureMode(false) hides everything and restores normal click
+    // behaviour.
     void setMeasureMode(bool enabled);
     bool isMeasureMode() const;
     void clearMeasurement();
+
+    // What one visible channel does between the two markers: its value at
+    // each of them, the difference, the slope, the ratio in plain numbers
+    // and in dB, and the statistics over the window between them. Anything
+    // undefined (a ratio through zero, a gate holding no samples) is NaN.
+    struct ChannelMeasurement {
+        QString name;
+        double atX1{}, atX2{}, delta{}, slope{}, ratio{}, dB{};
+        double min{}, max{}, peakToPeak{}, mean{}, rms{}, stdDev{}, area{};
+        int    samples{};
+    };
+    // How many measurements are on the plot (the last may be half-placed).
+    int measurementCount() const;
+    // One row per visible channel, for the newest completed measurement.
+    // Empty while none is complete.
+    QVector<ChannelMeasurement> channelMeasurements() const;
+    // The whole thing as tab-separated text: the deltas, then the table.
+    QString measurementReport() const;
+
+    // The read-out as drawn on the plot — Δx, one Δy per measured axis,
+    // and 1/|Δx|. Empty until both points are placed.
+    QString measurementReadout() const;
 
     // Write the current view to `path`; the format follows the extension:
     // .png (pixel), .pdf (vector), .svg (vector, when built with Qt Svg —
@@ -121,6 +153,8 @@ public:
 
 public slots:
     void fitAll();
+    // Puts measurementReport() on the clipboard. No-op with nothing measured.
+    void copyMeasurementToClipboard();
     void saveImageDialog();   // PNG (pixel) / SVG / PDF (vector)
     void togglePause();
 
@@ -154,6 +188,10 @@ private:
     void updateRegionZoom(QPointF curPx);
     void endRegionZoom(QPointF endPx);
     void showAxisContextMenu(int axisIndex, QPoint globalPos);
+    void refreshMeasurements();
+    void updateMeasurePanel();
+    void placeMeasurePoint(QPointF pixelPos, Qt::KeyboardModifiers mods);
+    bool removeMeasurementAt(QPointF pixelPos);
 };
 
 }  // namespace scope::plot

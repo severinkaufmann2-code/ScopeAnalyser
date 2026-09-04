@@ -22,7 +22,12 @@
 #ifdef SCOPE_HAVE_QTSVG
 #include <QSvgGenerator>
 #endif
+#include <QAbstractItemView>
+#include <QClipboard>
 #include <QComboBox>
+#include <QGuiApplication>
+#include <QHeaderView>
+#include <QTableWidget>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -89,6 +94,91 @@ constexpr double kKeyPanBoost   = 1.08;
 // times a second, so a genuinely held key never goes stale, while a missed
 // release clears itself in two seconds.
 constexpr int    kArrowHeldStaleMs = 2000;
+
+// Measurement: the marker colour, how close to a sample a click has to land
+// before it snaps to it, and how close to a measurement a right-click has to
+// be to take that one back rather than clearing the lot.
+const     QColor kMeasureColor(220, 100, 0);
+constexpr double kSnapRadiusPx  = 18.0;
+constexpr double kMeasureHitPx  = 10.0;
+// The table never takes more than this much room from the plot; past it the
+// rows scroll.
+constexpr int    kMeasurePanelMaxPx = 190;
+
+// The panel's columns, in order. Also the header of the copied report, so the
+// two never drift apart.
+const QStringList kMeasureColumns = {
+    "Channel", "@x1", "@x2", "Δ", "Δ/Δx", "ratio", "dB",
+    "min", "max", "p-p", "mean", "RMS", "σ", "∫", "n",
+};
+
+// The value a graph's drawn line carries at x: the sample where there is one,
+// otherwise a linear interpolation between the neighbouring samples, which is
+// exactly the segment the line draws through. NaN outside the graph's own x
+// range — a read-out there would be an extrapolation, not a measurement.
+double graphValueAt(QCPGraph* g, double x) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    auto data = g->data();
+    if (!data || data->isEmpty()) return nan;
+    auto it = data->findBegin(x, /*expandedRange=*/false);
+    if (it == data->constEnd()) return nan;          // past the last sample
+    if (it->key == x) return it->value;
+    if (it == data->constBegin()) return nan;        // before the first
+    auto prev = it - 1;
+    const double span = it->key - prev->key;
+    if (span <= 0) return prev->value;
+    return prev->value + (it->value - prev->value) * (x - prev->key) / span;
+}
+
+// Everything the panel reports about one graph between two cursors. Sample
+// count is part of it: a gate holding two samples says so, rather than
+// dressing up a mean of two numbers as a statistic.
+struct GateStats {
+    double min{std::numeric_limits<double>::quiet_NaN()};
+    double max{std::numeric_limits<double>::quiet_NaN()};
+    double mean{std::numeric_limits<double>::quiet_NaN()};
+    double rms{std::numeric_limits<double>::quiet_NaN()};
+    double sd{std::numeric_limits<double>::quiet_NaN()};
+    double area{std::numeric_limits<double>::quiet_NaN()};
+    int    n{0};
+};
+
+GateStats gateStats(QCPGraph* g, double xlo, double xhi) {
+    GateStats st;
+    auto data = g->data();
+    if (!data || data->isEmpty()) return st;
+    // Sum in one pass; the area is a trapezoid between consecutive samples,
+    // so an unevenly sampled channel integrates correctly.
+    double sum = 0, sumSq = 0, area = 0;
+    double prevKey = 0, prevVal = 0;
+    auto it = data->findBegin(xlo, /*expandedRange=*/false);
+    const auto end = data->findEnd(xhi, /*expandedRange=*/false);
+    for (; it != end; ++it) {
+        const double k = it->key, v = it->value;
+        if (k < xlo || k > xhi || std::isnan(v)) continue;
+        if (st.n == 0) { st.min = st.max = v; }
+        else {
+            st.min = std::min(st.min, v);
+            st.max = std::max(st.max, v);
+            area += 0.5 * (v + prevVal) * (k - prevKey);
+        }
+        sum += v;
+        sumSq += v * v;
+        prevKey = k;
+        prevVal = v;
+        ++st.n;
+    }
+    if (st.n == 0) return st;
+    st.mean = sum / st.n;
+    st.rms  = std::sqrt(sumSq / st.n);
+    // Sample standard deviation; a single sample has no spread to report.
+    if (st.n > 1) {
+        const double var = std::max(0.0, (sumSq - sum * sum / st.n) / (st.n - 1));
+        st.sd = std::sqrt(var);
+    }
+    st.area = (st.n > 1) ? area : 0.0;
+    return st;
+}
 
 bool isArrowKey(int key) {
     return key == Qt::Key_Left || key == Qt::Key_Right
@@ -212,15 +302,209 @@ struct ScopePlot::Impl {
     bool                 leftButtonDown{false};
 
     // ---- Two-point measurement -----------------------------------
+    // A click is one x and one y *per Y axis*: the same pixel reads a
+    // different value on every axis, so the point keeps them all and the
+    // read-out reports Δy for whichever axes are picked. Anything else can
+    // only ever measure the first axis, which is what this used to do.
+    struct MeasurePoint {
+        double         x{std::numeric_limits<double>::quiet_NaN()};
+        QVector<double> y;                  // one per Y axis, by index
+        bool placed() const { return !std::isnan(x); }
+    };
+    // A measurement is a pair of points and the four plot items that draw it.
+    // Several can be on the plot at once: a click past a finished pair starts
+    // the next one instead of throwing the last away, and a right-click takes
+    // back whichever is under the cursor.
+    struct Measurement {
+        MeasurePoint    p1, p2;
+        // The axis the markers are drawn in: the one belonging to the channel
+        // the first click snapped to, so a measurement taken on a signal is
+        // read in that signal's units. A freely placed point falls back to Y1.
+        int             anchor{0};
+        QCPItemEllipse* dot1{nullptr};
+        QCPItemEllipse* dot2{nullptr};
+        QCPItemLine*    line{nullptr};
+        QCPItemText*    text{nullptr};
+        bool complete() const { return p1.placed() && p2.placed(); }
+    };
     bool                 measureMode{false};
-    QPointF              measureP1{std::numeric_limits<double>::quiet_NaN(),
-                                   std::numeric_limits<double>::quiet_NaN()};
-    QPointF              measureP2{std::numeric_limits<double>::quiet_NaN(),
-                                   std::numeric_limits<double>::quiet_NaN()};
-    QCPItemEllipse*      measureDot1{nullptr};
-    QCPItemEllipse*      measureDot2{nullptr};
-    QCPItemLine*         measureLine{nullptr};
-    QCPItemText*         measureText{nullptr};
+    QVector<Measurement> measurements;   // the last one may be half-placed
+    QWidget*             measurePanel{nullptr};
+    QWidget*             measureHeader{nullptr};
+    QToolButton*         measureCollapseBtn{nullptr};
+    QTableWidget*        measureTable{nullptr};
+    bool                 measureCollapsed{false};
+
+    // What the table was last built from. The host adds, removes and hides
+    // channels without telling the plot — the Analyser's channel list adds
+    // and removes plottables outright — and QCustomPlot has no signal for it,
+    // so the table checks after each replot whether its channels still match.
+    // Cheap enough to do per frame: a handful of pointers and two doubles
+    // each, against a replot that has just drawn the whole chart.
+    struct PanelKey {
+        QCPGraph* graph{nullptr};
+        int       samples{0};
+        double    lastKey{0};
+        double    lastValue{0};
+        bool operator==(const PanelKey&) const = default;
+    };
+    QVector<PanelKey> panelKeys;
+
+    QVector<PanelKey> currentPanelKeys() const {
+        QVector<PanelKey> out;
+        for (int i = 0; i < plot->graphCount(); ++i) {
+            auto* g = plot->graph(i);
+            if (!g->visible()) continue;
+            PanelKey k;
+            k.graph = g;
+            auto data = g->data();
+            if (data && !data->isEmpty()) {
+                k.samples = static_cast<int>(data->size());
+                const auto last = data->constEnd() - 1;
+                k.lastKey   = last->key;
+                k.lastValue = last->value;
+            }
+            out.append(k);
+        }
+        return out;
+    }
+
+    // A measurement's axis, clamped: axes can be removed under it.
+    QCPAxis* anchorAxis(const Measurement& m) const {
+        return yAxes.value(m.anchor, plot->yAxis);
+    }
+
+    // The measurement the panel reports on: the newest finished one, since
+    // that is the one the user just placed. Null while none is finished.
+    const Measurement* activeMeasurement() const {
+        for (int i = measurements.size() - 1; i >= 0; --i)
+            if (measurements[i].complete()) return &measurements[i];
+        return nullptr;
+    }
+
+    // Where a click lands. Snapping is the default: a measurement between two
+    // real samples is worth more than one between two mouse positions, and
+    // the pixel the user hit is rarely the one the data sits on. Alt places
+    // freely, for measuring against a level rather than against a sample.
+    //
+    // Shift locks the second point to the first: whichever of the two pixel
+    // distances is the larger wins, so the pair is a pure Δx or a pure Δy — a
+    // rise time or a level step, measured exactly rather than diagonally.
+    MeasurePoint pointAt(QPointF px, Qt::KeyboardModifiers mods,
+                         int* snappedAxis = nullptr) const {
+        if (snappedAxis) *snappedAxis = -1;
+    QPointF at = px;
+    if (!(mods & Qt::AltModifier)) {
+        double bestPx = kSnapRadiusPx;
+        for (int i = 0; i < plot->graphCount(); ++i) {
+            auto* g = plot->graph(i);
+            if (!g->visible() || !g->data() || g->data()->isEmpty()) continue;
+            QCPAxis* gy = g->valueAxis();
+            const double x = plot->xAxis->pixelToCoord(px.x());
+            // Nearest sample by key, then judged in pixels so a compressed
+            // axis does not make a far-away sample look close.
+            auto it = g->data()->findBegin(x, /*expandedRange=*/false);
+            for (auto cand : {it == g->data()->constBegin() ? it : it - 1, it}) {
+                if (cand == g->data()->constEnd()) continue;
+                const QPointF sp(plot->xAxis->coordToPixel(cand->key),
+                                 gy->coordToPixel(cand->value));
+                const double d = std::hypot(sp.x() - px.x(), sp.y() - px.y());
+                if (d < bestPx) {
+                    bestPx = d;
+                    at = sp;
+                    if (snappedAxis) *snappedAxis = yAxes.indexOf(gy);
+                }
+            }
+        }
+    }
+    if ((mods & Qt::ShiftModifier) && !measurements.isEmpty()) {
+        const auto& m = measurements.last();
+        if (m.p1.placed() && !m.p2.placed()) {
+            QCPAxis* ay = anchorAxis(m);
+            const QPointF anchor(
+                plot->xAxis->coordToPixel(m.p1.x),
+                ay->coordToPixel(m.p1.y.value(m.anchor)));
+            if (std::abs(at.x() - anchor.x()) >= std::abs(at.y() - anchor.y()))
+                at.setY(anchor.y());        // pure Δx
+            else
+                at.setX(anchor.x());        // pure Δy
+        }
+    }
+    MeasurePoint p;
+    p.x = plot->xAxis->pixelToCoord(at.x());
+    p.y.reserve(yAxes.size());
+    for (auto* ax : yAxes) p.y.append(ax->pixelToCoord(at.y()));
+    return p;
+}
+
+    // The four plot items one measurement draws itself with.
+    void newMeasurement(const QColor& labelBg) {
+    Impl::Measurement m;
+    auto mkDot = [&](QCPItemEllipse*& dot) {
+        dot = new QCPItemEllipse(plot);
+        dot->setPen(QPen(kMeasureColor, 2));
+        dot->setBrush(QBrush(kMeasureColor));
+        dot->setVisible(false);
+    };
+    mkDot(m.dot1);
+    mkDot(m.dot2);
+    m.line = new QCPItemLine(plot);
+    m.line->setPen(QPen(kMeasureColor, 1, Qt::DashLine));
+    m.line->setVisible(false);
+    m.text = new QCPItemText(plot);
+    m.text->setPositionAlignment(Qt::AlignBottom | Qt::AlignLeft);
+    m.text->setFont(QFont("monospace", 9));
+    m.text->setColor(kMeasureColor);
+    m.text->setPadding(QMargins(4, 2, 4, 2));
+    m.text->setBrush(QBrush(labelBg));
+    m.text->setPen(QPen(kMeasureColor));
+    m.text->setVisible(false);
+    measurements.append(m);
+}
+
+    // Right-click takes back the measurement under the cursor — its markers,
+    // or the line between them. Away from all of them the caller clears the
+    // lot, which is what the single-measurement version always did.
+    bool removeMeasurementAt(QPointF px) {
+    for (int i = measurements.size() - 1; i >= 0; --i) {
+        const auto& m = measurements[i];
+        const auto pixelOf = [&](const Impl::MeasurePoint& p) {
+            return QPointF(plot->xAxis->coordToPixel(p.x),
+                           anchorAxis(m)->coordToPixel(p.y.value(m.anchor)));
+        };
+        double d = std::numeric_limits<double>::infinity();
+        if (m.p1.placed()) {
+            const QPointF a = pixelOf(m.p1);
+            d = std::min(d, std::hypot(a.x() - px.x(), a.y() - px.y()));
+        }
+        if (m.p2.placed()) {
+            const QPointF b = pixelOf(m.p2);
+            d = std::min(d, std::hypot(b.x() - px.x(), b.y() - px.y()));
+        }
+        if (m.complete()) {
+            // Distance to the segment itself, so grabbing the line works too.
+            const QPointF a = pixelOf(m.p1), b = pixelOf(m.p2);
+            const QPointF ab = b - a, ap = px - a;
+            const double len2 = ab.x() * ab.x() + ab.y() * ab.y();
+            const double t = len2 > 0
+                ? std::clamp((ap.x() * ab.x() + ap.y() * ab.y()) / len2, 0.0, 1.0)
+                : 0.0;
+            const QPointF proj = a + t * ab;
+            d = std::min(d, std::hypot(proj.x() - px.x(), proj.y() - px.y()));
+        }
+        if (d <= kMeasureHitPx) {
+            for (auto* item : {static_cast<QCPAbstractItem*>(m.dot1),
+                               static_cast<QCPAbstractItem*>(m.dot2),
+                               static_cast<QCPAbstractItem*>(m.line),
+                               static_cast<QCPAbstractItem*>(m.text)})
+                if (item) plot->removeItem(item);
+            measurements.removeAt(i);
+            return true;
+        }
+    }
+    return false;
+}
+
 
     ScopePlot::DisplayMode lineDisplayMode{ScopePlot::DisplayMode::Line};
 
@@ -270,6 +554,12 @@ ScopePlot::ScopePlot(QWidget* parent)
     impl_->plot->setFocusPolicy(Qt::ClickFocus);
     impl_->plot->setContextMenuPolicy(Qt::DefaultContextMenu);
     impl_->plot->installEventFilter(this);
+    // Channels coming and going under the measurement table — see panelKeys.
+    connect(impl_->plot, &QCustomPlot::afterReplot, this, [this]{
+        if (!impl_->measureMode) return;
+        if (impl_->currentPanelKeys() == impl_->panelKeys) return;
+        updateMeasurePanel();
+    });
     // Arrow keys arrive as QShortcuts, which fire on press and say nothing
     // about release; the release has to be caught wherever the focus happens
     // to be, hence application-wide. eventFilter() only ever reads it.
@@ -446,8 +736,15 @@ ScopePlot::ScopePlot(QWidget* parent)
         auto* mb = new QToolButton(impl_->toolbar);
         mb->setText(QString::fromUtf8("Δ Measure"));
         mb->setToolTip(
-            "Click two points to mark Δx / Δy / 1/|Δx|.  Right-click "
-            "clears.  Click again to leave measurement mode.");
+            "Click two points to mark Δx / Δy / 1/|Δx|, and read every "
+            "channel between them in the table under the plot.\n"
+            "Clicks snap to the nearest sample — hold Alt to place freely, "
+            "Shift to lock the second point to a pure Δx or Δy.\n"
+            "Clicking on adds another measurement; right-click takes back "
+            "the one under the cursor, or clears them all.\n"
+            "A measurement is drawn in the axis of the channel it snapped "
+            "to, so Δy reads in that channel's units; the table covers every "
+            "channel on the plot.");
         mb->setCheckable(true);
         mb->setAutoRaise(true);
         connect(mb, &QToolButton::toggled, this,
@@ -458,6 +755,20 @@ ScopePlot::ScopePlot(QWidget* parent)
                     mb->setChecked(on);
                 });
         tb->addWidget(mb);
+
+        auto* copyBtn = new QToolButton(impl_->toolbar);
+        copyBtn->setText(QString::fromUtf8("⧉ Copy"));
+        copyBtn->setToolTip(
+            "Copy the measurement to the clipboard (Ctrl+C): the deltas, "
+            "then a tab-separated row per channel — paste straight into a "
+            "spreadsheet or a report.");
+        copyBtn->setAutoRaise(true);
+        copyBtn->setVisible(false);
+        connect(copyBtn, &QToolButton::clicked,
+                this, &ScopePlot::copyMeasurementToClipboard);
+        connect(this, &ScopePlot::measureModeChanged, copyBtn,
+                [copyBtn](bool on){ copyBtn->setVisible(on); });
+        tb->addWidget(copyBtn);
     }
     tb->addSpacing(8);
     {
@@ -546,27 +857,51 @@ ScopePlot::ScopePlot(QWidget* parent)
     impl_->regionRect->setBrush(QBrush(QColor(0, 102, 204, 40)));
     impl_->regionRect->setVisible(false);
 
-    // ---- Measurement items (hidden until measureMode is on) --------
-    const QColor measureColor(220, 100, 0);
-    auto mkDot = [&](QCPItemEllipse*& dot) {
-        dot = new QCPItemEllipse(impl_->plot);
-        dot->setPen(QPen(measureColor, 2));
-        dot->setBrush(QBrush(measureColor));
-        dot->setVisible(false);
-    };
-    mkDot(impl_->measureDot1);
-    mkDot(impl_->measureDot2);
-    impl_->measureLine = new QCPItemLine(impl_->plot);
-    impl_->measureLine->setPen(QPen(measureColor, 1, Qt::DashLine));
-    impl_->measureLine->setVisible(false);
-    impl_->measureText = new QCPItemText(impl_->plot);
-    impl_->measureText->setPositionAlignment(Qt::AlignBottom | Qt::AlignLeft);
-    impl_->measureText->setFont(QFont("monospace", 9));
-    impl_->measureText->setColor(measureColor);
-    impl_->measureText->setPadding(QMargins(4, 2, 4, 2));
-    impl_->measureText->setBrush(QBrush(QColor(255, 255, 255, 200)));
-    impl_->measureText->setPen(QPen(measureColor));
-    impl_->measureText->setVisible(false);
+    // ---- Measurement panel (hidden until measureMode is on) --------
+    // Every measurement's items are built on demand in newMeasurement(); what
+    // the constructor owns is the table under the plot, which is where the
+    // per-channel numbers live — far more than a label on the plot can hold.
+    impl_->measurePanel = new QWidget(this);
+    {
+        auto* pl = new QVBoxLayout(impl_->measurePanel);
+        pl->setContentsMargins(0, 2, 0, 0);
+        pl->setSpacing(0);
+
+        // A strip that folds the table away: the numbers are worth a lot of
+        // the window while reading them and nothing at all while not, and
+        // the plot takes back every pixel the table gives up.
+        impl_->measureHeader = new QWidget(impl_->measurePanel);
+        auto* hl = new QHBoxLayout(impl_->measureHeader);
+        hl->setContentsMargins(2, 0, 2, 1);
+        hl->setSpacing(4);
+        impl_->measureCollapseBtn = new QToolButton(impl_->measureHeader);
+        impl_->measureCollapseBtn->setAutoRaise(true);
+        impl_->measureCollapseBtn->setToolTip(
+            "Fold the measurement table away, giving the space back to the "
+            "plot. Click again to bring it back.");
+        connect(impl_->measureCollapseBtn, &QToolButton::clicked, this, [this]{
+            impl_->measureCollapsed = !impl_->measureCollapsed;
+            updateMeasurePanel();
+        });
+        hl->addWidget(impl_->measureCollapseBtn);
+        hl->addStretch(1);
+        pl->addWidget(impl_->measureHeader);
+        impl_->measureTable = new QTableWidget(0, kMeasureColumns.size(),
+                                               impl_->measurePanel);
+        impl_->measureTable->setHorizontalHeaderLabels(kMeasureColumns);
+        impl_->measureTable->verticalHeader()->setVisible(false);
+        impl_->measureTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        impl_->measureTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+        impl_->measureTable->setAlternatingRowColors(true);
+        impl_->measureTable->horizontalHeader()->setStretchLastSection(true);
+        impl_->measureTable->setToolTip(
+            "Every visible channel between the two markers: its value at each "
+            "one, the difference, the slope, the ratio in plain numbers and in "
+            "dB, and the statistics over the window between them.");
+        pl->addWidget(impl_->measureTable);
+    }
+    impl_->measurePanel->setVisible(false);
+    impl_->measurePanel->setMaximumHeight(kMeasurePanelMaxPx);
 
     // ---- Layout --------------------------------------------------------
     auto* root = new QVBoxLayout(this);
@@ -574,6 +909,7 @@ ScopePlot::ScopePlot(QWidget* parent)
     root->setSpacing(0);
     root->addWidget(impl_->toolbar);
     root->addWidget(impl_->plot, /*stretch=*/1);
+    root->addWidget(impl_->measurePanel);
 
     // ---- Keyboard shortcuts -------------------------------------------
     auto sc = [this](QKeySequence k, std::function<void()> fn) {
@@ -581,6 +917,10 @@ ScopePlot::ScopePlot(QWidget* parent)
         connect(s, &QShortcut::activated, this, fn);
     };
     sc(QKeySequence(Qt::Key_Home),  [this]{ fitAll(); });
+    // Only while measuring: Ctrl+C otherwise belongs to whatever has focus.
+    sc(QKeySequence::Copy, [this]{
+        if (impl_->measureMode) copyMeasurementToClipboard();
+    });
     sc(QKeySequence(Qt::Key_Plus),  [this]{ zoomBothBy(kZoomStep); });
     sc(QKeySequence(Qt::Key_Equal), [this]{ zoomBothBy(kZoomStep); });
     sc(QKeySequence(Qt::Key_Minus), [this]{ zoomBothBy(1.0 / kZoomStep); });
@@ -644,7 +984,8 @@ void ScopePlot::applyThemeColors() {
 
     // Measurement overlay keeps its orange identity; only the label's
     // backdrop follows the canvas.
-    impl_->measureText->setBrush(QBrush(withAlphaCh(canvas, 215)));
+    for (auto& m : impl_->measurements)
+        if (m.text) m.text->setBrush(QBrush(withAlphaCh(canvas, 215)));
 }
 
 void ScopePlot::changeEvent(QEvent* ev) {
@@ -682,6 +1023,12 @@ void ScopePlot::setMeasureMode(bool enabled) {
     if (impl_->measureMode == enabled) return;
     impl_->measureMode = enabled;
     if (!enabled) clearMeasurement();
+    if (impl_->measurePanel) {
+        impl_->measurePanel->setVisible(enabled);
+        // Size it now, from the channel count, so the plot below the toolbar
+        // settles before the first click rather than shifting between the two.
+        if (enabled) updateMeasurePanel();
+    }
     // Crosshair conflicts visually with markers; hide it while measuring.
     impl_->plot->setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
     emit measureModeChanged(enabled);
@@ -720,14 +1067,253 @@ void ScopePlot::setLineDisplayMode(DisplayMode m) {
     emit lineDisplayModeChanged(m);
 }
 
+QString ScopePlot::measurementReadout() const {
+    const auto* m = impl_->activeMeasurement();
+    return (m && m->text) ? m->text->text() : QString();
+}
+
+// ---- Placing points ------------------------------------------------------
+
+// Where a click lands. Snapping is the default: a measurement between two
+// real samples is worth more than one between two mouse positions, and the
+// pixel the user hit is rarely the one the data sits on. Alt places freely,
+// for measuring against a level rather than against a sample.
+//
+// Shift locks the second point to the first: whichever of the two pixel
+// distances is larger wins, so the pair is a pure Δx or a pure Δy — a rise
+// time or a level step, measured exactly rather than diagonally.
+void ScopePlot::placeMeasurePoint(QPointF px, Qt::KeyboardModifiers mods) {
+    // A click after a finished pair starts the next measurement rather than
+    // discarding the last: several can stand on the plot at once.
+    if (impl_->measurements.isEmpty() || impl_->measurements.last().complete())
+        impl_->newMeasurement(withAlphaCh(palette().color(QPalette::Base), 215));
+    auto& m = impl_->measurements.last();
+    int snapped = -1;
+    const Impl::MeasurePoint p = impl_->pointAt(px, mods, &snapped);
+    if (!m.p1.placed()) {
+        m.p1 = p;
+        // The measurement belongs to the channel it was started on, so its
+        // markers and Δy read in that channel's units. Placed freely (Alt,
+        // or nothing near enough to snap to), it falls back to Y1.
+        m.anchor = (snapped >= 0) ? snapped : 0;
+    } else {
+        m.p2 = p;
+    }
+    refreshMeasurements();
+}
+
+bool ScopePlot::removeMeasurementAt(QPointF px) {
+    if (!impl_->removeMeasurementAt(px)) return false;
+    refreshMeasurements();
+    return true;
+}
+
+// Right-click takes back the measurement under the cursor — its markers or
+// the line between them. Away from any of them it clears the lot, which is
+// what the single-measurement version always did.
+// ---- Reporting -----------------------------------------------------------
+
+int ScopePlot::measurementCount() const { return impl_->measurements.size(); }
+
+QVector<ScopePlot::ChannelMeasurement> ScopePlot::channelMeasurements() const {
+    QVector<ChannelMeasurement> out;
+    const auto* m = impl_->activeMeasurement();
+    if (!m) return out;
+    const double x1 = m->p1.x, x2 = m->p2.x;
+    const double lo = std::min(x1, x2), hi = std::max(x1, x2);
+    // Every channel on the plot: hiding one in the host's channel list is
+    // how it leaves the table, which is one selection to keep rather than two.
+    for (int i = 0; i < impl_->plot->graphCount(); ++i) {
+        auto* g = impl_->plot->graph(i);
+        if (!g->visible()) continue;
+        ChannelMeasurement c;
+        c.name  = g->name();
+        c.atX1  = graphValueAt(g, x1);
+        c.atX2  = graphValueAt(g, x2);
+        c.delta = c.atX2 - c.atX1;
+        c.slope = (x2 != x1) ? c.delta / (x2 - x1)
+                             : std::numeric_limits<double>::quiet_NaN();
+        // A ratio through zero is not a ratio, and dB of a sign change is
+        // not a level, so both stay empty rather than printing an infinity.
+        c.ratio = (c.atX1 != 0) ? c.atX2 / c.atX1
+                                : std::numeric_limits<double>::quiet_NaN();
+        c.dB    = (std::isfinite(c.ratio) && c.ratio > 0)
+                      ? 20.0 * std::log10(c.ratio)
+                      : std::numeric_limits<double>::quiet_NaN();
+        const GateStats st = gateStats(g, lo, hi);
+        c.min = st.min; c.max = st.max;
+        c.peakToPeak = (st.n > 0) ? st.max - st.min
+                                  : std::numeric_limits<double>::quiet_NaN();
+        c.mean = st.mean; c.rms = st.rms; c.stdDev = st.sd; c.area = st.area;
+        c.samples = st.n;
+        out.append(c);
+    }
+    return out;
+}
+
+QString ScopePlot::measurementReport() const {
+    const auto* m = impl_->activeMeasurement();
+    if (!m) return QString();
+    QString out = measurementReadout();
+    out.replace('\n', "\t");
+    out += "\n\n" + kMeasureColumns.join('\t') + "\n";
+    for (const auto& c : channelMeasurements()) {
+        QStringList cells{c.name};
+        for (double v : {c.atX1, c.atX2, c.delta, c.slope, c.ratio, c.dB,
+                         c.min, c.max, c.peakToPeak, c.mean, c.rms,
+                         c.stdDev, c.area})
+            cells << (std::isnan(v) ? QString() : QString::number(v, 'g', 6));
+        cells << QString::number(c.samples);
+        out += cells.join('\t') + "\n";
+    }
+    return out;
+}
+
+void ScopePlot::copyMeasurementToClipboard() {
+    const QString text = measurementReport();
+    if (!text.isEmpty()) QGuiApplication::clipboard()->setText(text);
+}
+
+// ---- Drawing -------------------------------------------------------------
+
+// Redraw every measurement and refill the panel. Split out of the click
+// handler because the chips, and axis changes, alter what the read-out says
+// without either point having moved.
+void ScopePlot::refreshMeasurements() {
+    const auto yOn = [](const Impl::MeasurePoint& p, int idx) {
+        return p.y.value(idx, std::numeric_limits<double>::quiet_NaN());
+    };
+    const bool numbered = impl_->measurements.size() > 1;
+    const bool nameAxis = impl_->yAxes.size() > 1;
+
+    for (int n = 0; n < impl_->measurements.size(); ++n) {
+        auto& m = impl_->measurements[n];
+        // Each measurement is drawn in its own channel's axis.
+        const int anchor = m.anchor;
+        QCPAxis* ay = impl_->anchorAxis(m);
+        auto setDot = [&](QCPItemEllipse* d, const Impl::MeasurePoint& p) {
+            if (!d) return;
+            if (!p.placed()) { d->setVisible(false); return; }
+            const double r = 4.0;
+            const double xp = impl_->plot->xAxis->coordToPixel(p.x);
+            const double yp = ay->coordToPixel(yOn(p, anchor));
+            d->topLeft->setType(QCPItemPosition::ptAbsolute);
+            d->bottomRight->setType(QCPItemPosition::ptAbsolute);
+            d->topLeft->setCoords(xp - r, yp - r);
+            d->bottomRight->setCoords(xp + r, yp + r);
+            d->setVisible(true);
+        };
+        setDot(m.dot1, m.p1);
+        setDot(m.dot2, m.p2);
+
+        const bool both = m.complete();
+        if (m.line) m.line->setVisible(both);
+        if (m.text) m.text->setVisible(both);
+        if (!both || !m.line || !m.text) continue;
+
+        for (auto* pos : {m.line->start, m.line->end, m.text->position}) {
+            pos->setType(QCPItemPosition::ptPlotCoords);
+            pos->setAxes(impl_->plot->xAxis, ay);
+        }
+        m.line->start->setCoords(m.p1.x, yOn(m.p1, anchor));
+        m.line->end->setCoords(m.p2.x, yOn(m.p2, anchor));
+
+        const double dx = m.p2.x - m.p1.x;
+        const double absDx = std::abs(dx);
+        QString text = numbered ? QString("#%1  Δx = ").arg(n + 1) : "Δx = ";
+        text += (absDx != 0 && absDx < 1e-3)
+                    ? QString("%1 ms").arg(dx * 1e3, 0, 'g', 6)
+                    : QString("%1 s").arg(dx, 0, 'g', 6);
+        // Δy in the units of the axis the markers ride on — named when the
+        // plot has more than one, so the number is never unit-less. What each
+        // channel does between the markers is the table's job, in the
+        // channel's own units.
+        const double dy = yOn(m.p2, anchor) - yOn(m.p1, anchor);
+        text += nameAxis
+                    ? QString("\nΔy %1 = %2").arg(ay->label()).arg(dy, 0, 'g', 6)
+                    : QString("\nΔy = %1").arg(dy, 0, 'g', 6);
+        if (dx != 0)
+            text += QString("\n1/|Δx| = %1 Hz").arg(1.0 / absDx, 0, 'g', 6);
+        m.text->setText(text);
+
+        const double midX = (m.p1.x + m.p2.x) / 2.0;
+        const double topY = std::max(yOn(m.p1, anchor), yOn(m.p2, anchor));
+        m.text->position->setCoords(midX, topY);
+    }
+    updateMeasurePanel();
+    impl_->plot->replot(QCustomPlot::rpQueuedReplot);
+}
+
+// The per-channel table under the plot: what every visible channel reads at
+// each marker and does between them.
+//
+// With nothing measured yet the rows are still there, empty: the table is
+// sized by the channel count either way, so entering measure mode reserves
+// its space once instead of the plot jumping under the cursor between the
+// first click and the second.
+void ScopePlot::updateMeasurePanel() {
+    if (!impl_->measureTable) return;
+    impl_->panelKeys = impl_->currentPanelKeys();
+    auto rows = channelMeasurements();
+    if (rows.isEmpty()) {
+        for (int i = 0; i < impl_->plot->graphCount(); ++i) {
+            auto* g = impl_->plot->graph(i);
+            if (!g->visible()) continue;
+            ChannelMeasurement blank;
+            blank.name = g->name();
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            blank.atX1 = blank.atX2 = blank.delta = blank.slope = nan;
+            blank.ratio = blank.dB = blank.min = blank.max = nan;
+            blank.peakToPeak = blank.mean = blank.rms = nan;
+            blank.stdDev = blank.area = nan;
+            rows.append(blank);
+        }
+    }
+    impl_->measureTable->setRowCount(rows.size());
+    const auto cell = [](double v) {
+        return new QTableWidgetItem(std::isnan(v) ? QString("—")
+                                                  : QString::number(v, 'g', 6));
+    };
+    for (int r = 0; r < rows.size(); ++r) {
+        const auto& c = rows[r];
+        int col = 0;
+        impl_->measureTable->setItem(r, col++, new QTableWidgetItem(c.name));
+        for (double v : {c.atX1, c.atX2, c.delta, c.slope, c.ratio, c.dB,
+                         c.min, c.max, c.peakToPeak, c.mean, c.rms,
+                         c.stdDev, c.area})
+            impl_->measureTable->setItem(r, col++, cell(v));
+        impl_->measureTable->setItem(
+            r, col, new QTableWidgetItem(QString::number(c.samples)));
+    }
+    impl_->measureTable->resizeColumnsToContents();
+
+    const bool folded = impl_->measureCollapsed;
+    impl_->measureTable->setVisible(!folded);
+    if (impl_->measureCollapseBtn) {
+        impl_->measureCollapseBtn->setText(
+            QString::fromUtf8(folded ? "▸ Measurement" : "▾ Measurement"));
+    }
+    // Hug the rows instead of leaving a fixed band of empty table under the
+    // chart: the plot gets every pixel the read-out is not using.
+    int h = impl_->measureHeader ? impl_->measureHeader->sizeHint().height() : 0;
+    if (!folded) {
+        h += impl_->measureTable->horizontalHeader()->height() + 6;
+        for (int r = 0; r < rows.size(); ++r)
+            h += impl_->measureTable->rowHeight(r);
+    }
+    impl_->measurePanel->setMaximumHeight(
+        folded ? h : std::min(kMeasurePanelMaxPx, h));
+}
+
 void ScopePlot::clearMeasurement() {
-    impl_->measureP1 = {std::numeric_limits<double>::quiet_NaN(),
-                        std::numeric_limits<double>::quiet_NaN()};
-    impl_->measureP2 = impl_->measureP1;
-    impl_->measureDot1->setVisible(false);
-    impl_->measureDot2->setVisible(false);
-    impl_->measureLine->setVisible(false);
-    impl_->measureText->setVisible(false);
+    for (const auto& m : impl_->measurements)
+        for (auto* item : {static_cast<QCPAbstractItem*>(m.dot1),
+                           static_cast<QCPAbstractItem*>(m.dot2),
+                           static_cast<QCPAbstractItem*>(m.line),
+                           static_cast<QCPAbstractItem*>(m.text)})
+            if (item) impl_->plot->removeItem(item);
+    impl_->measurements.clear();
+    updateMeasurePanel();
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
 }
 
@@ -792,6 +1378,9 @@ bool ScopePlot::removeYAxis(int index, QString* errOut) {
     impl_->plot->axisRect()->removeAxis(ax);
     impl_->yAxes.removeAt(index);
     impl_->autoFit.remove(ax);
+    // Every measurement holds a y per axis and an axis index of its own, so
+    // both go stale the moment the axes are renumbered under them.
+    clearMeasurement();
     impl_->plot->replot(QCustomPlot::rpQueuedReplot);
     emit yAxesChanged();
     return true;
@@ -1340,78 +1929,12 @@ bool ScopePlot::eventFilter(QObject* obj, QEvent* ev) {
             // Measurement: left = place next point, right = clear.
             if (impl_->measureMode) {
                 if (me->button() == Qt::RightButton) {
-                    clearMeasurement();
+                    // The one under the cursor, or all of them.
+                    if (!removeMeasurementAt(me->position())) clearMeasurement();
                     return true;
                 }
                 if (me->button() == Qt::LeftButton) {
-                    const QPointF px = me->position();
-                    const double x = impl_->plot->xAxis->pixelToCoord(px.x());
-                    const double y = impl_->plot->yAxis->pixelToCoord(px.y());
-                    // First click → place P1. Second click → P2 + show
-                    // deltas. Third click → restart from P1 again.
-                    const bool haveP1 = !std::isnan(impl_->measureP1.x());
-                    const bool haveP2 = !std::isnan(impl_->measureP2.x());
-                    if (!haveP1 || haveP2) {
-                        // start fresh
-                        impl_->measureP1 = {x, y};
-                        impl_->measureP2 = {std::numeric_limits<double>::quiet_NaN(),
-                                            std::numeric_limits<double>::quiet_NaN()};
-                    } else {
-                        impl_->measureP2 = {x, y};
-                    }
-                    // Refresh visuals.
-                    auto setDot = [&](QCPItemEllipse* d, const QPointF& p, bool vis) {
-                        if (!vis) { d->setVisible(false); return; }
-                        const double r = 4.0;
-                        const double xp = impl_->plot->xAxis->coordToPixel(p.x());
-                        const double yp = impl_->plot->yAxis->coordToPixel(p.y());
-                        d->topLeft->setType(QCPItemPosition::ptAbsolute);
-                        d->bottomRight->setType(QCPItemPosition::ptAbsolute);
-                        d->topLeft->setCoords(xp - r, yp - r);
-                        d->bottomRight->setCoords(xp + r, yp + r);
-                        d->setVisible(true);
-                    };
-                    setDot(impl_->measureDot1, impl_->measureP1,
-                           !std::isnan(impl_->measureP1.x()));
-                    setDot(impl_->measureDot2, impl_->measureP2,
-                           !std::isnan(impl_->measureP2.x()));
-                    const bool both = !std::isnan(impl_->measureP1.x())
-                                   && !std::isnan(impl_->measureP2.x());
-                    impl_->measureLine->setVisible(both);
-                    impl_->measureText->setVisible(both);
-                    if (both) {
-                        impl_->measureLine->start->setType(QCPItemPosition::ptPlotCoords);
-                        impl_->measureLine->end->setType(QCPItemPosition::ptPlotCoords);
-                        impl_->measureLine->start->setCoords(
-                            impl_->measureP1.x(), impl_->measureP1.y());
-                        impl_->measureLine->end->setCoords(
-                            impl_->measureP2.x(), impl_->measureP2.y());
-                        const double dx = impl_->measureP2.x() - impl_->measureP1.x();
-                        const double dy = impl_->measureP2.y() - impl_->measureP1.y();
-                        const double absDx = std::abs(dx);
-                        QString dxStr;
-                        if (absDx != 0 && absDx < 1e-3)
-                            dxStr = QString("%1 ms").arg(dx * 1e3, 0, 'g', 6);
-                        else
-                            dxStr = QString("%1 s").arg(dx, 0, 'g', 6);
-                        const double freq = (dx != 0) ? 1.0 / std::abs(dx) : 0.0;
-                        QString line2;
-                        if (freq > 0) {
-                            line2 = QString("1/|Δx| = %1 Hz")
-                                        .arg(freq, 0, 'g', 6);
-                        }
-                        impl_->measureText->setText(
-                            QString("Δx = %1\nΔy = %2%3")
-                                .arg(dxStr)
-                                .arg(dy, 0, 'g', 6)
-                                .arg(line2.isEmpty() ? QString()
-                                                     : "\n" + line2));
-                        impl_->measureText->position->setType(QCPItemPosition::ptPlotCoords);
-                        const double midX = (impl_->measureP1.x() + impl_->measureP2.x()) / 2.0;
-                        const double topY = std::max(impl_->measureP1.y(), impl_->measureP2.y());
-                        impl_->measureText->position->setCoords(midX, topY);
-                    }
-                    impl_->plot->replot(QCustomPlot::rpQueuedReplot);
+                    placeMeasurePoint(me->position(), me->modifiers());
                     return true;
                 }
             }

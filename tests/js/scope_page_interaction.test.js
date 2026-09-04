@@ -29,7 +29,7 @@ PLOT.bottom = PLOT.top + PLOT.height;
 
 function mkEl(tag) {
   const el = {
-    tagName: tag, className: '', textContent: '', title: '', value: '',
+    tagName: tag, className: '', title: '', value: '',
     type: '', checked: false, disabled: false, children: [],
     style: { cssText: '' }, _events: {},
     classList: { toggle() {}, add() {}, remove() {} },
@@ -62,6 +62,14 @@ function mkEl(tag) {
     querySelector() { return null; },
     get clientWidth() { return PLOT.width + 20; },
   };
+  // Assigning textContent replaces the element's contents — code that empties
+  // a container with `el.textContent = ""` depends on the children going with
+  // it, and a stub that keeps them hides exactly the bugs worth catching.
+  let text = '';
+  Object.defineProperty(el, 'textContent', {
+    get() { return text; },
+    set(v) { text = String(v); el.children.length = 0; },
+  });
   return el;
 }
 
@@ -96,6 +104,7 @@ global.MouseEvent = class { constructor(t, o) { Object.assign(this, o); this.typ
 global.KeyboardEvent = class { constructor(t, o) { Object.assign(this, o); this.type = t; } preventDefault() {} };
 
 let INST = null;
+const DRAWN = [];        // text the overlay painted, for the measure read-out
 global.uPlot = function (opts, data) {
   const self = {
     opts, data, over: mkEl('div'), root: mkEl('div'),
@@ -143,7 +152,17 @@ global.uPlot = function (opts, data) {
     if (key === 'x') return s.min + (pos / PLOT.width) * (s.max - s.min);
     return s.max - (pos / PLOT.height) * (s.max - s.min);   // y is inverted
   };
-  self.valToPos = () => 0;
+  // uPlot's valToPos: value → position inside the plot area, in CSS pixels or
+  // (with the third argument) canvas pixels. The measure tool's snapping, its
+  // Shift lock and its right-click hit test are all pixel judgements, so a
+  // stub returning 0 would make them meaningless.
+  self.valToPos = (val, key, canvasPixels) => {
+    const s = self.scales[key];
+    const p = key === 'x'
+      ? (val - s.min) / (s.max - s.min) * PLOT.width
+      : (s.max - val) / (s.max - s.min) * PLOT.height;
+    return canvasPixels ? p * devicePixelRatio : p;
+  };
   self.setSeries = () => {};
   self.setSelect = () => {};
   self.redraw = () => {};
@@ -155,7 +174,8 @@ global.uPlot = function (opts, data) {
   };
   self.cursor = { left: 0, top: 0, idx: null };
   self.ctx = { save(){}, restore(){}, beginPath(){}, arc(){}, fill(){}, stroke(){},
-               moveTo(){}, lineTo(){}, fillRect(){}, strokeRect(){}, fillText(){},
+               moveTo(){}, lineTo(){}, fillRect(){}, strokeRect(){},
+               fillText(t) { DRAWN.push(t); },
                setLineDash(){}, measureText: () => ({ width: 40 }) };
   recomputeY();
   // uPlot lays axes out in gutters; give each a band width like the real one
@@ -385,6 +405,222 @@ check('Home fits the data again',
       `x ${u.scales.x.min.toFixed(4)} … ${u.scales.x.max.toFixed(4)}`);
 
 // ---------------------------------------------------------------------------
+// The measure tool reads every Y axis, not just the first. A click stores a y
+// per axis, so one pair of clicks reports a Δy for each — the ScopePlot rule.
+// Δx from the read-out. The chart's samples are 1 ms apart, so a snapped pair
+// lands on that grid and a freely placed one almost never does.
+function readDx() {
+  const line = measureText().find(t => /^(#\d+  )?Δx = /.test(t));
+  return line ? parseFloat(line.split('= ')[1]) : NaN;
+}
+const onSampleGrid = v => Math.abs(v / 0.001 - Math.round(v / 0.001)) < 1e-6;
+const fmtNum = v => Number(v.toPrecision(6)).toString();   // the page's fmt()
+function measureText() {
+  DRAWN.length = 0;
+  u.opts.hooks.draw.forEach(fn => fn(u));
+  return DRAWN.slice();
+}
+const mrows = () => collect(byId.charts, 'mtable')[0];
+const cellsOf = (rowIdx) => {
+  const tbl = mrows().children[0];
+  return (tbl.children[rowIdx].children || []).map(td => td.textContent);
+};
+function clickPlot(fx, fy) {
+  u.over.dispatch('click', new MouseEvent('click', {
+    clientX: PLOT.left + fx * PLOT.width,
+    clientY: PLOT.top + fy * PLOT.height,
+  }));
+}
+
+key('Home', 1000);                          // known ranges to measure against
+u = INST;
+const mBtn = findBtn('Δ Measure');
+check('the Measure toggle is on the toolbar', !!mBtn);
+mBtn.dispatch('click', {});
+const yA = [u.scales.y0.min, u.scales.y0.max];
+clickPlot(0.25, 0.75);
+check('one point alone draws no read-out', measureText().length === 0);
+clickPlot(0.75, 0.25);
+// Aiming at a sample: 5px of x here is a dozen samples wide, so nudging x
+// would snap to a different (equally correct) sample and prove nothing, while
+// at a peak of the sine the neighbours are level and the nearest sample is
+// unambiguous.
+const PEAK_A = 157, PEAK_B = 785;            // sin(i/100) crests
+const lift = 5 / PLOT.height;
+const fxOf = x => (x - u.scales.x.min) / (u.scales.x.max - u.scales.x.min);
+const fyOf = v => (u.scales.y0.max - v) / (u.scales.y0.max - u.scales.y0.min);
+
+let out = measureText();
+check('the read-out carries exactly one Δy, in the anchor axis',
+      out.filter(t => /^Δy/.test(t)).length === 1
+      && out.some(t => t.startsWith('Δy Y1 =')),
+      out.join(' | '));
+// The label carries 6 significant digits, so compare at that precision.
+const near6 = (got, want) => Math.abs(got - want) <= Math.abs(want) * 1e-5;
+const dyLine = () => {
+  const line = measureText().find(t => /^Δy/.test(t));
+  return line ? parseFloat(line.split('= ')[1]) : NaN;
+};
+check('freely placed, it reads in the first axis units',
+      near6(dyLine(), W(yA) * 0.5), `${dyLine()} vs ${W(yA) * 0.5}`);
+
+// There is no axis picker any more: a measurement is drawn in the axis of
+// the channel it snapped to, and the table lists every channel on the chart.
+check('the axis picker is gone',
+      !collect(byId.charts, 'tbtn').some(
+          b => (b.textContent || '').startsWith('Δy:'))
+      && !collect(byId.charts, 'ddmenu').length);
+check('the table lists every visible channel, not a picked subset',
+      mrows().children[0].children.length === 3
+      && cellsOf(1)[0] === 'a [mm]' && cellsOf(2)[0] === 'b [bar]',
+      cellsOf(1)[0] + ' / ' + cellsOf(2)[0]);
+
+// Unticking a channel takes it out of the table — the channel list is the
+// only selection there is.
+const crows = collect(byId.charts, 'crow');
+const tick = (i, on) => { const cb = crows[i].children[0];
+                          cb.checked = on; cb.dispatch('change', {}); };
+tick(0, false);
+check('hiding a channel drops its row from the table',
+      mrows().children[0].children.length === 2 && cellsOf(1)[0] === 'b [bar]',
+      cellsOf(1)[0]);
+
+// With only the Y2 channel left to snap to, a measurement started on it is
+// read in Y2's units. (The two channels are the same sine, so while both are
+// drawn they sit on top of each other and either could legitimately win.)
+const fy1Of = v => (u.scales.y1.max - v) / (u.scales.y1.max - u.scales.y1.min);
+mBtn.dispatch('click', {}); mBtn.dispatch('click', {});   // clear
+clickAt(fxOf(t[PEAK_A]), fy1Of(b[PEAK_A]) - lift);
+clickAt(fxOf(t[PEAK_B]), fy1Of(b[PEAK_B]) - lift);
+out = measureText();
+check('a measurement started on a Y2 channel is read in Y2 units',
+      out.some(t => t.startsWith('Δy Y2 =')), out.join(' | '));
+check('and its Δy is that channel\'s own difference',
+      near6(dyLine(), b[PEAK_B] - b[PEAK_A]),
+      `${dyLine()} vs ${b[PEAK_B] - b[PEAK_A]}`);
+
+tick(0, true);
+check('showing the channel again brings its row back',
+      mrows().children[0].children.length === 3);
+
+// The table folds away, giving its space back to the chart.
+const foldBtn = collect(byId.charts, 'tbtn').find(
+    b => (b.textContent || '').includes('Measurement'));
+check('the measurement table has a fold strip', !!foldBtn,
+      foldBtn && foldBtn.textContent);
+foldBtn.dispatch('click', {});
+check('folding hides the table but keeps the strip',
+      mrows().style.display === 'none' && foldBtn.textContent.startsWith('▸'),
+      foldBtn.textContent);
+foldBtn.dispatch('click', {});
+check('unfolding brings the numbers back',
+      mrows().style.display !== 'none' && cellsOf(1)[0] === 'a [mm]',
+      foldBtn.textContent);
+check('Δx and the frequency ride along',
+      measureText().some(t => t.startsWith('Δx = '))
+      && measureText().some(t => t.startsWith('1/|Δx| = ')),
+      measureText().join(' | '));
+// --- snapping, locking, several at once, and the per-channel table ---------
+// The data is a ramp so every number below is checkable by hand: t goes 0,
+// 0.001, ... and 'a'/'b' are the sine pair the chart was built from, so these
+// checks use explicit clicks on known x positions instead.
+function clickAt(fx, fy, opts) {
+  const o = opts || {};
+  u.over.dispatch('click', new MouseEvent('click', {
+    clientX: PLOT.left + fx * PLOT.width,
+    clientY: PLOT.top + fy * PLOT.height,
+    altKey: !!o.alt, shiftKey: !!o.shift,
+  }));
+}
+function rightClickAt(fx, fy) {
+  u.over.dispatch('contextmenu', {
+    clientX: PLOT.left + fx * PLOT.width,
+    clientY: PLOT.top + fy * PLOT.height,
+    preventDefault() {},
+  });
+}
+
+mBtn.dispatch('click', {});                 // leave measure mode
+check('leaving measure mode clears the markers', measureText().length === 0);
+
+mBtn.dispatch('click', {});                 // and back in, for the rest
+clickAt(0.25, 0.5, { alt: true });
+clickAt(0.75, 0.3, { alt: true });
+let table = mrows();
+check('a finished measurement fills the table under the chart',
+      !!table && table.style.display !== 'none'
+      && table.children.length === 1, table && table.style.display);
+check('the table has a header and one row per visible channel',
+      mrows().children[0].children.length === 3,
+      `${mrows().children[0].children.length} rows`);
+check('the header names every column',
+      cellsOf(0).join(',') === 'Channel,@x1,@x2,Δ,Δ/Δx,ratio,dB,min,max,p-p,mean,RMS,σ,∫,n',
+      cellsOf(0).join(','));
+check('each row starts with the channel and ends with a sample count',
+      cellsOf(1)[0] === 'a [mm]' && +cellsOf(1)[14] > 0, cellsOf(1).join(' | '));
+
+// Alt placed the points freely; without it a click near the trace snaps onto
+// the sample itself. Aim a few pixels off two known samples of channel 'a'.
+// Aim 5px above two peaks of the sine (see the helpers above).
+mBtn.dispatch('click', {}); mBtn.dispatch('click', {});   // clear
+clickAt(fxOf(t[PEAK_A]), fyOf(a[PEAK_A]) - lift);
+clickAt(fxOf(t[PEAK_B]), fyOf(a[PEAK_B]) - lift);
+check('a click near the trace snaps onto the sample itself',
+      onSampleGrid(readDx())
+      && Math.abs(readDx() - (t[PEAK_B] - t[PEAK_A])) < 1e-9,
+      `Δx = ${readDx()}, samples are ${(t[PEAK_B] - t[PEAK_A]).toFixed(4)} apart`);
+check('so the value read at the marker is the sample, not an interpolation',
+      cellsOf(1)[1] === fmtNum(a[PEAK_A]) && cellsOf(1)[2] === fmtNum(a[PEAK_B]),
+      `${cellsOf(1)[1]}/${cellsOf(1)[2]} vs ${fmtNum(a[PEAK_A])}/${fmtNum(a[PEAK_B])}`);
+mBtn.dispatch('click', {}); mBtn.dispatch('click', {});
+clickAt(0.2503, 0.5, { alt: true });         // Alt → wherever the mouse is
+clickAt(0.7517, 0.3, { alt: true });
+check('Alt places freely, between samples', !onSampleGrid(readDx()),
+      `Δx = ${readDx()}`);
+
+// Shift locks the second point: a mostly-horizontal pair has Δy = 0.
+mBtn.dispatch('click', {}); mBtn.dispatch('click', {});
+clickAt(0.2, 0.5, { alt: true });
+clickAt(0.8, 0.55, { alt: true, shift: true });
+check('Shift locks a mostly-horizontal pair to a pure Δx',
+      measureText().some(t => /^Δy Y1 = 0$/.test(t)), measureText().join(' | '));
+mBtn.dispatch('click', {}); mBtn.dispatch('click', {});
+clickAt(0.5, 0.2, { alt: true });
+clickAt(0.53, 0.9, { alt: true, shift: true });
+check('and a mostly-vertical pair to a pure Δy',
+      measureText().some(t => /^Δx = 0$/.test(t)), measureText().join(' | '));
+
+// Several measurements at once, and right-click taking back just one.
+mBtn.dispatch('click', {}); mBtn.dispatch('click', {});
+clickAt(0.1, 0.4, { alt: true }); clickAt(0.3, 0.6, { alt: true });
+clickAt(0.6, 0.4, { alt: true }); clickAt(0.9, 0.6, { alt: true });
+check('a click past a finished pair starts another measurement',
+      measureText().filter(t => t.startsWith('#')).length === 2,
+      measureText().join(' | '));
+rightClickAt(0.1, 0.4);
+check('right-click takes back only the measurement under the cursor',
+      measureText().filter(t => /^Δx = /.test(t)).length === 1,
+      measureText().join(' | '));
+rightClickAt(0.02, 0.02);
+check('right-click away from any of them clears the lot',
+      measureText().length === 0, measureText().join(' | '));
+check('the table keeps its rows, blank — the chart must not resize under the '
+      + 'cursor between two clicks',
+      mrows().style.display !== 'none' && cellsOf(1)[1] === '—',
+      cellsOf(1).join(' | '));
+
+// The copied report carries the same numbers.
+clickAt(0.25, 0.5, { alt: true }); clickAt(0.75, 0.3, { alt: true });
+let copied = '';
+global.navigator = { clipboard: { writeText(t) { copied = t; return Promise.resolve(); } } };
+findBtn('⧉ Copy').dispatch('click', {});
+check('Copy puts the deltas and the table on the clipboard',
+      copied.includes('Δx = ') && copied.includes('Channel\t@x1')
+      && copied.split('\n').length > 4,
+      JSON.stringify(copied.slice(0, 60)));
+mBtn.dispatch('click', {});                 // done measuring
+
+// ---------------------------------------------------------------------------
 // Holding an arrow takes the wheel over: a notch moves the view along that
 // arrow instead of zooming, backwards goes back, and the notches feed the same
 // ramp — ScopePlot::eventFilter routes it identically.
@@ -478,27 +714,13 @@ window.dispatch('resize', {});
 check('a taller window gives a taller chart', LAYOUT.chartH === fitted(1400),
       `${LAYOUT.chartH}, expected ${fitted(1400)}`);
 
-// the strip under the chart drags to an explicit height
-const vgrip = findByClass('vgrip');
-check('there is a grab strip under the chart', !!vgrip);
-const beforeDrag = LAYOUT.chartH;
-vgrip.dispatch('mousedown',
-               new MouseEvent('mousedown', { button: 0, clientY: 500,
-                                             preventDefault() {} }));
-document.dispatch('mousemove', new MouseEvent('mousemove', { clientY: 650 }));
-document.dispatch('mouseup', new MouseEvent('mouseup', {}));
-check('dragging the strip resizes the chart by the drag distance',
-      LAYOUT.chartH === beforeDrag + 150,
-      `${beforeDrag} → ${LAYOUT.chartH}`);
-
+// The height is the window's, always — there is nothing to drag and so
+// nothing that can pin a stale height.
+check('the chart has no manual resize strip left', !findByClass('vgrip'));
 VIEW_H = 900;
 window.dispatch('resize', {});
-check('a dragged height is kept when the window changes',
-      LAYOUT.chartH === beforeDrag + 150, `${LAYOUT.chartH}`);
-
-vgrip.dispatch('dblclick', {});
-check('double-clicking the strip goes back to filling the window',
-      LAYOUT.chartH === fitted(900), `${LAYOUT.chartH}, expected ${fitted(900)}`);
+check('every window change re-fits the chart', LAYOUT.chartH === fitted(900),
+      `${LAYOUT.chartH}, expected ${fitted(900)}`);
 
 VIEW_H = 300;
 window.dispatch('resize', {});

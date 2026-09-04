@@ -374,6 +374,19 @@ h1 { font-size: 20px; margin: 0 0 4px 0; }
 .tbtn { font: inherit; font-size: 13px; border: 1px solid transparent; border-radius: 4px;
         background: transparent; color: #20242a; padding: 3px 9px; cursor: pointer; }
 .tbtn:hover { background: rgba(0,0,0,0.07); }
+/* The strip that folds the measurement table away. */
+.mhead { display: flex; align-items: center; border-top: 1px solid #e3e6ea;
+         padding: 2px 2px 0 2px; }
+/* The measurement table under the chart: one row per channel, scrolls
+   sideways rather than pushing the page wide. */
+.mtable { overflow-x: auto; border-top: 1px solid #e3e6ea; max-height: 190px;
+          overflow-y: auto; }
+.mtable table { border-collapse: collapse; font-size: 12px; width: 100%; }
+.mtable th, .mtable td { padding: 3px 8px; text-align: right; white-space: nowrap;
+                         border-bottom: 1px solid #eef0f3; }
+.mtable th { position: sticky; top: 0; background: #f5f6f8; color: #5d6570;
+             font-weight: 600; }
+.mtable td:first-child, .mtable th:first-child { text-align: left; }
 .tbtn.on { background: rgba(46,111,214,0.18); color: #265fba;
            border-color: rgba(46,111,214,0.45); }
 select.tbtn, select.psel { border: 1px solid #d4d8dd; background: #ffffff;
@@ -388,12 +401,6 @@ select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
          border-left: 3px solid #ffffff; border-right: 3px solid #ffffff;
          background-clip: padding-box; box-sizing: border-box; }
 .pgrip:hover, .pgrip.on { background: #2e6fd6; }
-/* Same strip under the chart: drag to set the chart height, double-click to
-   go back to filling the window. */
-.vgrip { height: 7px; cursor: row-resize; background: #e6e8eb;
-         border-top: 3px solid #ffffff; border-bottom: 3px solid #ffffff;
-         background-clip: padding-box; box-sizing: border-box; }
-.vgrip:hover, .vgrip.on { background: #2e6fd6; }
 .ptitle { color: #5d6570; font-size: 11px; font-weight: 700; letter-spacing: 1px;
           margin: 6px 0 6px 0; }
 .crow { display: flex; align-items: center; gap: 7px; padding: 3px 0; font-size: 13px; }
@@ -411,9 +418,10 @@ select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 <p class="meta">Exported %DATE% · %NCH% channel(s) · scroll = zoom X and Y at the
 cursor · Ctrl+scroll = X only · Shift+scroll = Y only · scroll over an axis = that
 axis · drag = pan · arrow keys = move the view, hold one to go faster ·
-hold an arrow and scroll = move, not zoom · double-click = fit · Δ Measure: click two points, right-click
-clears · drag the divider left of the plot to widen the channel list · drag
-the strip under the chart to resize it</p>
+hold an arrow and scroll = move, not zoom · double-click = fit · Δ Measure: click two points (Alt = no snap,
+Shift = pure Δx/Δy), right-click takes one back,
+⧉ Copy puts the table on the clipboard · drag the divider left of the
+plot to widen the channel list</p>
 <div id="charts"></div>
 <script>
 %PAGEJS%
@@ -668,6 +676,19 @@ h1 { font-size: 20px; margin: 0 0 4px 0; }
 .tbtn { font: inherit; font-size: 13px; border: 1px solid transparent; border-radius: 4px;
         background: transparent; color: #20242a; padding: 3px 9px; cursor: pointer; }
 .tbtn:hover { background: rgba(0,0,0,0.07); }
+/* The strip that folds the measurement table away. */
+.mhead { display: flex; align-items: center; border-top: 1px solid #e3e6ea;
+         padding: 2px 2px 0 2px; }
+/* The measurement table under the chart: one row per channel, scrolls
+   sideways rather than pushing the page wide. */
+.mtable { overflow-x: auto; border-top: 1px solid #e3e6ea; max-height: 190px;
+          overflow-y: auto; }
+.mtable table { border-collapse: collapse; font-size: 12px; width: 100%; }
+.mtable th, .mtable td { padding: 3px 8px; text-align: right; white-space: nowrap;
+                         border-bottom: 1px solid #eef0f3; }
+.mtable th { position: sticky; top: 0; background: #f5f6f8; color: #5d6570;
+             font-weight: 600; }
+.mtable td:first-child, .mtable th:first-child { text-align: left; }
 .tbtn.on { background: rgba(46,111,214,0.18); color: #265fba;
            border-color: rgba(46,111,214,0.45); }
 select.tbtn, select.psel { border: 1px solid #d4d8dd; background: #ffffff;
@@ -682,12 +703,6 @@ select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
          border-left: 3px solid #ffffff; border-right: 3px solid #ffffff;
          background-clip: padding-box; box-sizing: border-box; }
 .pgrip:hover, .pgrip.on { background: #2e6fd6; }
-/* Same strip under the chart: drag to set the chart height, double-click to
-   go back to filling the window. */
-.vgrip { height: 7px; cursor: row-resize; background: #e6e8eb;
-         border-top: 3px solid #ffffff; border-bottom: 3px solid #ffffff;
-         background-clip: padding-box; box-sizing: border-box; }
-.vgrip:hover, .vgrip.on { background: #2e6fd6; }
 .ptitle { color: #5d6570; font-size: 11px; font-weight: 700; letter-spacing: 1px;
           margin: 6px 0 6px 0; }
 .crow { display: flex; align-items: center; gap: 7px; padding: 3px 0; font-size: 13px; }
@@ -706,8 +721,9 @@ select.psel { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 scroll = zoom X and Y at the cursor · Ctrl+scroll = X only · Shift+scroll = Y only ·
 scroll over an axis = that axis · drag = pan · arrow keys = move the view, hold
 one to go faster · hold an arrow and scroll = move, not zoom · double-click = fit · Δ Measure: click
-two points, right-click clears · drag the divider left of the plot to widen the
-channel list · drag the strip under the chart to resize it</p>
+two points (Alt = no snap, Shift = pure Δx/Δy), right-click takes one back,
+⧉ Copy puts the table on the clipboard · drag
+the divider left of the plot to widen the channel list</p>
 <div id="charts"></div>
 <script id="%ISLANDID%" type="application/octet-stream" data-encoding="gzip+base64">%ISLAND%</script>
 <script>%FFLATE%</script>
