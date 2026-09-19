@@ -96,6 +96,13 @@ TEST(HtmlExport, SelfContainedWithEmbeddedLibraryAndData) {
     // x is relative seconds from the signal's origin; values full precision.
     EXPECT_TRUE(html.contains("[0,0.1,0.2]"));
     EXPECT_TRUE(html.contains("1.5,2.5,3.5"));
+    // Both dividers ship with the page: the one beside the channel list and
+    // the one above the measurement table. The styling is in the template
+    // here, the behaviour in the embedded scope_page.js — and a recording
+    // with a lot of channels is unreadable without them.
+    EXPECT_TRUE(html.contains(".pgrip {")) << "channel-list divider styling";
+    EXPECT_TRUE(html.contains(".mgrip {")) << "measurement-table divider styling";
+    EXPECT_TRUE(html.contains("\"mgrip\"")) << "…and the element that uses it";
 }
 
 TEST(HtmlExport, SplitsTimeAndFrequencyIntoTwoCharts) {
@@ -378,6 +385,10 @@ TEST(StorableHtml, CompressesIslandStaysOfflineAndStillRoundTrips) {
     // The island is gzipped, so the plaintext values must NOT appear verbatim.
     EXPECT_FALSE(html.contains("11.5,22.5,33.5"))
         << "data island should be compressed, not plaintext";
+    // The storable page is a second copy of the template — it drifts unless
+    // something checks it too.
+    EXPECT_TRUE(html.contains(".pgrip {"));
+    EXPECT_TRUE(html.contains(".mgrip {"));
 
     // …and it still re-imports losslessly through the gunzip path.
     std::vector<std::shared_ptr<Signal>> chans;

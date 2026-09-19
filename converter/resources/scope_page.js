@@ -29,7 +29,14 @@ function makeApp(app) {
               + "the chart. Click again to bring it back.";
   mhead.appendChild(mfold);
   const mwrap = document.createElement("div"); mwrap.className = "mtable";
-  mpanel.append(mhead, mwrap);
+  // …and a divider above it. The table's height is capped by the stylesheet
+  // so it can't take the chart unasked; on a recording with a lot of channels
+  // that cap is a scrolling stub, and reading the numbers is the point of the
+  // table. So the cap is a default, and this is how it's spent otherwise.
+  const mgrip = document.createElement("div"); mgrip.className = "mgrip";
+  mgrip.title = "Drag to resize the measurement table — double-click to "
+              + "go back to the default height";
+  mpanel.append(mgrip, mhead, mwrap);
   let mFolded = false;
   mfold.addEventListener("click", () => {
     mFolded = !mFolded;
@@ -400,17 +407,25 @@ function makeApp(app) {
   // does, leaving `below` as just the grab strip and the block's border.
   const PAGE_MARGIN = 24;                   // body's margin, top and bottom
   function fitToWindow() {
-    if (!u || !soleBlock()) return;
-    const wrap = plotwrap.getBoundingClientRect();
-    const below = block.getBoundingClientRect().bottom - wrap.bottom;
-    const pad = getComputedStyle(plotwrap);
-    const padTop = parseFloat(pad.paddingTop) || 0;
-    const padBottom = parseFloat(pad.paddingBottom) || 0;   // inside wrap, so
-    const canvasTop = wrap.top + window.scrollY + padTop;   // not in `below`
-    autoH = Math.max(MIN_PLOT_H, Math.round(
-        document.documentElement.clientHeight - PAGE_MARGIN - canvasTop
-        - padBottom - below));
-    u.setSize({ width: plotWidth(), height: autoH });
+    if (u && soleBlock()) {
+      const wrap = plotwrap.getBoundingClientRect();
+      const below = block.getBoundingClientRect().bottom - wrap.bottom;
+      const pad = getComputedStyle(plotwrap);
+      const padTop = parseFloat(pad.paddingTop) || 0;
+      const padBottom = parseFloat(pad.paddingBottom) || 0;   // inside wrap, so
+      const canvasTop = wrap.top + window.scrollY + padTop;   // not in `below`
+      autoH = Math.max(MIN_PLOT_H, Math.round(
+          document.documentElement.clientHeight - PAGE_MARGIN - canvasTop
+          - padBottom - below));
+      u.setSize({ width: plotWidth(), height: autoH });
+    }
+    // Hold the channel list to the chart's height so it scrolls beside the
+    // chart instead of stretching the page: .body stretches its columns, so a
+    // hundred-channel recording would otherwise make a block a hundred rows
+    // tall, with the chart marooned at the top of it. +16 is plotwrap's own
+    // padding, which both columns share. Outside the block above because
+    // every chart's list needs it, not only a lone chart's.
+    panel.style.maxHeight = (plotHeight() + 16) + "px";
   }
   function relayout() {
     if (!u) return;
@@ -451,6 +466,34 @@ function makeApp(app) {
         hidden = Math.max(hidden, r.nameEl.scrollWidth - r.nameEl.clientWidth);
     });
     setPanelWidth(panel.getBoundingClientRect().width + hidden + 2);
+  });
+
+  // ---------- resizable measurement table ----------
+  // Only a floor: the chart floors itself at MIN_PLOT_H and the page scrolls,
+  // so a table dragged tall costs nothing that isn't taken back by dragging
+  // it down again — and the divider stays under the chart, in reach.
+  const MIN_MTABLE_H = 48;                  // the header row and one channel
+  function setMeasureHeight(px) {
+    mwrap.style.maxHeight = Math.max(MIN_MTABLE_H, Math.round(px)) + "px";
+    relayout();                             // the chart takes what's left
+  }
+  mgrip.addEventListener("mousedown", e => {
+    if (e.button !== 0) return;
+    e.preventDefault();                     // no text selection while dragging
+    const y0 = e.clientY, h0 = mwrap.getBoundingClientRect().height;
+    const move = ev => setMeasureHeight(h0 - (ev.clientY - y0));
+    const up = () => {
+      mgrip.classList.remove("on");
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    mgrip.classList.add("on");
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+  mgrip.addEventListener("dblclick", () => {
+    mwrap.style.maxHeight = "";             // back to the stylesheet's cap
+    relayout();
   });
 
   // ---------- axis tick text and gutter width ----------
@@ -976,6 +1019,8 @@ function makeApp(app) {
     mpanel.style.display = show ? "" : "none";
     mfold.textContent = (mFolded ? "▸" : "▾") + " Measurement";
     mwrap.style.display = show && !mFolded ? "" : "none";
+    // Nothing to divide while the table is folded away.
+    mgrip.style.display = show && !mFolded ? "" : "none";
     mwrap.textContent = "";
     if (show && !mFolded) {
       const tbl = document.createElement("table");

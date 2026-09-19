@@ -226,6 +226,11 @@ makeApp({
   frequency: null,
 });
 
+// Read before anything resizes the window: the channel list's height cap has
+// to be in place from the first render, not only once something calls
+// relayout(). (findByClass is a hoisted declaration, hence usable here.)
+const panelCapAtBuild = findByClass('panel').style.maxHeight;
+
 // fitAll() rebuilds the chart, so this is rebound after any check that
 // fits (Home / double-click) — a stale instance would silently stop
 // tracking the page.
@@ -533,6 +538,34 @@ foldBtn.dispatch('click', {});
 check('unfolding brings the numbers back',
       mrows().style.display !== 'none' && cellsOf(1)[0] === 'a [mm]',
       foldBtn.textContent);
+
+// The divider above it: the stylesheet's cap is a default, not a rule. A
+// recording with thirty channels in 190px is a scrolling stub, and reading
+// the numbers is what the table is for.
+const mgrip = findByClass('mgrip');
+check('the measurement table has a divider above it', !!mgrip);
+const mh0 = mrows().getBoundingClientRect().height;
+const dragGrip = (from, to) => {
+  mgrip.dispatch('mousedown', { button: 0, clientY: from, preventDefault() {} });
+  document.dispatch('mousemove', { clientY: to });
+  document.dispatch('mouseup', {});
+};
+dragGrip(400, 260);                      // up 140px = 140px more table
+check('dragging the divider up gives the table more room',
+      parseInt(mrows().style.maxHeight, 10) === Math.round(mh0 + 140),
+      mrows().style.maxHeight);
+dragGrip(100, 5000);                     // and all the way down
+check('dragging it down stops at one row rather than nothing',
+      parseInt(mrows().style.maxHeight, 10) === 48, mrows().style.maxHeight);
+mgrip.dispatch('dblclick', {});
+check('double-clicking hands the height back to the default cap',
+      mrows().style.maxHeight === '', `"${mrows().style.maxHeight}"`);
+foldBtn.dispatch('click', {});
+check('folding takes the divider away with the table it divides',
+      mgrip.style.display === 'none', mgrip.style.display);
+foldBtn.dispatch('click', {});
+check('and unfolding brings it back',
+      mgrip.style.display !== 'none' && mrows().style.display !== 'none');
 check('Δx and the frequency ride along',
       measureText().some(t => t.startsWith('Δx = '))
       && measureText().some(t => t.startsWith('1/|Δx| = ')),
@@ -759,8 +792,20 @@ VIEW_H = 300;
 window.dispatch('resize', {});
 check('a tiny window still leaves a usable chart, not a sliver',
       LAYOUT.chartH === 220, `${LAYOUT.chartH}`);
+// The channel list is held to the chart's height and scrolls inside it. A
+// recording with a hundred channels is a hundred rows, and .body stretches
+// its columns — uncapped, the block grows to the list and the chart ends up
+// marooned at the top of a page of names.
+check('the channel list is capped from the first render, not just on resize',
+      parseInt(panelCapAtBuild, 10) > 0, panelCapAtBuild);
+check('the channel list is capped to the chart, not the other way round',
+      parseInt(findByClass('panel').style.maxHeight, 10) === 220 + 16,
+      findByClass('panel').style.maxHeight);
 VIEW_H = 1000;
 window.dispatch('resize', {});
+check('and it follows the chart when the window changes',
+      parseInt(findByClass('panel').style.maxHeight, 10) === fitted(1000) + 16,
+      findByClass('panel').style.maxHeight);
 
 // Everything below adds a second chart to the page, and only a lone chart can
 // have the window to itself — so the sizing checks above must run first.
