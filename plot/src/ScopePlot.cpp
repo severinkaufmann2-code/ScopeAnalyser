@@ -19,6 +19,8 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QShortcut>
+#include <QSplitter>
+#include <QSplitterHandle>
 #ifdef SCOPE_HAVE_QTSVG
 #include <QSvgGenerator>
 #endif
@@ -103,7 +105,11 @@ constexpr double kSnapRadiusPx  = 18.0;
 constexpr double kMeasureHitPx  = 10.0;
 // The table never takes more than this much room from the plot; past it the
 // rows scroll.
-constexpr int    kMeasurePanelMaxPx = 190;
+constexpr int    kMeasurePanelMaxPx = 190;  // as much as it takes unasked
+constexpr int    kPlotMinPx         = 120;  // the chart is never dragged away
+// A QTableWidget asks for far more than this, which would stop the panel
+// hugging two rows the way it is meant to; the splitter decides the height.
+constexpr int    kMeasureTableMinPx = 26;
 
 // The panel's columns, in order. Also the header of the copied report, so the
 // two never drift apart.
@@ -333,7 +339,16 @@ struct ScopePlot::Impl {
     QWidget*             measureHeader{nullptr};
     QToolButton*         measureCollapseBtn{nullptr};
     QTableWidget*        measureTable{nullptr};
+    QSplitter*           measureSplit{nullptr};   // chart ↕ table, draggable
     bool                 measureCollapsed{false};
+    // Set the moment the user drags the divider. From then on the height of
+    // the read-out is theirs: auto-sizing it to the rows is a good default,
+    // not a rule to override someone who has asked for more.
+    bool                 measureUserSized{false};
+    // What to give back when a folded, user-sized panel is unfolded. Zero
+    // while the table is open, or while its height is the automatic one
+    // (which unfolding recomputes from the rows anyway).
+    int                  measureUnfoldedPx{0};
 
     // What the table was last built from. The host adds, removes and hides
     // channels without telling the plot — the Analyser's channel list adds
@@ -901,15 +916,34 @@ ScopePlot::ScopePlot(QWidget* parent)
         pl->addWidget(impl_->measureTable);
     }
     impl_->measurePanel->setVisible(false);
-    impl_->measurePanel->setMaximumHeight(kMeasurePanelMaxPx);
 
     // ---- Layout --------------------------------------------------------
+    // Chart over read-out, with a divider between them. The table sizes
+    // itself to its rows (see updateMeasurePanel) until the user drags that
+    // divider; after that the split is theirs. Without it, a recording with
+    // thirty channels gives a table that is 190 px of scrolling stub however
+    // much window there is to spare — the cap is there to stop the table
+    // eating the chart, and the divider is what lets it be spent the other
+    // way when the numbers are what's being read.
+    impl_->plot->setMinimumHeight(kPlotMinPx);
+    impl_->measureTable->setMinimumHeight(kMeasureTableMinPx);
+    impl_->measureSplit = new QSplitter(Qt::Vertical, this);
+    impl_->measureSplit->addWidget(impl_->plot);
+    impl_->measureSplit->addWidget(impl_->measurePanel);
+    impl_->measureSplit->setCollapsible(0, false);   // never lose the chart
+    impl_->measureSplit->setCollapsible(1, true);
+    impl_->measureSplit->setStretchFactor(0, 1);     // extra height is the chart's
+    impl_->measureSplit->setStretchFactor(1, 0);
+    if (auto* h = impl_->measureSplit->handle(1))
+        h->setToolTip("Drag to give the chart or the measurement table more room.");
+    connect(impl_->measureSplit, &QSplitter::splitterMoved, this,
+            [this](int, int){ impl_->measureUserSized = true; });
+
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
     root->addWidget(impl_->toolbar);
-    root->addWidget(impl_->plot, /*stretch=*/1);
-    root->addWidget(impl_->measurePanel);
+    root->addWidget(impl_->measureSplit, /*stretch=*/1);
 
     // ---- Keyboard shortcuts -------------------------------------------
     auto sc = [this](QKeySequence k, std::function<void()> fn) {
@@ -1293,16 +1327,35 @@ void ScopePlot::updateMeasurePanel() {
         impl_->measureCollapseBtn->setText(
             QString::fromUtf8(folded ? "▸ Measurement" : "▾ Measurement"));
     }
-    // Hug the rows instead of leaving a fixed band of empty table under the
-    // chart: the plot gets every pixel the read-out is not using.
-    int h = impl_->measureHeader ? impl_->measureHeader->sizeHint().height() : 0;
-    if (!folded) {
-        h += impl_->measureTable->horizontalHeader()->height() + 6;
+    if (!impl_->measureSplit) return;
+    const int total = impl_->measureSplit->height();
+    if (total <= 0) return;                  // no layout yet; the next one lands here
+    const int head =
+        impl_->measureHeader ? impl_->measureHeader->sizeHint().height() : 0;
+
+    int panel = 0;
+    if (folded) {
+        // Folding is about the space, so it wins over a drag — and hands the
+        // dragged height back when the table returns.
+        if (impl_->measureUserSized && impl_->measureUnfoldedPx <= 0)
+            impl_->measureUnfoldedPx = impl_->measurePanel->height();
+        panel = head;
+    } else if (impl_->measureUserSized) {
+        // The divider is the user's from here on: recomputing it every time a
+        // marker moves would undo the drag under their hand. The one move
+        // left is putting back what folding borrowed.
+        if (impl_->measureUnfoldedPx <= 0) return;
+        panel = impl_->measureUnfoldedPx;
+        impl_->measureUnfoldedPx = 0;
+    } else {
+        // Hug the rows instead of leaving a fixed band of empty table under
+        // the chart: the plot gets every pixel the read-out is not using.
+        int h = head + impl_->measureTable->horizontalHeader()->height() + 6;
         for (int r = 0; r < rows.size(); ++r)
             h += impl_->measureTable->rowHeight(r);
+        panel = std::min(std::min(kMeasurePanelMaxPx, h), total / 2);
     }
-    impl_->measurePanel->setMaximumHeight(
-        folded ? h : std::min(kMeasurePanelMaxPx, h));
+    impl_->measureSplit->setSizes({total - panel, panel});
 }
 
 void ScopePlot::clearMeasurement() {

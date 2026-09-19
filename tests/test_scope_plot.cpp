@@ -15,6 +15,8 @@
 #include <QMenu>
 #include <QTableWidget>
 #include <QToolButton>
+#include <QSplitter>
+#include <QSplitterHandle>
 
 #include <filesystem>
 #include <fstream>
@@ -1219,22 +1221,109 @@ TEST(ScopePlot, MeasurementTableFoldsAwayAndGivesTheSpaceBack) {
     auto* table = sp.findChild<QTableWidget*>();
     ASSERT_NE(table, nullptr);
     auto* panel = table->parentWidget();          // the measurement panel
-    const int open = panel->maximumHeight();
+    const int open = panel->height();
     EXPECT_TRUE(table->isVisible());
+    ASSERT_GT(open, 0);
 
     fold->click();
     QApplication::processEvents();
     EXPECT_FALSE(table->isVisible());
-    EXPECT_LT(panel->maximumHeight(), open);      // the plot takes it back
+    EXPECT_LT(panel->height(), open);             // the plot takes it back
     EXPECT_TRUE(fold->text().startsWith(QString::fromUtf8("▸")))
         << fold->text().toStdString();
 
     fold->click();
     QApplication::processEvents();
     EXPECT_TRUE(table->isVisible());
-    EXPECT_EQ(panel->maximumHeight(), open);
+    EXPECT_EQ(panel->height(), open);
     // Folding is about the space, not the measurement: the numbers are intact.
     EXPECT_FALSE(sp.channelMeasurements().isEmpty());
+}
+
+namespace {
+
+// Drag the divider between chart and measurement table, as a mouse does:
+// QSplitter::setSizes() moves it without claiming the user did, which is
+// exactly the distinction under test.
+void dragSplitter(QSplitter* split, int dy) {
+    auto* h = split->handle(1);
+    ASSERT_NE(h, nullptr);
+    const QPointF from(2, 2), to(2, 2 + dy);
+    QMouseEvent press(QEvent::MouseButtonPress, from, h->mapToGlobal(from.toPoint()),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(h, &press);
+    QMouseEvent move(QEvent::MouseMove, to, h->mapToGlobal(to.toPoint()),
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(h, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease, to, h->mapToGlobal(to.toPoint()),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(h, &release);
+    QApplication::processEvents();
+}
+
+}  // namespace
+
+// The read-out sizes itself to the channels it reports, capped so it can't
+// eat the chart. On a recording with a lot of channels that cap is a
+// scrolling stub — and reading the numbers is the whole point of the panel —
+// so the divider has to be draggable, and a drag has to stick: the next
+// marker click must not snap the panel back to what the row count says.
+TEST(ScopePlot, TheDividerBetweenChartAndMeasurementTableIsTheUsers) {
+    GuiAppFixture fixture;
+
+    scope::plot::ScopePlot sp;
+    sp.resize(900, 700);
+    sp.show();
+    spinFor(80);
+    // A machine's worth of channels: far more rows than the cap can show.
+    for (int i = 0; i < 25; ++i) {
+        auto* g = sp.plot()->addGraph();
+        g->setName(QString("ch%1").arg(i));
+        QVector<double> xs, ys;
+        for (int k = 0; k <= 10; ++k) { xs << k * 0.1; ys << k * 0.1 + i; }
+        g->setData(xs, ys, true);
+    }
+    sp.plot()->xAxis->setRange(0.0, 1.0);
+    sp.plot()->yAxis->setRange(0.0, 1.0);
+    sp.setMeasureMode(true);
+    QApplication::processEvents();
+
+    auto* split = sp.findChild<QSplitter*>();
+    auto* table = sp.findChild<QTableWidget*>();
+    ASSERT_NE(split, nullptr);
+    ASSERT_NE(table, nullptr);
+    auto* panel = table->parentWidget();
+    EXPECT_EQ(split->orientation(), Qt::Vertical);
+    EXPECT_FALSE(split->isCollapsible(0)) << "the chart can't be dragged away";
+
+    const int capped = panel->height();
+    EXPECT_GT(capped, 0);
+    EXPECT_LE(capped, 200) << "25 channels don't get to take the window unasked";
+
+    dragSplitter(split, -220);                 // the user asks for the numbers
+    const int wanted = panel->height();
+    EXPECT_GT(wanted, capped + 100);
+
+    // Placing a measurement rebuilds the table — and leaves the split alone.
+    clickPx(sp, dataPx(sp, 0.2, 0.2));
+    clickPx(sp, dataPx(sp, 0.8, 0.8));
+    QApplication::processEvents();
+    EXPECT_EQ(panel->height(), wanted)
+        << "a rebuilt table must not undo the drag under the user's hand";
+    EXPECT_FALSE(sp.channelMeasurements().isEmpty());
+
+    // Folding still gives every pixel back — a dragged height is a height for
+    // the table, not a band of nothing when there is no table.
+    QToolButton* fold = nullptr;
+    for (auto* b : sp.findChildren<QToolButton*>())
+        if (b->text().contains("Measurement")) fold = b;
+    ASSERT_NE(fold, nullptr);
+    fold->click();
+    QApplication::processEvents();
+    EXPECT_LT(panel->height(), capped) << "folded, it is a strip and nothing more";
+    fold->click();
+    QApplication::processEvents();
+    EXPECT_EQ(panel->height(), wanted) << "and unfolding hands the drag back";
 }
 
 namespace {
