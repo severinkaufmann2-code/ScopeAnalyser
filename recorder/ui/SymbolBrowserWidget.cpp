@@ -11,10 +11,25 @@
 #include <QHeaderView>
 #include <QHash>
 #include <QSet>
+#include <QSplitterHandle>
 
 #include <algorithm>
 #include <functional>
 #include <optional>
+
+namespace {
+
+// How much of the panel the notes take when they first appear: a quarter of
+// it, within these bounds. A listing that reports six limits at once is
+// exactly when the tree must NOT shrink — the notes say what is missing, the
+// tree is where the user goes to find it — so the opening share is enough to
+// read the first note and know there are more, and the divider does the rest.
+constexpr int kNoteOpenMinPx = 64;    // ~the heading plus three lines
+constexpr int kNoteOpenMaxPx = 150;
+constexpr int kTreeMinPx     = 90;    // the tree always stays usable
+constexpr int kNoteMinPx     = 26;    // one line; drag further to hide it
+
+}  // namespace
 
 namespace scope::recorder::ui {
 
@@ -55,16 +70,45 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
         "Structures and arrays expand — select a branch to take everything\n"
         "inside it. Filter, select, then “Add selected”.");
 
-    note_ = new QLabel(this);
-    note_->setWordWrap(true);
-    note_->setVisible(false);
-    note_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // Read-only and scrolling, not a growing label: a listing can report six
+    // limits at once, and a word-wrapped label that tall pushed the symbol
+    // tree above it down to a couple of rows — the one part of the panel the
+    // user actually works in. Here the notes never claim height of their own;
+    // whatever doesn't fit scrolls, and the divider hands over more on
+    // request.
+    note_ = new QPlainTextEdit(this);
+    note_->setReadOnly(true);
+    note_->setFrameShape(QFrame::NoFrame);
+    note_->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    note_->setProperty("scopeRole", "note");
+    note_->setMinimumHeight(kNoteMinPx);
+    note_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
+    note_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    note_->viewport()->setAutoFillBackground(false);
+    // A fixed tooltip, not an echo of the text: the text is right there and
+    // scrolls, and a tooltip carrying six notes is a box across the screen.
+    note_->setToolTip(
+        "What the PLC's symbol listing left out, and why — a structure past "
+        "the size cap, a data-type table only partly served, members with no "
+        "single numeric value.\n\n"
+        "Scroll for the rest, or drag the divider above to read more at "
+        "once. Anything named here can still be added with “Add by "
+        "name” below.");
     {
         QPalette pal = note_->palette();
-        pal.setColor(QPalette::WindowText,
-                     pal.color(QPalette::Disabled, QPalette::WindowText));
+        const QColor dim = pal.color(QPalette::Disabled, QPalette::WindowText);
+        pal.setColor(QPalette::Text, dim);
+        pal.setColor(QPalette::Base, Qt::transparent);
         note_->setPalette(pal);
     }
+
+    notePane_ = new QWidget(this);
+    auto* noteLayout = new QVBoxLayout(notePane_);
+    noteLayout->setContentsMargins(0, 0, 0, 0);
+    noteLayout->setSpacing(2);
+    noteLayout->addWidget(scope::style::sectionLabel("Listing notes", notePane_));
+    noteLayout->addWidget(note_, /*stretch=*/1);
+    notePane_->setVisible(false);
 
     byName_ = new QLineEdit(this);
     byName_->setPlaceholderText("Structure member by name, e.g. MAIN.stAxis.fActPos");
@@ -75,8 +119,8 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
         "entry per declared variable, so the members come from that table.\n\n"
         "Use this when something is missing from the list: a PLC that won't\n"
         "serve the table, a structure too large to list in full, or a type\n"
-        "the table doesn't describe. The line under the list says when that\n"
-        "happened.\n\n"
+        "the table doesn't describe. “Listing notes”, under the list, says\n"
+        "when that happened.\n\n"
         "Type the full path and the PLC is asked about it directly — it\n"
         "reports the member's own address, size and type. Nested members and\n"
         "elements of an array of structures work too:\n"
@@ -104,13 +148,28 @@ SymbolBrowserWidget::SymbolBrowserWidget(QWidget* parent) : QWidget(parent) {
     top->addWidget(refreshBtn_);
     top->addWidget(addBtn_);
 
+    // Tree over notes, with a divider the user owns. The tree can't be
+    // collapsed away by a stray drag (it is the point of the panel); the
+    // notes can, for when they have been read and the symbols are what's
+    // wanted back.
+    tree_->setMinimumHeight(kTreeMinPx);
+    split_ = new QSplitter(Qt::Vertical, this);
+    split_->setChildrenCollapsible(true);
+    split_->addWidget(tree_);
+    split_->addWidget(notePane_);
+    split_->setCollapsible(0, false);
+    split_->setStretchFactor(0, 1);   // extra height goes to the tree
+    split_->setStretchFactor(1, 0);
+    if (auto* h = split_->handle(1))
+        h->setToolTip("Drag to give the symbol list or the notes more room.");
+    sizeNotePane();
+
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 6, 4, 4);
     layout->setSpacing(6);
     layout->addWidget(scope::style::sectionLabel("PLC symbols", this));
     layout->addLayout(top);
-    layout->addWidget(tree_);
-    layout->addWidget(note_);
+    layout->addWidget(split_, /*stretch=*/1);
 
     auto* byNameRow = new QHBoxLayout();
     byNameRow->addWidget(byName_, /*stretch=*/1);
@@ -195,10 +254,36 @@ void sortArrayChildren(QStandardItem* node) {
 
 }  // namespace
 
+void SymbolBrowserWidget::sizeNotePane() {
+    // A share of the panel, so it needs a panel with a height: a listing can
+    // land before the first layout (the tab isn't the one on screen). Defer
+    // to the resize that follows rather than splitting a height of zero.
+    const int h = split_->height();
+    if (h <= 0) { noteSizePending_ = true; return; }
+    // The lower bound is a floor on the quarter, not on the panel: the
+    // Recorder's top row is a third of the tab, and half of that is still
+    // the tree's.
+    const int note = std::min(std::clamp(h / 4, kNoteOpenMinPx, kNoteOpenMaxPx),
+                              h / 2);
+    split_->setSizes({h - note, note});
+}
+
+void SymbolBrowserWidget::resizeEvent(QResizeEvent* e) {
+    QWidget::resizeEvent(e);
+    if (noteSizePending_ && split_->height() > 0) {
+        noteSizePending_ = false;
+        sizeNotePane();
+    }
+}
+
 void SymbolBrowserWidget::setNote(const QString& note) {
-    note_->setText(note);
-    note_->setToolTip(note);
-    note_->setVisible(!note.isEmpty());
+    const bool show = !note.isEmpty();
+    note_->setPlainText(note);
+    notePane_->setVisible(show);
+    // Only on the way back from nothing-to-say. A refresh that still has
+    // notes must not undo a divider the user has since dragged.
+    if (show && !noteShown_) sizeNotePane();
+    noteShown_ = show;
 }
 
 void SymbolBrowserWidget::setSymbols(std::vector<scope::core::AdsSymbol> symbols) {

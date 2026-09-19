@@ -154,6 +154,8 @@ QString chevronSvgPath(const QString& key, bool pointRight, const QColor& c) {
 //   QLabel[scopeRole="dim"]           — secondary-colour text
 //   QLabel[scopeRole="emptyHint"]     — placeholder text over empty views
 //   QLabel[scopeRole="pill"][pillTone=...] — status chips (StyleKit::setPill)
+//   QPlainTextEdit[scopeRole="note"]  — secondary-colour prose that scrolls
+//                                       instead of growing (listing notes)
 //   QWidget[scopeRole="toolbarStrip"] — toolbar zones with bottom hairline
 //   QPushButton[accent="true"]        — primary action
 //   QPushButton[danger="true"]        — record / destructive action
@@ -392,6 +394,15 @@ QLabel[scopeRole="sectionLabel"] {
 }
 QLabel[scopeRole="dim"] { color: %TEXT2%; }
 QLabel[scopeRole="emptyHint"] { color: %TEXT_DISABLED%; font-size: 13px; background: transparent; }
+/* Read-only prose in a panel, not an input: no field chrome, and it reads as
+   the secondary text it is. Scrolls rather than growing, so a long note never
+   takes height from the view it explains. */
+QPlainTextEdit[scopeRole="note"] {
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: %TEXT2%;
+}
 QLabel[scopeRole="pill"] {
     border-radius: 10px;
     padding: 2px 12px;

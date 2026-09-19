@@ -14,6 +14,9 @@
 
 #include <QApplication>
 #include <QLabel>
+#include <QPlainTextEdit>
+#include <QScrollBar>
+#include <QSplitter>
 #include <QTreeView>
 #include <QAbstractItemModel>
 
@@ -50,6 +53,24 @@ AdsSymbol aggregate(const char* name, const char* type) {
 }
 
 QTreeView* treeOf(QWidget& w) { return w.findChild<QTreeView*>(); }
+QPlainTextEdit* noteOf(QWidget& w) { return w.findChild<QPlainTextEdit*>(); }
+QSplitter* splitOf(QWidget& w) { return w.findChild<QSplitter*>(); }
+
+void settle() {
+    for (int i = 0; i < 3; ++i) qApp->processEvents();
+}
+
+// What a PLC that half-serves its data-type table reports: one limit per
+// structure it couldn't expand, capped at six by the listing plus a tail.
+QString manyNotes() {
+    QStringList notes;
+    for (int i = 0; i < 6; ++i)
+        notes << QString("MAIN.fbMachine.aStation[%1] holds more than 32768 "
+                         "recordable values; the rest were left out of the "
+                         "list. Add them with “Add by name”.").arg(i);
+    notes << "(+11 more)";
+    return notes.join("\n\n");
+}
 
 // Walk the view's model to the node at `path`, expanding as it goes.
 QModelIndex find(QTreeView* tv, const QStringList& path) {
@@ -278,19 +299,102 @@ TEST(SymbolBrowserTree, ShowsTheListingNoteOnlyWhenThereIsSomethingToSay) {
     ensureGuiApp();
     scope::recorder::ui::SymbolBrowserWidget w;
     w.setSymbols({leaf("MAIN.speed", "LREAL", 0x300)});
+    w.resize(420, 600);
     w.show();
+    settle();
 
-    auto* note = w.findChild<QLabel*>();
+    auto* note = noteOf(w);
     ASSERT_NE(note, nullptr);
     EXPECT_FALSE(note->isVisible()) << "nothing to report, nothing shown";
 
     const QString msg = "MAIN.fbMachine holds more than 32768 recordable values";
     w.setNote(msg);
+    settle();
     EXPECT_TRUE(note->isVisible());
-    EXPECT_EQ(note->text().toStdString(), msg.toStdString());
-    EXPECT_EQ(note->toolTip().toStdString(), msg.toStdString())
-        << "the full text stays reachable when the line is elided";
+    EXPECT_EQ(note->toPlainText().toStdString(), msg.toStdString());
+    EXPECT_FALSE(note->toolTip().contains(msg))
+        << "the tooltip explains the pane; it doesn't re-print six notes over "
+           "half the screen";
 
     w.setNote({});
+    settle();
     EXPECT_FALSE(note->isVisible());
+}
+
+// The whole point of the pane: a PLC with a lot to report must not cost the
+// user the list they came for. The notes used to be a word-wrapped label in
+// the same column as the tree, so six of them pushed the tree down to a
+// couple of rows and there was no way to get it back.
+TEST(SymbolBrowserTree, ManyNotesScrollInsteadOfEatingTheSymbolTree) {
+    ensureGuiApp();
+    scope::recorder::ui::SymbolBrowserWidget w;
+    w.setSymbols({leaf("MAIN.speed", "LREAL", 0x300),
+                  leaf("MAIN.torque", "LREAL", 0x308)});
+    w.resize(420, 600);
+    w.show();
+    settle();
+
+    auto* tree = treeOf(w);
+    auto* note = noteOf(w);
+    ASSERT_NE(tree, nullptr);
+    ASSERT_NE(note, nullptr);
+    const int treeAlone = tree->height();
+    ASSERT_GT(treeAlone, 0);
+
+    w.setNote(manyNotes());
+    settle();
+    ASSERT_TRUE(note->isVisible());
+
+    // The tree keeps the lion's share whatever the notes say, and the pane
+    // that holds them never opens past its cap — the rest scrolls.
+    EXPECT_GE(tree->height(), treeAlone / 2)
+        << "seventeen notes must not squeeze the tree out of the panel";
+    EXPECT_LE(note->parentWidget()->height(), 160)
+        << "the notes pane never opens past its cap on its own";
+    EXPECT_GT(note->verticalScrollBar()->maximum(), 0)
+        << "what doesn't fit scrolls — the pane doesn't grow to hold it";
+
+    // Three times as much text changes nothing about the split.
+    const int withNotes = tree->height();
+    w.setNote(manyNotes() + manyNotes() + manyNotes());
+    settle();
+    EXPECT_EQ(tree->height(), withNotes)
+        << "the divider is the user's, not the message's";
+}
+
+// Adjustable in both directions: the user can hand the notes most of the
+// panel to read them, then take it back.
+TEST(SymbolBrowserTree, TheDividerBetweenTreeAndNotesIsTheUsers) {
+    ensureGuiApp();
+    scope::recorder::ui::SymbolBrowserWidget w;
+    w.setSymbols({leaf("MAIN.speed", "LREAL", 0x300)});
+    w.resize(420, 600);
+    w.show();
+    w.setNote(manyNotes());
+    settle();
+
+    auto* split = splitOf(w);
+    auto* tree  = treeOf(w);
+    auto* note  = noteOf(w);
+    ASSERT_NE(split, nullptr);
+    ASSERT_EQ(split->count(), 2) << "tree over notes, one handle between them";
+    ASSERT_EQ(split->orientation(), Qt::Vertical);
+    EXPECT_FALSE(split->isCollapsible(0)) << "the symbol list can't be lost";
+    EXPECT_TRUE(split->isCollapsible(1))  << "the notes can be put away";
+
+    const int notesBefore = note->parentWidget()->height();
+    split->setSizes({100, 460});          // the user drags the divider up
+    settle();
+    EXPECT_GT(note->parentWidget()->height(), notesBefore);
+    EXPECT_LT(tree->height(), 200);
+
+    split->setSizes({560, 0});            // …and puts the notes away again
+    settle();
+    EXPECT_GT(tree->height(), 400);
+
+    // A refresh that still has notes leaves that choice alone.
+    w.setNote(manyNotes());
+    settle();
+    EXPECT_GT(tree->height(), 400)
+        << "re-reporting the same kind of note must not re-open the pane";
 }
