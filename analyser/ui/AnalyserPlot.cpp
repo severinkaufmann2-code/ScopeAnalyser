@@ -10,6 +10,7 @@
 #include "scope/converter/SignalIO.h"
 #include "scope/converter/HtmlExport.h"
 #include "scope/converter/BusyRunner.h"
+#include "scope/style/Messages.h"
 #include "scope/style/StyleKit.h"
 
 #include <qcustomplot.h>
@@ -303,12 +304,16 @@ AnalyserPlot::AnalyserPlot(scope::core::SignalStore& store,
         if (names.isEmpty()) return;
         const QString title  = names.size() == 1 ? "Remove channel?"
                                                  : "Remove channels?";
-        const QString prompt = names.size() == 1
-            ? QString("Remove channel '%1' from the store?").arg(names.first())
-            : QString("Remove these %1 channels from the store?\n\n%2")
-                  .arg(names.size()).arg(names.join("\n"));
-        const auto resp = QMessageBox::question(
-            this, title, prompt, QMessageBox::Yes | QMessageBox::Cancel);
+        // Naming every one of a few hundred selected channels in the prompt
+        // itself pushes Yes / Cancel off the bottom of the screen; the count
+        // and a sample are what the answer turns on anyway.
+        const auto resp = style::listMessage(
+            this, QMessageBox::Question, title,
+            names.size() == 1
+                ? QString("Remove channel '%1' from the store?").arg(names.first())
+                : QString("Remove these %1 channels from the store?").arg(names.size()),
+            names.size() == 1 ? QStringList{} : names, {},
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
         if (resp == QMessageBox::Yes)
             for (const auto& name : names) store_.remove(name);
     });
@@ -755,9 +760,9 @@ void AnalyserPlot::redrawAll() {
     QStringList errs;
     engine_.recomputeAll(&errs);
     if (!errs.isEmpty()) {
-        QMessageBox::warning(this, "Some formulas failed",
-            "Couldn't re-evaluate (kept any saved data as-is):\n"
-                + errs.join("\n"));
+        style::listMessage(this, QMessageBox::Warning, "Some formulas failed",
+            QString("Couldn't re-evaluate %1 formula(s):").arg(errs.size()),
+            errs, "Their saved data was kept as-is.");
     }
     redrawForActiveChannels();
 }
@@ -1189,9 +1194,9 @@ void AnalyserPlot::applyLayout(const scope::plot::PlotLayout& layout,
     QStringList formulaErrors;
     engine_.recomputeAll(&formulaErrors);
     if (!formulaErrors.isEmpty()) {
-        QMessageBox::warning(this, "Some formulas failed",
-            "Couldn't re-evaluate (kept any saved data as-is):\n"
-                + formulaErrors.join("\n"));
+        style::listMessage(this, QMessageBox::Warning, "Some formulas failed",
+            QString("Couldn't re-evaluate %1 formula(s):").arg(formulaErrors.size()),
+            formulaErrors, "Their saved data was kept as-is.");
     }
     pendingAssignments_.clear();
     for (const auto& c : allLayoutChans) {

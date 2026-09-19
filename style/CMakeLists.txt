@@ -1,11 +1,13 @@
 set(STYLE_HEADERS
     include/scope/style/Theme.h
     include/scope/style/StyleKit.h
+    include/scope/style/Messages.h
 )
 
 set(STYLE_SOURCES
     src/Theme.cpp
     src/StyleKit.cpp
+    src/Messages.cpp
 )
 
 scope_add_library(scope_style

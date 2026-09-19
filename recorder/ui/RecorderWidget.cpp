@@ -11,6 +11,7 @@
 #include "scope/converter/SaveChartDialog.h"
 #include "scope/converter/SignalIO.h"
 #include "scope/plot/PlotLayout.h"
+#include "scope/style/Messages.h"
 #include "scope/style/StyleKit.h"
 
 #include <QCheckBox>
@@ -383,13 +384,20 @@ void RecorderWidget::onAddSelectedSymbols() {
         channels_->addChannelFromSymbol(sym, cycleUs);
     }
     if (!rejected.isEmpty()) {
-        QMessageBox::information(this, "Can't record these directly",
-            QString("These symbols have no single numeric value, so they were "
-                    "not added:\n\n%1\n\nRecord a structure's individual "
-                    "members or an array's individual elements instead: expand "
-                    "the row to pick them, or type the full path into “Add by "
-                    "name” if the member isn't listed.")
-                .arg(rejected.join("\n")));
+        // One selected structure can reject hundreds of members at once, so
+        // the list goes in the detail box rather than into a dialog that
+        // grows until its own OK button is off the screen.
+        scope::style::listMessage(this, QMessageBox::Information,
+            "Can't record these directly",
+            rejected.size() == 1
+                ? QString("This symbol has no single numeric value, so it was "
+                          "not added:")
+                : QString("%1 of the selected symbols have no single numeric "
+                          "value, so they were not added:").arg(rejected.size()),
+            rejected,
+            "Record a structure's individual members or an array's individual "
+            "elements instead: expand the row to pick them, or type the full "
+            "path into “Add by name” if the member isn't listed.");
     }
 }
 

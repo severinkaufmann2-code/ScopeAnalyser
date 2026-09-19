@@ -9,6 +9,7 @@
 
 #include "MappingPanel.h"
 
+#include "scope/style/Messages.h"
 #include "scope/style/StyleKit.h"
 #include "scope/core/UndoStack.h"
 
@@ -376,6 +377,37 @@ QStringList scanValuePlateaus(const core::SignalStore& store,
         }
     }
     return warnings;
+}
+
+// The two per-channel scans report the same way, and one import trips both
+// often enough to be worth a single dialog: one list under two headings, and
+// advice naming only the setting the data actually needs.
+struct ScanReport {
+    QStringList lines;
+    QString     advice;
+};
+
+ScanReport scanReport(const QStringList& dups, const QStringList& plateaus) {
+    ScanReport r;
+    QStringList settings;
+    if (!dups.isEmpty()) {
+        r.lines << "Duplicate timestamps:";
+        r.lines += dups;
+        settings << "Duplicate timestamps → first / last / mean";
+    }
+    if (!plateaus.isEmpty()) {
+        if (!r.lines.isEmpty()) r.lines << QString();
+        r.lines << "Value plateaus (logged faster than the value updates):";
+        r.lines += plateaus;
+        settings << "Value plateaus → first / last timestamp";
+    }
+    r.advice = "Edit the channel and set " + settings.join(", or ")
+             + " to collapse them.";
+    if (!plateaus.isEmpty()) {
+        r.advice += " Left as they are, Derivative on a plateaued signal "
+                    "produces a comb pattern.";
+    }
+    return r;
 }
 
 QString uniqueStoreName(const core::SignalStore& store, const QString& base) {
@@ -839,9 +871,10 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         QStringList warnings;
         auto sigs = f.grid->apply(profile, &err, &warnings);
         if (!warnings.isEmpty()) {
-            QMessageBox::warning(this, "Unit fallback",
-                "The parser fell back to a default for the following "
-                "X-axis unit(s):\n\n• " + warnings.join("\n• "));
+            scope::style::listMessage(this, QMessageBox::Warning, "Unit fallback",
+                QString("The parser fell back to a default for %1 X-axis "
+                        "unit(s):").arg(warnings.size()),
+                warnings);
         }
         if (sigs.empty()) {
             if (errOut) *errOut = err.isEmpty() ? "No signals produced." : err;
@@ -931,25 +964,12 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
         const auto dupWarns  = scanDuplicateTimestamps(store_, f.importedNames);
         const auto platWarns = scanValuePlateaus(store_, f.importedNames);
         if (!dupWarns.isEmpty() || !platWarns.isEmpty()) {
-            QString msg;
-            if (!dupWarns.isEmpty()) {
-                msg += QString("Duplicate timestamps in %1:\n\n%2\n\n"
-                               "Edit the channel and set "
-                               "Duplicate timestamps → first / last / mean "
-                               "to collapse them.\n\n")
-                           .arg(f.displayName).arg(dupWarns.join("\n"));
-            }
-            if (!platWarns.isEmpty()) {
-                msg += QString("Value plateaus in %1:\n\n%2\n\n"
-                               "This is a CSV logged faster than the "
-                               "underlying value updates. Edit the channel "
-                               "and set Value plateaus → first / last "
-                               "timestamp to collapse them. Otherwise "
-                               "Derivative on this signal will produce a "
-                               "comb pattern.")
-                           .arg(f.displayName).arg(platWarns.join("\n"));
-            }
-            QMessageBox::warning(this, "Import warnings", msg);
+            const auto report = scanReport(dupWarns, platWarns);
+            scope::style::listMessage(this, QMessageBox::Warning,
+                "Import warnings",
+                QString("Some channels in %1 need a per-channel setting:")
+                    .arg(f.displayName),
+                report.lines, report.advice);
         }
     };
 
@@ -1223,26 +1243,17 @@ ConverterWidget::ConverterWidget(scope::core::SignalStore& store, QWidget* paren
                           .arg(okFiles).arg(totalSignals);
         if (!failures.isEmpty()) {
             msg += QString(" — %1 skipped").arg(failures.size());
-            QMessageBox::warning(this, "Some files were skipped",
-                "These files produced no signals:\n" + failures.join("\n"));
+            scope::style::listMessage(this, QMessageBox::Warning,
+                "Some files were skipped",
+                QString("%1 file(s) produced no signals:").arg(failures.size()),
+                failures);
         }
         if (!dupWarnings.isEmpty() || !platWarnings.isEmpty()) {
-            QString w;
-            if (!dupWarnings.isEmpty()) {
-                w += "Duplicate timestamps:\n\n"
-                   + dupWarnings.join("\n")
-                   + "\n\nEdit the channel and set Duplicate timestamps "
-                     "→ first / last / mean to collapse.\n\n";
-            }
-            if (!platWarnings.isEmpty()) {
-                w += "Value plateaus (CSV logged faster than the value "
-                     "updates):\n\n"
-                   + platWarnings.join("\n")
-                   + "\n\nEdit the channel and set Value plateaus → "
-                     "first / last timestamp to collapse. Derivative "
-                     "on a staircase signal produces a comb pattern.";
-            }
-            QMessageBox::warning(this, "Import warnings", w);
+            const auto report = scanReport(dupWarnings, platWarnings);
+            scope::style::listMessage(this, QMessageBox::Warning,
+                "Import warnings",
+                "Some imported channels need a per-channel setting:",
+                report.lines, report.advice);
         }
         impl_->statusLabel->setText(msg);
     });

@@ -19,6 +19,7 @@ add_executable(scope_tests
     test_app_icon.cpp
     test_save_chart_dialog.cpp
     test_symbol_browser.cpp
+    test_list_message.cpp
     test_undo_stack.cpp
 )
 
